@@ -29,7 +29,10 @@ anyhow = "1"
 # The demo's async plumbing: a lock that waits, channels, and a set of
 # futures that a store's driver polls together.
 futures = "0.3"
-js-sys = "0.3"
+# Without its default `unsafe-eval` feature, which turns on `eval` and the
+# `Function` constructors: the polyfill and the browser backend run under a
+# Content Security Policy that refuses both, and use neither.
+js-sys = { version = "0.3", default-features = false, features = ["std"] }
 proc-macro2 = "1"
 quote = "1"
 semver = "1"

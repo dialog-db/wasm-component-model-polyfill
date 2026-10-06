@@ -1162,12 +1162,42 @@
             touch "$out"
           '';
 
+        # The vendored runtime-layer crates are retired, and nothing brings
+        # them back: no manifest or lock of the workspace or of the
+        # downstream consumer, and no Cargo configuration, names the
+        # upstream runtime-layer crates or patches or replaces a
+        # dependency, which is how the vendored crates came in.
+        retiredRuntimeLayerCheck =
+          let
+            manifests = pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                (pkgs.lib.fileset.maybeMissing ./.cargo)
+                (pkgs.lib.fileset.fileFilter (
+                  file: file.name == "Cargo.toml" || file.name == "Cargo.lock"
+                ) ./rust)
+              ];
+            };
+          in
+          pkgs.runCommand "wcmp-retired-runtime-layer-check" { } ''
+            cd ${manifests}
+            if grep -rnE '^[[:space:]]*\[\[?(patch|replace)\b|^[[:space:]]*(patch|replace)\.|wasm[_-]runtime[_-]layer' .; then
+              echo "A manifest, lock, or Cargo configuration above patches a dependency" >&2
+              echo "or names a retired runtime-layer crate." >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
+
         # The browser backend never makes a function from a string of
         # source, so it runs under a content security policy without
         # `unsafe-eval`. Its crate holds no JavaScript file, and no Rust
         # source of it names `eval`, the `Function` constructor or a way to
         # reach it (a string naming it, the `constructor` of another
-        # function, or a binding whose `js_name` is `Function`), a timer
+        # function called as a method or by path, or a binding whose
+        # `js_name` is `Function` or an extern type named `Function`), a timer
         # that takes a string of source, or an inline or module JavaScript
         # snippet of `wasm-bindgen`. The list cannot name every way there
         # is. The guard the browser itself enforces is the test that runs
@@ -1188,7 +1218,7 @@
               echo "The browser backend holds a JavaScript file." >&2
               status=1
             fi
-            if grep -rnE '\beval\b|new_with_args|new_no_args|"Function"|Reflect::construct|inline_js|module *= *"|"constructor"|\.constructor\(|js_(name|class) *= *"?Function\b|set_?[tT]imeout|set_?[iI]nterval' src; then
+            if grep -rnE '\beval\b|new_with_args|new_no_args|"Function"|Reflect::construct|inline_js|module *= *"|"constructor"|\.constructor\(|::constructor\b|\btype +Function\b|js_(name|class) *= *"?Function\b|set_?[tT]imeout|set_?[iI]nterval' src; then
               echo "The browser backend names a way to make a function from source." >&2
               status=1
             fi
@@ -1451,6 +1481,9 @@
         # change. The source holds the consumer, the published crates, and
         # the workspace manifest they inherit from, and nothing else of the
         # workspace, so no Cargo configuration above the consumer applies.
+        # Its wasm32 feature tree also holds the polyfill's path free of
+        # js-sys's `unsafe-eval` feature: that path runs under a strict
+        # Content Security Policy, and the consumer's tree is exactly it.
         downstreamBuildCheck =
           let
             directory = ./rust/wcmp-downstream;
@@ -1501,6 +1534,17 @@
                   cargo build --locked --offline
                   cargo build --locked --offline --target wasm32-unknown-unknown
                   cargo test --locked --offline
+                  cargo tree --locked --offline --target wasm32-unknown-unknown \
+                    --edges features,no-dev --invert js-sys > js-sys-features.txt
+                  if ! grep -qF 'js-sys feature' js-sys-features.txt; then
+                    echo "The wasm32 feature tree shows no js-sys to check." >&2
+                    exit 1
+                  fi
+                  if grep -F 'js-sys feature "unsafe-eval"' js-sys-features.txt; then
+                    echo "A dependency of the polyfill or its browser backend turns on" >&2
+                    echo "js-sys's unsafe-eval feature, which the strict CSP refuses." >&2
+                    exit 1
+                  fi
                 '';
             installPhaseCommand = ''
               touch "$out"
@@ -2829,6 +2873,9 @@
             # Only the seam module names a runtime-layer crate: see
             # `runtimeLayerSeamCheck`.
             runtime-layer-seam = runtimeLayerSeamCheck;
+            # No manifest or lock brings the retired runtime-layer crates
+            # back: see `retiredRuntimeLayerCheck`.
+            retired-runtime-layer = retiredRuntimeLayerCheck;
             # The browser backend makes no function from a string of
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
