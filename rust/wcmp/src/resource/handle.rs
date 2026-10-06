@@ -12,9 +12,11 @@
 //! the handle-table index that names the live entry.
 //!
 //! Identity comparison is structural: two handles compare equal when
-//! both their resource-type and index components match. A handle is
-//! cheaply cloneable; copying does not duplicate the underlying
-//! table entry.
+//! their resource type, index, rep, and the generation of the entry
+//! they were minted for all match, so a handle kept past its entry's
+//! release never equals the handle of the entry that took its index. A
+//! handle is cheaply cloneable; copying does not duplicate the
+//! underlying table entry.
 //!
 //! [`Val::Own`]: crate::Val::Own
 //! [`Val::Borrow`]: crate::Val::Borrow
@@ -27,11 +29,11 @@ use crate::internal::ResourceHandleInternal;
 ///
 /// The polyfill mints these when a host registers a resource against
 /// a [`LinkerInstance`] and hands one across the canonical-ABI
-/// boundary, or when a guest produces one during a lifted call. A
-/// handle's index is meaningful only against the table it names: the
-/// per-instance table of the instance the handle came from, or, for
-/// an `own<T>` handle the host holds outright, the host's
-/// per-resource-type table in the [`Store`].
+/// boundary, or when a guest produces one during a lifted call. Every
+/// handle the host holds names an entry of the host's per-resource-type
+/// table in the [`Store`]: an `own<T>` the host owns outright, or a
+/// `borrow<T>` it received out of a guest, whose entry goes when the
+/// call that lent it ends.
 ///
 /// The parts are readable and not writable. A handle names a live
 /// entry in a table the store owns, so only the store mints one: it
@@ -82,11 +84,10 @@ pub struct ResourceHandle {
     type_id: ResourceTypeId,
     /// The handle-table entry this handle names.
     index: u32,
-    /// The resource's 32-bit representation. Carried so that a
-    /// handle the host owns outright (one lifted out of a guest as
-    /// `own<T>`, whose table entry the lift removed) can be lowered
-    /// back into a guest, which re-inserts the rep and takes a fresh
-    /// index.
+    /// The resource's 32-bit representation, as the host's table
+    /// entry holds it. Carried so that a lower can tell a handle from
+    /// one that names another entry at the same index and generation,
+    /// which only a handle the host did not get from this table can.
     rep: u32,
     /// The generation of the host-table entry the handle was minted
     /// for. An index the host's table frees and gives to another entry

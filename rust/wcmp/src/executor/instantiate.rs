@@ -217,8 +217,9 @@ impl ReservedRecords {
 /// its future part way. The reservation withdraws the records then,
 /// as a failed plan does, so a dropped instantiation leaves the store
 /// as it found it too. A core `start` function the browser still runs
-/// for the dropped instantiation can still reach the store's records
-/// afterwards; the store's own records are what it finds.
+/// for the dropped instantiation traps as soon as it calls a host
+/// function, without reaching the store, so it reads no withdrawn
+/// record.
 struct Reservation<'s, 'c, T: 'static> {
     store: &'s mut StoreContext<'c, T>,
     records: ReservedRecords,

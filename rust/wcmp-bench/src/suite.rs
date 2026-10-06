@@ -327,7 +327,7 @@ const YIELDS: u32 = 16;
 
 #[wcmp_macros::bench(
     guest = "a callback export assembled from text, `spin: async func(n: u32)`, whose core function and callbacks answer `YIELD` until `n` runs out",
-    payload = "one call that yields 16 times, so a sample is 16 rounds through the driver's wake after a yield, which in a browser posts a message to a channel of its own each time"
+    payload = "one call that yields 16 times, so a sample is 16 rounds through the driver's wake after a yield, which in a browser posts a message to the driver's own channel each time"
 )]
 async fn yields(run: &mut Run) -> Result<()> {
     let (_engine, mut store, instance) = instantiate(run, guests::YIELDS).await?;

@@ -696,6 +696,10 @@ impl<T: 'static> SuspendProvider<T> for HostSuspensionProvider {
             ));
         }
         let mut threads = self.threads();
+        // The scheduler resumes only a thread it parked, so a resume that
+        // lands here is a fault of the scheduler, not of a guest. It answers
+        // with the not-suspended cause all the same, the structured cause for
+        // the request, rather than an internal error.
         let call = threads
             .waiting
             .remove(&index)

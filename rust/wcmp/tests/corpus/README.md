@@ -160,13 +160,14 @@ runs the corpus and refuses the placeholder.
 
 `expected-failures.web.txt` is the browser-only delta: the harness
 applies it on top of the shared list on `wasm32-unknown-unknown`. It
-holds only differences of the substrate (the browser's engine against
-Wasmtime), so a polyfill gap is recorded once, in the shared list, and
-counts on both targets. `tests regenerate` does not touch it. Its
-reasons are the browser engine's wording, which a native run cannot
-produce and must not invent; the delta holds only substrate
-differences, five lines today, and each one is written by hand from
-the failure a `tests web debug` run prints.
+holds what fails only in the browser: a difference of the substrate
+(the browser's engine against Wasmtime), or a limit of the polyfill
+that only the browser meets, such as its 32-bit addressing. A gap of
+the polyfill on every target is recorded once, in the shared list, and
+counts on both. `tests regenerate` does not touch it. Its reasons are
+the browser run's own wording, which a native run cannot produce and
+must not invent; the delta holds five lines today, and each one is
+written by hand from the failure a `tests web debug` run prints.
 
 `expected-failures.wasmi.txt` is the Wasmi delta: the harness applies it
 on top of the shared list in a native run whose engines take the Wasmi

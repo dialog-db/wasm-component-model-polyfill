@@ -297,6 +297,10 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
 
     fn resume(&self, store: &mut StoreContext<'_, T>, thread: ThreadId) -> Result<EntryStatus> {
         let index = thread.index();
+        // The scheduler resumes only a thread it parked, so a resume that
+        // lands here is a fault of the scheduler, not of a guest. It answers
+        // with the not-suspended cause all the same, the structured cause for
+        // the request, rather than an internal error.
         if !self
             .suspended
             .lock()

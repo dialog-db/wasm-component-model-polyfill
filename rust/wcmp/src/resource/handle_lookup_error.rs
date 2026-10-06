@@ -17,8 +17,11 @@ use crate::concurrency::EndKind;
 /// the tests pin them: an unknown index, an entry lent out, and a
 /// guest-defined resource of the wrong type. A guest that misuses a
 /// resource handle in one of those ways fails the same way on both.
-/// `NotOwned`, and `WrongType` where one side is host-defined, are
-/// worded differently from Wasmtime. `WrongKind` has no Wasmtime
+/// `Stale` is Wasmtime's wording for a host handle whose resource is
+/// gone, with the index added. `NotOwned`, and `WrongType` where one
+/// side is host-defined, are worded differently from Wasmtime, and
+/// `RepMismatch` has no Wasmtime counterpart: Wasmtime's host index
+/// carries no rep to compare. `WrongKind` has no Wasmtime
 /// counterpart: it fires only when a resource lookup lands on a
 /// non-resource entry, which a well-formed adapter never generates.
 /// The three waitable causes follow Wasmtime's own wording for the
