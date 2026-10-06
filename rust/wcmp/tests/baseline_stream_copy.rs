@@ -766,6 +766,36 @@ async fn it_keeps_a_pending_read_taking_writes_until_its_event_is_delivered() {
 }
 
 #[wcmp_macros::test]
+async fn it_moves_overlapping_bytes_within_one_memory_as_the_writer_offered_them() {
+    // The write offers the eight bytes at 200, and the read takes them
+    // into 203, so the two ranges share five bytes of the one memory.
+    // The copy moves them as `memory.copy` does: the reader gets the
+    // bytes the writer offered, not bytes the copy already overwrote.
+    let (mut store, instance) = instantiate(STREAM_COPIES).await;
+    let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;
+    call_ok(&mut store, &instance, "poke", &[200, 0x0403_0201]).await;
+    call_ok(&mut store, &instance, "poke", &[204, 0x0807_0605]).await;
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "write", &[writable, 200, 8]).await,
+        BLOCKED
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "read", &[readable, 203, 8]).await,
+        packed(0, 8),
+        "the read takes the eight bytes at once"
+    );
+    assert_eq!(
+        (
+            call_u32(&mut store, &instance, "peek", &[203]).await,
+            call_u32(&mut store, &instance, "peek", &[207]).await,
+        ),
+        (0x0403_0201, 0x0807_0605),
+        "the reader's range holds the bytes the writer offered, in order"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_delivers_an_asynchronous_copy_as_the_stream_code_the_index_and_the_packed_result() {
     let (mut store, instance) = instantiate(STREAM_COPIES).await;
     let (readable, writable) = new_ends(&mut store, &instance, "new-stream").await;

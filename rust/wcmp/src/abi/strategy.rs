@@ -125,7 +125,7 @@ impl AbiStrategy {
                     .memory()
                     .ok_or(AbiCause::OutOfBoundsMemory { offset, length })?;
                 #[cfg(test)]
-                count_access(|(reads, writes)| (reads + 1, writes + 1));
+                MEMORY_COPIES.with(|copies| copies.set(copies.get() + 1));
                 Memory::copy(
                     &mut *store,
                     from,
@@ -249,6 +249,11 @@ thread_local! {
     /// writes.
     static MEMORY_ACCESSES: std::cell::Cell<(usize, usize)> =
         const { std::cell::Cell::new((0, 0)) };
+
+    /// How many copies from one guest memory to another, with no host
+    /// buffer between them, the eager strategy has made on this thread,
+    /// which are neither reads nor writes of the host's.
+    static MEMORY_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Count one runtime-layer access of a guest memory.
@@ -262,4 +267,11 @@ fn count_access(step: impl FnOnce((usize, usize)) -> (usize, usize)) {
 #[cfg(test)]
 pub fn memory_accesses() -> (usize, usize) {
     MEMORY_ACCESSES.with(std::cell::Cell::get)
+}
+
+/// How many guest-to-guest copies the eager strategy has made on this
+/// thread so far.
+#[cfg(test)]
+pub fn memory_copies() -> usize {
+    MEMORY_COPIES.with(std::cell::Cell::get)
 }

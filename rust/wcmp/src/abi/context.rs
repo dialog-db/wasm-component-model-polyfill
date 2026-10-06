@@ -497,23 +497,13 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
         allocated.and_then(|pointer| ended.map(|()| pointer))
     }
 
-    /// Read `length` bytes at `offset` out of the side a copy
-    /// between two guest memories reads from, under the strategy
-    /// that side's own options select: each side of a copy carries
-    /// its own data model, so the side read from decides how the
-    /// read happens. A crossing that is not such a copy reads its
-    /// own side, under its own strategy.
-    pub fn read_source_bytes(&mut self, offset: usize, length: usize) -> Result<Vec<u8>> {
-        self.accesses += 1;
-        let (store, options, strategy) = self.source_side();
-        strategy
-            .load(store, options, offset, length)
-            .map_err(Self::unlabelled)
-    }
-
     /// Lend the `length` bytes at `offset` of the side a copy between
     /// two guest memories reads from to `f`, and return what `f`
-    /// returns. Natively the bytes are the guest's own, so the host
+    /// returns. The read goes under the strategy that side's own
+    /// options select: each side of a copy carries its own data model,
+    /// so the side read from decides how the read happens. A crossing
+    /// that is not such a copy reads its own side, under its own
+    /// strategy. Natively the bytes are the guest's own, so the host
     /// holds no copy of them; in the browser the host holds one copy
     /// of the range while `f` runs.
     pub fn with_source_bytes<R>(
@@ -885,7 +875,7 @@ mod tests {
             None,
         );
 
-        let Err(Error::Internal { message }) = ctx.read_source_bytes(0, 4) else {
+        let Err(Error::Internal { message }) = ctx.with_source_bytes(0, 4, <[u8]>::to_vec) else {
             panic!("the source read reports the strategy of the side it reads");
         };
         assert!(

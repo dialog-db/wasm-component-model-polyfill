@@ -511,7 +511,7 @@ mod tests {
     use crate::abi::instance::BoundaryInstance;
     use crate::abi::options::BoundaryOptions;
     use crate::abi::runtime_state::AbiRuntimeState;
-    use crate::abi::strategy::memory_accesses;
+    use crate::abi::strategy::{memory_accesses, memory_copies};
     use crate::engine::Engine;
     use crate::runtime_layer::{AsContextMut, Memory, MemoryType};
     use crate::store::{Store, StoreInternalExt};
@@ -920,12 +920,17 @@ mod tests {
         copy.put(0, text.as_bytes());
 
         let (reads, writes) = memory_accesses();
+        let copies = memory_copies();
         copy.run(TranscodeOp::CopyUtf8, &[0, text.len(), 0], 0)
             .expect("copy utf8");
         let (after_reads, after_writes) = memory_accesses();
         assert_eq!(
-            (after_reads - reads, after_writes - writes),
-            (4 + 1, 1),
+            (
+                after_reads - reads,
+                after_writes - writes,
+                memory_copies() - copies
+            ),
+            (4, 0, 1),
             "four chunks lent to the check, then one copy between the memories"
         );
         assert_eq!(copy.take(0, text.len()), text.as_bytes());

@@ -7,9 +7,9 @@
 //! Baseline tests for the two paths a stream or future copy takes
 //! between two components.
 //!
-//! A payload of a number type moves as bytes: one runtime-layer read
-//! of the writer's memory and one write of the reader's, with no
-//! value built, so the copy charges no copy budget, and a NaN keeps
+//! A payload of a number type moves as bytes: one runtime-layer copy
+//! from the writer's memory to the reader's, with no host buffer and
+//! no value built, so the copy charges no copy budget, and a NaN keeps
 //! its bits. Each side's bytes are found from where its copy has got
 //! to. Any other payload moves one value at a time through the two
 //! boundary contexts, and the lift of those values charges the
@@ -25,7 +25,7 @@
 
 #![cfg(test)]
 
-use crate::abi::strategy::memory_accesses;
+use crate::abi::strategy::{memory_accesses, memory_copies};
 use crate::{Component, Engine, Error, Func, Instance, Linker, Store, Val};
 use wcmp_macros::component;
 
@@ -376,7 +376,7 @@ fn packed(result: u32, count: u32) -> u32 {
 }
 
 #[wcmp_macros::test]
-async fn it_copies_a_mebibyte_of_u8_through_one_read_and_one_write_with_no_value_built() {
+async fn it_copies_a_mebibyte_of_u8_guest_to_guest_with_no_host_buffer_and_no_value_built() {
     let (mut store, instance) = instantiate(PATHS).await;
     call(&mut store, &instance, "fill", &[BUFFER, MEBIBYTE]).await;
     let (writable, readable) = stream(&mut store, &instance, "bytes").await;
@@ -397,6 +397,7 @@ async fn it_copies_a_mebibyte_of_u8_through_one_read_and_one_write_with_no_value
     // refuses. The byte copy builds none and charges nothing.
     store.set_hostcall_fuel(0);
     let before = memory_accesses();
+    let copies = memory_copies();
     let written = call_u32(
         &mut store,
         &instance,
@@ -411,9 +412,13 @@ async fn it_copies_a_mebibyte_of_u8_through_one_read_and_one_write_with_no_value
         "the write moves the whole mebibyte"
     );
     assert_eq!(
-        (after.0 - before.0, after.1 - before.1),
-        (1, 1),
-        "the copy is one runtime-layer read of the writer's memory and one write of the reader's"
+        (
+            after.0 - before.0,
+            after.1 - before.1,
+            memory_copies() - copies
+        ),
+        (0, 0, 1),
+        "the copy is one copy from the writer's memory to the reader's, with no host buffer"
     );
 
     assert_eq!(

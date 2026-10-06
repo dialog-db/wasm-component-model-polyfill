@@ -650,24 +650,16 @@ fn move_values<T: 'static>(
 /// Move the `length` bytes at `source`'s offset to `destination`'s,
 /// which is how values of a number type move: every bit pattern of
 /// those types is a valid value, so the bytes are the values, and no
-/// value is built. One context over the two memories reads the whole
-/// range out of the writer's memory in one runtime-layer read and
-/// writes it into the reader's in one write. The copy builds no host
-/// value, so it charges no copy budget, as Wasmtime's copy of a flat
-/// payload charges none. Both ranges were checked to lie inside their
-/// memories when their copies started, and a memory never shrinks.
-/// When the two sides share a memory the ranges can overlap, and the
-/// whole range is read before any of it is written, so the reader
-/// sees the bytes the writer offered.
-///
-/// The read lands in a transient host buffer the size of the copy,
-/// which the eager strategy allocates for every load, and the write
-/// takes it from there. The runtime layer offers no view of a guest
-/// memory, only reads into and writes out of host bytes, so the bytes
-/// cannot move from memory to memory in place, as Wasmtime moves
-/// them. The buffer is bounded: its length is the count, below 2^28,
-/// times the size of a number type, and both ranges it spans were
-/// checked against their memories when their copies started.
+/// value is built. One context over the two memories copies the range
+/// from the writer's memory to the reader's in one runtime-layer copy,
+/// guest to guest, so the host holds none of it, as Wasmtime moves the
+/// bytes in place. The copy builds no host value, so it charges no copy
+/// budget, as Wasmtime's copy of a flat payload charges none. Both
+/// ranges were checked to lie inside their memories when their copies
+/// started, and a memory never shrinks. When the two sides share a
+/// memory the ranges can overlap, and the runtime layer's copy moves
+/// them as `memory.copy` does, so the reader sees the bytes the writer
+/// offered.
 fn move_bytes<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
     tables: &Arc<Mutex<HandleTables>>,
@@ -687,8 +679,7 @@ fn move_bytes<T: 'static>(
         instance,
         None,
     );
-    let bytes = ctx.read_source_bytes(source.offset, length).map_err(trap)?;
-    ctx.write_own_bytes(destination.offset, &bytes)
+    ctx.copy_from_source(source.offset, destination.offset, length)
         .map_err(trap)
 }
 
