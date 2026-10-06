@@ -199,7 +199,6 @@ where
 mod tests {
     use crate::store::{StoreContextInternalExt, StoreInternalExt};
     use core::pin::Pin;
-    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -219,18 +218,15 @@ mod tests {
     /// A waker that counts the wakes a driver sends itself. Only the
     /// native wake after a yield is a self-wake, so only the native
     /// test needs to count them.
-    #[cfg(not(target_arch = "wasm32"))]
     #[derive(Default)]
     struct Wakes(AtomicUsize);
 
-    #[cfg(not(target_arch = "wasm32"))]
     impl Wakes {
         fn count(&self) -> usize {
             self.0.load(Ordering::Relaxed)
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     impl std::task::Wake for Wakes {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::Relaxed);
@@ -528,5 +524,184 @@ mod tests {
             "the wake after a yield crosses a macrotask boundary, so the \
              resumption runs after the macrotask the page had queued"
         );
+    }
+
+    /// Queue a `setTimeout` of zero on the page's global that pushes
+    /// `entry` onto `log`.
+    #[cfg(target_arch = "wasm32")]
+    fn queue_timeout(log: &Log, entry: &'static str) {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::{JsCast, JsValue};
+
+        let queued = log.clone();
+        let global = js_sys::global();
+        let set_timeout = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+            .expect("setTimeout")
+            .dyn_into::<js_sys::Function>()
+            .expect("setTimeout is a function");
+        let callback = Closure::once_into_js(move || {
+            queued.lock().expect("log").push(entry);
+        });
+        set_timeout
+            .call2(&global, &callback, &JsValue::from_f64(0.0))
+            .expect("queue the timeout");
+    }
+
+    /// Drive `store` until `entry` is on `log`.
+    #[cfg(target_arch = "wasm32")]
+    async fn drive_until(store: &mut Store<()>, log: &Log, entry: &'static str) {
+        let watched = log.clone();
+        Driver::run(store.internal().context(), move |_store, _waker| {
+            if watched.lock().expect("log").contains(&entry) {
+                Some(Ok(()))
+            } else {
+                None
+            }
+        })
+        .await
+        .expect("drive the yield to its resumption");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_runs_a_timeout_queued_just_before_a_yield_in_the_order_the_browser_chooses() {
+        // The timeout is queued with no work between it and the yield.
+        // The HTML event loop leaves the order of two task sources to
+        // the browser, so the wake does not promise that the timeout
+        // runs first; this pins what Chrome does, which is to run it
+        // first.
+        let mut store = store();
+        let log = log();
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "resumed"));
+        queue_timeout(&log, "timeout");
+        drive_until(&mut store, &log, "resumed").await;
+        drive_until(&mut store, &log, "timeout").await;
+
+        assert_eq!(entries(&log), vec!["timeout", "resumed"]);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_resumes_after_a_message_posted_before_the_yield_so_the_wake_is_a_macrotask() {
+        // A message the page posted to a port of its own before the
+        // yield is a task in the posted-message source, ahead of the
+        // wake's own message in the same source. A wake that were a
+        // microtask would resume the item before that task ran.
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen::closure::Closure;
+
+        let mut store = store();
+        let log = log();
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "resumed"));
+
+        let channel = web_channel();
+        let port1 = js_sys::Reflect::get(&channel, &JsValue::from_str("port1")).expect("port1");
+        let port2 = js_sys::Reflect::get(&channel, &JsValue::from_str("port2")).expect("port2");
+        let delivered = log.clone();
+        let handler = Closure::<dyn FnMut()>::new(move || {
+            delivered.lock().expect("log").push("message");
+        });
+        js_sys::Reflect::set(&port1, &JsValue::from_str("onmessage"), handler.as_ref())
+            .expect("the handler");
+        call(&port2, "postMessage", &JsValue::UNDEFINED);
+
+        drive_until(&mut store, &log, "resumed").await;
+        call(&port1, "close", &JsValue::UNDEFINED);
+        drop(handler);
+
+        assert_eq!(entries(&log), vec!["message", "resumed"]);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wcmp_macros::test]
+    fn it_wakes_at_once_on_a_global_with_neither_a_channel_nor_a_timeout() {
+        let wakes = Arc::new(Wakes::default());
+        let waker = Waker::from(wakes.clone());
+        let wake = YieldWake::after_yield_on(&js_sys::Object::new(), &waker);
+
+        assert!(!wake.posted(), "there was no channel to post to");
+        assert!(wake.landed(), "the wake landed at once");
+        assert_eq!(wakes.count(), 1, "and woke the driver, as natively");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wcmp_macros::test]
+    fn it_falls_back_past_a_channel_with_no_ports() {
+        // `Object` constructs an object with no ports, which is a
+        // channel the wake cannot post through. With no timeout either,
+        // the wake falls through both mechanisms and lands at once.
+        use wasm_bindgen::JsValue;
+
+        let global = js_sys::Object::new();
+        let object =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Object")).expect("Object");
+        js_sys::Reflect::set(&global, &JsValue::from_str("MessageChannel"), &object)
+            .expect("a fake channel constructor");
+        let wakes = Arc::new(Wakes::default());
+        let waker = Waker::from(wakes.clone());
+        let wake = YieldWake::after_yield_on(&global, &waker);
+
+        assert!(!wake.posted(), "a channel with no ports was not posted to");
+        assert!(wake.landed());
+        assert_eq!(wakes.count(), 1);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    async fn it_runs_nothing_for_a_wake_dropped_before_its_message_arrived() {
+        let wakes = Arc::new(Wakes::default());
+        let waker = Waker::from(wakes.clone());
+        let wake = YieldWake::after_yield(&waker);
+        assert!(wake.posted(), "the page has a MessageChannel");
+        drop(wake);
+
+        // Let the posted message's task come and go.
+        let log = log();
+        queue_timeout(&log, "later");
+        let mut store = store();
+        store
+            .internal()
+            .scheduler_mut()
+            .push_low_priority(marker(&log, "resumed"));
+        drive_until(&mut store, &log, "resumed").await;
+        drive_until(&mut store, &log, "later").await;
+
+        assert_eq!(
+            wakes.count(),
+            0,
+            "the dropped wake took its handler off the port and closed it"
+        );
+    }
+
+    /// A fresh `MessageChannel` of the page's global.
+    #[cfg(target_arch = "wasm32")]
+    fn web_channel() -> wasm_bindgen::JsValue {
+        use wasm_bindgen::{JsCast, JsValue};
+
+        let constructor =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("MessageChannel"))
+                .expect("MessageChannel")
+                .dyn_into::<js_sys::Function>()
+                .expect("MessageChannel is a constructor");
+        js_sys::Reflect::construct(&constructor, &js_sys::Array::new()).expect("a channel")
+    }
+
+    /// Call the method `name` of `object` with `argument`.
+    #[cfg(target_arch = "wasm32")]
+    fn call(object: &wasm_bindgen::JsValue, name: &str, argument: &wasm_bindgen::JsValue) {
+        use wasm_bindgen::{JsCast, JsValue};
+
+        js_sys::Reflect::get(object, &JsValue::from_str(name))
+            .expect("the method")
+            .dyn_into::<js_sys::Function>()
+            .expect("a function")
+            .call1(object, argument)
+            .expect("the call");
     }
 }

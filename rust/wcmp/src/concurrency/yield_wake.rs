@@ -29,11 +29,29 @@
 //! tab throttles timers to about one a second; a callback export
 //! that yields once per event would run at a few hundred events a
 //! second in the foreground and about one a second in the
-//! background. A port message is a macrotask under neither clamp, so
-//! the rule the yield is there for — the responses and timers the
-//! page already has queued run before the guest's next item — holds
-//! at the speed of the event loop. The timeout stays as the fallback
-//! for a global that has no `MessageChannel`.
+//! background. A port message is a macrotask under neither clamp.
+//! The timeout stays as the fallback for a global that has no
+//! `MessageChannel`, and a global with neither wakes the driver at
+//! once, as the native target does.
+//!
+//! What the wake guarantees is that the guest's next item runs in a
+//! later task than the one that yielded: every microtask queued
+//! before it runs first, and so does every message the page posted
+//! to a port before the yield, since the wake's message joins the
+//! same posted-message task source behind them. The HTML event loop
+//! lets the browser choose which task source it serves next, so a
+//! timer or a network response the page has queued may run before
+//! the guest's next item or after it. Chrome serves a timeout of
+//! zero queued just before a yield before the guest's next item.
+//!
+//! The channel belongs to one wake and goes with it: a wake that
+//! drops before its message arrives, because the driver that
+//! arranged it dropped, takes its handler off the port and closes
+//! the channel, so nothing runs for it afterwards and nothing leaks.
+//! A wake whose message is posted but never delivered leaves the
+//! driver pending until something else wakes it. No browser loses a
+//! message posted to an open port, so the wake arms no timer to watch
+//! for it, which would cost a timer per yield.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
@@ -82,29 +100,64 @@ mod imp {
     ///
     /// In the browser the wake crosses a macrotask boundary: the
     /// driver posts a message to a port of its own and returns
-    /// pending, so every network response and timer the page already
-    /// has queued runs before the guest's next item. The flag says
-    /// whether that message has arrived.
+    /// pending, so the guest's next item runs in a later task. The
+    /// flag says whether that message has arrived.
     pub struct YieldWake {
         landed: Rc<Cell<bool>>,
         waker: Rc<RefCell<Waker>>,
+        /// The channel the message crosses, while the wake lives.
+        channel: Option<Channel>,
+    }
+
+    /// The two ports of a wake's own `MessageChannel` and the handler
+    /// the receiving port runs.
+    struct Channel {
+        receiver: JsValue,
+        sender: JsValue,
+        handler: Closure<dyn FnMut()>,
+    }
+
+    impl Drop for Channel {
+        /// Take the handler off the receiving port and close both
+        /// ports, so that a message still on its way is never
+        /// delivered to a handler that is gone.
+        fn drop(&mut self) {
+            let _ = js_sys::Reflect::set(
+                &self.receiver,
+                &JsValue::from_str("onmessage"),
+                &JsValue::NULL,
+            );
+            for port in [&self.receiver, &self.sender] {
+                if let Some(close) = member(port, "close") {
+                    let _ = close.call0(port);
+                }
+            }
+        }
     }
 
     impl YieldWake {
         /// Arrange the wake that returns control to the host
         /// executor after a yield.
         pub fn after_yield(waker: &Waker) -> Self {
+            Self::after_yield_on(&js_sys::global(), waker)
+        }
+
+        /// Arrange the wake through the `MessageChannel` or the
+        /// `setTimeout` of `global`. A global with neither wakes
+        /// `waker` at once, as the native target does, rather than
+        /// stall the driver.
+        pub fn after_yield_on(global: &JsValue, waker: &Waker) -> Self {
             let landed = Rc::new(Cell::new(false));
             let wakes = Rc::new(RefCell::new(waker.clone()));
-            if !post_message(&landed, &wakes) && !schedule_timeout(&landed, &wakes) {
-                // Neither mechanism on this global: fall back to the
-                // native behaviour rather than stall the driver.
+            let channel = post_message(global, &landed, &wakes);
+            if channel.is_none() && !schedule_timeout(global, &landed, &wakes) {
                 landed.set(true);
                 waker.wake_by_ref();
             }
             Self {
                 landed,
                 waker: wakes,
+                channel,
             }
         }
 
@@ -112,6 +165,13 @@ mod imp {
         /// item that yielded.
         pub fn landed(&self) -> bool {
             self.landed.get()
+        }
+
+        /// Whether the wake crosses a channel of its own, rather than
+        /// a timeout or nothing.
+        #[cfg(test)]
+        pub fn posted(&self) -> bool {
+            self.channel.is_some()
         }
 
         /// Wake `waker` rather than the waker the wake was arranged
@@ -124,56 +184,55 @@ mod imp {
         }
     }
 
-    /// Post a message to one end of a fresh `MessageChannel`, whose
-    /// other end sets `landed` and wakes `waker` when the message
-    /// arrives. `false` when this global offers no `MessageChannel`,
-    /// or when building one from it did not work.
-    ///
-    /// The channel belongs to this one wake. Its receiving end is
-    /// reachable from the handler, so the pair lives until the
-    /// message is delivered, and the handler closes it before it
-    /// wakes anything.
-    fn post_message(landed: &Rc<Cell<bool>>, waker: &Rc<RefCell<Waker>>) -> bool {
-        let global = js_sys::global();
-        let Some(constructor) = member(&global, "MessageChannel") else {
-            return false;
-        };
-        let Ok(channel) = js_sys::Reflect::construct(&constructor, &js_sys::Array::new()) else {
-            return false;
-        };
-        let (Some(receiver), Some(sender)) = (
-            js_sys::Reflect::get(&channel, &JsValue::from_str("port1")).ok(),
-            js_sys::Reflect::get(&channel, &JsValue::from_str("port2")).ok(),
-        ) else {
-            return false;
-        };
-        let Some(post) = member(&sender, "postMessage") else {
-            return false;
-        };
+    /// Post a message to one end of a fresh `MessageChannel` of
+    /// `global`, whose other end sets `landed` and wakes `waker` when
+    /// the message arrives, and answer the channel. `None` when the
+    /// global offers no `MessageChannel`, when building one from it
+    /// did not work, or when the post failed: the channel and its
+    /// handler drop then, and leave nothing behind.
+    fn post_message(
+        global: &JsValue,
+        landed: &Rc<Cell<bool>>,
+        waker: &Rc<RefCell<Waker>>,
+    ) -> Option<Channel> {
+        let constructor = member(global, "MessageChannel")?;
+        let channel = js_sys::Reflect::construct(&constructor, &js_sys::Array::new()).ok()?;
+        let receiver = js_sys::Reflect::get(&channel, &JsValue::from_str("port1")).ok()?;
+        let sender = js_sys::Reflect::get(&channel, &JsValue::from_str("port2")).ok()?;
+        let post = member(&sender, "postMessage")?;
 
-        let port = receiver.clone();
         let landed = landed.clone();
         let waker = waker.clone();
-        let handler = Closure::once_into_js(move || {
-            if let Some(close) = member(&port, "close") {
-                let _ = close.call0(&port);
-            }
+        let handler = Closure::<dyn FnMut()>::new(move || {
             landed.set(true);
             waker.borrow().wake_by_ref();
         });
+        let channel = Channel {
+            receiver,
+            sender,
+            handler,
+        };
         // Assigning the handler is what starts the receiving port.
-        if js_sys::Reflect::set(&receiver, &JsValue::from_str("onmessage"), &handler).is_err() {
-            return false;
-        }
-        post.call1(&sender, &JsValue::UNDEFINED).is_ok()
+        js_sys::Reflect::set(
+            &channel.receiver,
+            &JsValue::from_str("onmessage"),
+            channel.handler.as_ref(),
+        )
+        .ok()
+        .filter(|set| *set)?;
+        post.call1(&channel.sender, &JsValue::UNDEFINED).ok()?;
+        Some(channel)
     }
 
-    /// Ask the global for a `setTimeout` of zero that sets `landed`
-    /// and wakes `waker`. `false` when this global has no
-    /// `setTimeout` to schedule it with.
-    fn schedule_timeout(landed: &Rc<Cell<bool>>, waker: &Rc<RefCell<Waker>>) -> bool {
-        let global = js_sys::global();
-        let Some(set_timeout) = member(&global, "setTimeout") else {
+    /// Ask `global` for a `setTimeout` of zero that sets `landed` and
+    /// wakes `waker`. `false` when the global has no `setTimeout` to
+    /// schedule it with.
+    fn schedule_timeout(
+        global: &JsValue,
+        landed: &Rc<Cell<bool>>,
+        waker: &Rc<RefCell<Waker>>,
+    ) -> bool {
+        let Some(set_timeout) = member(global, "setTimeout") else {
             return false;
         };
         let landed = landed.clone();
@@ -183,7 +242,7 @@ mod imp {
             waker.borrow().wake_by_ref();
         });
         set_timeout
-            .call2(&global, &callback, &JsValue::from_f64(0.0))
+            .call2(global, &callback, &JsValue::from_f64(0.0))
             .is_ok()
     }
 
