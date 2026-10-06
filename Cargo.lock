@@ -2482,6 +2482,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tokio",
+ "tracing",
  "wasmtime",
  "wcmp-macros",
  "wcmp-wasm-core",

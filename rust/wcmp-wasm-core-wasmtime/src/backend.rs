@@ -49,8 +49,10 @@ impl Wasmtime {
     /// declares turned on.
     ///
     /// Stack switching is on where Wasmtime implements it, and declared
-    /// there. A Wasmtime that refuses the configuration, as it would on a
-    /// platform its compiler does not serve, is [`Error::Backend`].
+    /// there. Where Wasmtime refuses it, the backend reports the refusal
+    /// as a `tracing` debug event and builds the engine without it. A
+    /// Wasmtime that refuses the rest of the configuration, as it would
+    /// on a platform its compiler does not serve, is [`Error::Backend`].
     pub fn new() -> Result<Self> {
         let mut config = wasmtime::Config::new();
         config
@@ -69,7 +71,11 @@ impl Wasmtime {
         config.wasm_stack_switching(true);
         let (engine, capabilities) = match wasmtime::Engine::new(&config) {
             Ok(engine) => (engine, capabilities.with(Capability::StackSwitching)),
-            Err(_) => {
+            Err(refusal) => {
+                tracing::debug!(
+                    %refusal,
+                    "Wasmtime refused stack switching, so the backend does not declare it"
+                );
                 config.wasm_stack_switching(false);
                 let engine = wasmtime::Engine::new(&config).map_err(errors::backend)?;
                 (engine, capabilities)

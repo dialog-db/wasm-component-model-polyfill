@@ -14,6 +14,8 @@ repository.workspace = true
 # The error a host function returns, which the backend carries back to the
 # host unchanged.
 anyhow = { workspace = true }
+# The report of a setting Wasmtime refused, which the backend turns off.
+tracing = { workspace = true }
 wasmtime = { workspace = true }
 wcmp-wasm-core = { workspace = true }
 

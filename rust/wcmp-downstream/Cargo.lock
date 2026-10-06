@@ -1713,6 +1713,7 @@ name = "wcmp-wasm-core-wasmtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tracing",
  "wasmtime",
  "wcmp-wasm-core",
 ]
