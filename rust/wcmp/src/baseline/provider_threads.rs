@@ -2651,3 +2651,105 @@ async fn it_runs_a_stackful_callers_yielding_worker_to_its_end_under_a_provider(
         }
     }
 }
+
+/// A stackful export, `run`, whose two explicit threads leave one of
+/// them a queued resumption that goes stale.
+///
+/// Thread A notes `1`, yields, notes `2`, suspends, and notes `4`.
+/// Thread B promotes A with `thread.yield-then-promote` while A's
+/// resumption after its yield waits in the queue, then notes `3` and
+/// makes A ready. `run` starts A and then B, and yields until A has
+/// noted `4`.
+const LEAVES_A_STALE_RESUMPTION: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (core module $libc (table (export "table") 2 funcref))
+      (core instance $libc (instantiate $libc))
+      (alias core export $libc "table" (core table $table))
+      (core type $start-ty (func (param i32)))
+      (core func $note (canon lower (func $note)))
+      (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+      (core func $resume-later (canon thread.resume-later))
+      (core func $yield (canon thread.yield))
+      (core func $suspend (canon thread.suspend))
+      (core func $yield-then-promote (canon thread.yield-then-promote))
+      (core func $task-return (canon task.return))
+      (core module $m
+        (import "" "note" (func $note (param i32)))
+        (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+        (import "" "thread.resume-later" (func $resume-later (param i32)))
+        (import "" "thread.yield" (func $yield (result i32)))
+        (import "" "thread.suspend" (func $suspend (result i32)))
+        (import "" "thread.yield-then-promote" (func $yield-then-promote (param i32) (result i32)))
+        (import "" "task.return" (func $task-return))
+        (import "libc" "table" (table 2 funcref))
+        (global $a (mut i32) (i32.const 0))
+        (global $done (mut i32) (i32.const 0))
+        (func $a (param i32)
+          (call $note (i32.const 1))
+          (drop (call $yield))
+          (call $note (i32.const 2))
+          (drop (call $suspend))
+          (call $note (i32.const 4))
+          (global.set $done (i32.const 1)))
+        (func $b (param i32)
+          (drop (call $yield-then-promote (global.get $a)))
+          (call $note (i32.const 3))
+          (call $resume-later (global.get $a)))
+        (elem (table 0) (i32.const 0) func $a $b)
+        (func (export "run")
+          (global.set $a (call $new-indirect (i32.const 0) (i32.const 0)))
+          (call $resume-later (global.get $a))
+          (call $resume-later (call $new-indirect (i32.const 1) (i32.const 0)))
+          (block $out
+            (loop $wait
+              (br_if $out (global.get $done))
+              (drop (call $yield))
+              (br $wait)))
+          (call $task-return)))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "note" (func $note))
+          (export "thread.new-indirect" (func $new-indirect))
+          (export "thread.resume-later" (func $resume-later))
+          (export "thread.yield" (func $yield))
+          (export "thread.suspend" (func $suspend))
+          (export "thread.yield-then-promote" (func $yield-then-promote))
+          (export "task.return" (func $task-return))))
+        (with "libc" (instance $libc))))
+      (func (export "run") async
+        (canon lift (core func $i "run") async)))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_skips_a_queued_resumption_that_a_switch_made_stale_before_it_ran() {
+    // A yields, which queues its resumption after the yield. Before
+    // that resumption runs, B's promote switches to A, which goes on
+    // from its yield and suspends again. The queued resumption names
+    // the suspension A has left, so the store skips it when it runs,
+    // and A stays suspended until B makes it ready, after B noted `3`.
+    // A resumption that did run would find A's shim still suspended,
+    // and A would suspend again, so the guest cannot tell the skip
+    // from such a resumption: what the test pins is that the stale
+    // resumption lets A go no further.
+    for engine in [engine(true), suspending_engine()] {
+        if !has_provider(&engine) {
+            continue;
+        }
+        let notes: Notes = Arc::default();
+        let linker = noting(&engine, &notes);
+        let (mut store, instance) = instantiate(&engine, &linker, LEAVES_A_STALE_RESUMPTION).await;
+        func(&instance, "run")
+            .call(&mut store, &[])
+            .await
+            .expect("`run` returns once A has ended");
+        assert_eq!(
+            notes.lock().expect("notes").clone(),
+            vec![1, 2, 3, 4],
+            "under {:?}",
+            engine.suspend_provider()
+        );
+    }
+}
