@@ -318,6 +318,8 @@ pub use pending_block::PendingBlock;
 pub use plan::Plan;
 pub use poll_scope::PollScope;
 pub use readiness::Readiness;
+#[cfg(test)]
+pub use scheduler::SPIN_BUDGET;
 pub use scheduler::Scheduler;
 pub use scheduler_state::SchedulerState;
 pub use scope::Scope;

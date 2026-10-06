@@ -326,12 +326,13 @@ pub struct Scheduler<T: 'static> {
 /// store that does nothing of its own before it decides the
 /// suspension can never be served.
 ///
-/// Two shapes reach it, and they are one shape: a thread that gives
-/// way again and again against a store that holds nothing, and a
-/// block whose turns keep re-running one yielded item. Both are a
-/// callee only a caller further down the stack can release, which
-/// on a target with no stack switch is a caller the store cannot
-/// reach.
+/// Three shapes reach it, and they are one shape: a thread that gives
+/// way again and again against a store that holds nothing, a block
+/// whose turns keep re-running one yielded item, and a thread that a
+/// stackful caller's yield started and that yields while that caller
+/// is ready below it. Each is a thread only a frame further down the
+/// stack can release or follow, which on a target with no stack
+/// switch is a frame the store cannot reach.
 ///
 /// The number is a budget, not a proof. Nothing short of running
 /// the guest to its end tells a loop that gives way this many times

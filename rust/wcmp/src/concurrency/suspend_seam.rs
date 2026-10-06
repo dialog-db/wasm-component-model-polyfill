@@ -203,13 +203,18 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///   that could release it is a guest frame on the real stack that
 ///   the store cannot reach and only a stack switch could resume.
 ///   The failure starts the count over, since it ends the run.
-///   Two shapes reach the budget and they are one shape. A callee
+///   Three shapes reach the budget and they are one shape. A callee
 ///   that spin-waits in its event loop until its caller unblocks it
 ///   gives way, is re-queued, runs again and gives way again, and
 ///   the caller's block runs it every turn. A callee whose core
 ///   function calls `thread.yield` in a loop against a store that
 ///   holds nothing asks the seam over and over for what it was
-///   refused the time before. Two corpus directives depend on the
+///   refused the time before. A thread that a stackful caller's yield
+///   started, and that yields while that caller is ready below it, is
+///   the same: each of its yields finds only the caller, which no
+///   nested turn can reach, so with no provider it fails once its
+///   yields pass the budget, however few the caller's own yields
+///   are. Two corpus directives depend on the
 ///   budget, and without it both run for ever rather than failing.
 ///   The bound is a budget and not a proof: a yielder that
 ///   converges after more than [`SPIN_BUDGET`] turns of its own

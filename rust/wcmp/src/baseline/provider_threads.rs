@@ -32,11 +32,12 @@ use core::task::{Context, Poll, Waker};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::concurrency::SPIN_BUDGET;
 use crate::concurrency::StoreProvider;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker, Store,
-    SuspendProviderKind, Val,
+    Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker,
+    SchedulerCause, Store, SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -2187,5 +2188,204 @@ async fn it_resumes_no_thread_that_yielded_before_a_trap_in_a_later_driver_of_th
             "no driver of the poisoned store resumed the export's thread, under {:?}",
             engine.suspend_provider()
         );
+    }
+}
+
+/// A stackful caller, `run`, that starts a call of a second
+/// component's `work` asynchronously, yields `yields` times, and then
+/// waits for the call and returns what it returned.
+///
+/// `work` starts a worker thread and returns. The worker yields
+/// `rounds` times, noting the round after each yield, and then returns
+/// `rounds` for the task.
+const STACKFUL_CALLER_OF_A_YIELDING_WORKER: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (component $library
+        (import "note" (func $note (param "step" u32)))
+        (core module $libc (table (export "table") 1 funcref))
+        (core instance $libc (instantiate $libc))
+        (alias core export $libc "table" (core table $table))
+        (core type $start-ty (func (param i32)))
+        (core func $note (canon lower (func $note)))
+        (core func $yield (canon thread.yield))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+        (core func $resume-later (canon thread.resume-later))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+          (import "" "thread.resume-later" (func $resume-later (param i32)))
+          (import "libc" "table" (table 1 funcref))
+          (func $worker (param $rounds i32)
+            (local $made i32)
+            (block $done
+              (loop $more
+                (br_if $done (i32.ge_u (local.get $made) (local.get $rounds)))
+                (drop (call $yield))
+                (call $note (local.get $made))
+                (local.set $made (i32.add (local.get $made) (i32.const 1)))
+                (br $more)))
+            (call $task-return (local.get $rounds)))
+          (elem (table 0) (i32.const 0) func $worker)
+          (func (export "work") (param $rounds i32)
+            (call $resume-later (call $new-indirect (i32.const 0) (local.get $rounds)))))
+        (core instance $m (instantiate $m
+          (with "" (instance
+            (export "note" (func $note))
+            (export "thread.yield" (func $yield))
+            (export "task.return" (func $task-return))
+            (export "thread.new-indirect" (func $new-indirect))
+            (export "thread.resume-later" (func $resume-later))))
+          (with "libc" (instance $libc))))
+        (func (export "work") async (param "rounds" u32) (result u32)
+          (canon lift (core func $m "work") async)))
+      (component $caller
+        (import "work" (func $work async (param "rounds" u32) (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $work (canon lower (func $work) async (memory (core memory $libc "mem"))))
+        (core func $yield (canon thread.yield))
+        (core func $new (canon waitable-set.new))
+        (core func $join (canon waitable.join))
+        (core func $wait (canon waitable-set.wait (memory (core memory $libc "mem"))))
+        (core func $set-drop (canon waitable-set.drop))
+        (core func $subtask-drop (canon subtask.drop))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "mem" (memory 1))
+          (import "" "work" (func $work (param i32 i32) (result i32)))
+          (import "" "thread.yield" (func $yield (result i32)))
+          (import "" "waitable-set.new" (func $new (result i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (import "" "waitable-set.wait" (func $wait (param i32 i32) (result i32)))
+          (import "" "waitable-set.drop" (func $set-drop (param i32)))
+          (import "" "subtask.drop" (func $subtask-drop (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (func (export "run") (param $rounds i32) (param $yields i32)
+            (local $status i32) (local $subtask i32) (local $set i32) (local $yielded i32)
+            (local.set $status (call $work (local.get $rounds) (i32.const 0)))
+            (block $done
+              (loop $more
+                (br_if $done (i32.ge_u (local.get $yielded) (local.get $yields)))
+                (drop (call $yield))
+                (local.set $yielded (i32.add (local.get $yielded) (i32.const 1)))
+                (br $more)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 15)) (i32.const 2))
+              (then
+                (local.set $subtask (i32.shr_u (local.get $status) (i32.const 4)))
+                (local.set $set (call $new))
+                (call $join (local.get $subtask) (local.get $set))
+                (drop (call $wait (local.get $set) (i32.const 16)))
+                (call $join (local.get $subtask) (i32.const 0))
+                (call $subtask-drop (local.get $subtask))
+                (call $set-drop (local.get $set))))
+            (call $task-return (i32.load (i32.const 0)))))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "mem" (memory $libc "mem"))
+          (export "work" (func $work))
+          (export "thread.yield" (func $yield))
+          (export "waitable-set.new" (func $new))
+          (export "waitable.join" (func $join))
+          (export "waitable-set.wait" (func $wait))
+          (export "waitable-set.drop" (func $set-drop))
+          (export "subtask.drop" (func $subtask-drop))
+          (export "task.return" (func $task-return))))))
+        (func (export "run") async (param "rounds" u32) (param "yields" u32) (result u32)
+          (canon lift (core func $i "run") async)))
+      (instance $a (instantiate $library (with "note" (func $note))))
+      (instance $b (instantiate $caller (with "work" (func $a "work"))))
+      (export "run" (func $b "run")))
+    "#
+);
+
+/// Run [`STACKFUL_CALLER_OF_A_YIELDING_WORKER`] in a fresh store of
+/// `engine` with `rounds` and `yields`, answering what the call
+/// answered and how many rounds the worker noted.
+async fn run_yielding_worker(
+    engine: &Engine,
+    rounds: u32,
+    yields: u32,
+) -> (Result<u32, Error>, usize) {
+    let notes: Notes = Arc::default();
+    let linker = noting(engine, &notes);
+    let (mut store, instance) =
+        instantiate(engine, &linker, STACKFUL_CALLER_OF_A_YIELDING_WORKER).await;
+    let answered = func(&instance, "run")
+        .call(&mut store, &[Val::U32(rounds), Val::U32(yields)])
+        .await
+        .map(|values| match values.first() {
+            Some(Val::U32(value)) => *value,
+            other => panic!("`run` answers a u32, got {other:?}"),
+        });
+    let noted = notes.lock().expect("notes").len();
+    (answered, noted)
+}
+
+#[wcmp_macros::test]
+async fn it_runs_a_worker_that_yields_within_the_budget_under_a_stackful_caller_without_a_provider()
+{
+    // With no provider the caller's first yield runs the worker in a
+    // nested turn above it, and each of the worker's yields runs a
+    // nested turn that finds nothing to do: the caller is ready, but
+    // it is a frame below. A worker that ends within the budget still
+    // returns to the caller, which goes on.
+    let (answered, noted) = run_yielding_worker(&engine(false), 8, 3).await;
+    assert_eq!(answered.expect("the call returns"), 8);
+    assert_eq!(noted, 8, "the worker noted every round");
+}
+
+#[wcmp_macros::test]
+async fn it_fails_a_stackful_callers_worker_that_yields_past_the_budget_with_the_stack_switch_cause_without_a_provider()
+ {
+    // The worker's yields find nothing to run but its caller, which a
+    // nested turn cannot reach: only a stack switch could resume it.
+    // That is the spin the seam's budget bounds, so the yield past it
+    // fails with the stack-switch cause, whatever the caller's own
+    // yield count, rather than with a failure of the substrate.
+    for yields in [3, 200] {
+        let (answered, noted) = run_yielding_worker(&engine(false), 1000, yields).await;
+        let err = answered.expect_err("the worker's yields pass the budget");
+        assert!(
+            matches!(err, Error::Scheduler(SchedulerCause::StackSwitchNeeded)),
+            "with {yields} caller yields the call fails with the stack-switch cause, \
+             got {err:?}"
+        );
+        assert!(
+            !chain(&err).contains("instantiation"),
+            "the failure is no instantiation failure: {}",
+            chain(&err)
+        );
+        assert_eq!(
+            noted,
+            1 + SPIN_BUDGET as usize,
+            "the first yield's turn ran the caller's start, and the budget's worth \
+             of yields after it ran nothing"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_runs_a_stackful_callers_yielding_worker_to_its_end_under_a_provider() {
+    // Under a provider the caller suspends as it yields, so the store
+    // can resume it between the worker's yields, and neither side's
+    // yields are spin: the worker runs all its rounds.
+    for engine in [engine(true), suspending_engine()] {
+        if !has_provider(&engine) {
+            continue;
+        }
+        for yields in [3, 200] {
+            let (answered, noted) = run_yielding_worker(&engine, 1000, yields).await;
+            assert_eq!(
+                answered.expect("the call returns"),
+                1000,
+                "with {yields} caller yields under {:?}",
+                engine.suspend_provider()
+            );
+            assert_eq!(noted, 1000, "the worker noted every round");
+        }
     }
 }
