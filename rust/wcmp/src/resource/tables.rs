@@ -245,6 +245,22 @@ impl HandleTables {
         self.tasks.cut_scopes(base);
     }
 
+    /// Take every scope above the first `base` off the stack and give
+    /// back what was lent to each, but keep their records: the scopes of
+    /// work a poisoned store lets go of. No guest code of the store runs
+    /// again to read a task or subtask record, and they stay until the
+    /// store drops, as every record of a poisoned store does. A lend left
+    /// standing would keep the host from releasing a handle of its own,
+    /// which still works in a poisoned store.
+    pub fn release_scopes_above(&mut self, base: usize) {
+        while self.tasks.scopes().len() > base {
+            if let Some(top) = self.tasks.pop_scope() {
+                self.undo_lends(top);
+            }
+        }
+        self.tasks.cut_scopes(base);
+    }
+
     /// End the innermost task on the stack on its success path, for
     /// the one caller that cannot name the task it pushed: an
     /// adapter's enter and exit intrinsics are two separate calls
@@ -929,6 +945,10 @@ impl HandleTables {
     /// dynamic `ResourceAny` borrow asks of the host. It goes with the
     /// call instead: it joins the scope's lenders, and the scope's end
     /// removes it, so a copy the host keeps past the call is refused.
+    /// A guest the host lowered the borrow into during the call can
+    /// still hold its rep after that, through a call that outlives the
+    /// one that lent it, as with Wasmtime's host borrow: the lower makes
+    /// no lend of its own to hold the owning entry.
     pub fn insert_host_borrow(
         &mut self,
         scope: Option<Scope>,

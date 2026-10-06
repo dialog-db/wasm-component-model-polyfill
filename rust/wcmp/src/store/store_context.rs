@@ -2067,7 +2067,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// poisoned, without starting or resuming a thread: a start a frame
     /// left, the thread named to run next, the switchers to take back,
     /// and every plan, with the marks each plan's trampoline put on the
-    /// stack and the scopes of the plans the store runs. The threads
+    /// stack and the scopes of the plans the store runs, whose lends go
+    /// back and whose records stay. The threads
     /// stay where they are, suspended in the provider, until the store
     /// drops, and so does a thread whose start never ran. Nothing is
     /// left that keeps the store busy, so a later driver consults its
@@ -2092,7 +2093,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.scheduler_mut().take_next_thread();
         while self.scheduler_mut().pop_switcher_above(0).is_some() {}
         if let Some(outermost) = plans.first() {
-            self.lock_tables()?.tasks.cut_scopes(outermost.base);
+            self.lock_tables()?.release_scopes_above(outermost.base);
         }
         for plan in stopped.into_iter().chain(plans) {
             if let Some(parked) = plan
