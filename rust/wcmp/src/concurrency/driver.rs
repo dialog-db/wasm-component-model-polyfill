@@ -92,7 +92,7 @@ where
     if store.internal().turn_in_flight() {
         return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
     }
-    let mut yield_wake: Option<YieldWake> = None;
+    let mut yield_wake = YieldWake::new();
     loop {
         let step =
             poll_fn(|context| poll_turns(&mut store, &mut condition, &mut yield_wake, context))
@@ -109,7 +109,7 @@ where
 fn poll_turns<T: 'static, C, R>(
     store: &mut StoreContext<'_, T>,
     condition: &mut C,
-    yield_wake: &mut Option<YieldWake>,
+    yield_wake: &mut YieldWake,
     context: &mut Context<'_>,
 ) -> Poll<Step<R>>
 where
@@ -121,12 +121,9 @@ where
     // executor before the item that yielded runs. Natively that
     // wake is immediate; in the browser it crosses a macrotask
     // boundary, and the driver waits here until it lands.
-    if let Some(wake) = yield_wake {
-        if !wake.landed() {
-            wake.rewake(waker);
-            return Poll::Pending;
-        }
-        *yield_wake = None;
+    if yield_wake.waiting() {
+        yield_wake.rewake(waker);
+        return Poll::Pending;
     }
 
     loop {
@@ -145,7 +142,7 @@ where
         match outcome {
             Outcome::Progress => continue,
             Outcome::Yield => {
-                *yield_wake = Some(YieldWake::after_yield(waker));
+                yield_wake.after_yield(waker);
                 return Poll::Pending;
             }
             Outcome::Resuming => return Poll::Ready(Step::Fly),
@@ -623,10 +620,11 @@ mod tests {
     fn it_wakes_at_once_on_a_global_with_neither_a_channel_nor_a_timeout() {
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let wake = YieldWake::after_yield_on(&js_sys::Object::new(), &waker);
+        let mut wake = YieldWake::new();
+        wake.after_yield_on(&js_sys::Object::new(), &waker);
 
         assert!(!wake.posted(), "there was no channel to post to");
-        assert!(wake.landed(), "the wake landed at once");
+        assert!(!wake.waiting(), "the wake landed at once");
         assert_eq!(wakes.count(), 1, "and woke the driver, as natively");
     }
 
@@ -645,19 +643,21 @@ mod tests {
             .expect("a fake channel constructor");
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let wake = YieldWake::after_yield_on(&global, &waker);
+        let mut wake = YieldWake::new();
+        wake.after_yield_on(&global, &waker);
 
         assert!(!wake.posted(), "a channel with no ports was not posted to");
-        assert!(wake.landed());
+        assert!(!wake.waiting());
         assert_eq!(wakes.count(), 1);
     }
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen_test::wasm_bindgen_test]
-    async fn it_runs_nothing_for_a_wake_dropped_before_its_message_arrived() {
+    async fn it_runs_nothing_for_a_driver_wake_dropped_before_its_message_arrived() {
         let wakes = Arc::new(Wakes::default());
         let waker = Waker::from(wakes.clone());
-        let wake = YieldWake::after_yield(&waker);
+        let mut wake = YieldWake::new();
+        wake.after_yield(&waker);
         assert!(wake.posted(), "the page has a MessageChannel");
         drop(wake);
 

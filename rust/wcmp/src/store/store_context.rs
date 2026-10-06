@@ -3159,7 +3159,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let mut store = self;
         let accessor = Accessor::new(store.id());
         let mut future = core::pin::pin!(body(&accessor));
-        let mut yield_wake: Option<YieldWake> = None;
+        let mut yield_wake = YieldWake::new();
 
         loop {
             let step = core::future::poll_fn(|context| {
@@ -3167,12 +3167,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
 
                 // A turn that ended in a yield returns control to the
                 // host executor before the item that yielded runs.
-                if let Some(wake) = &yield_wake {
-                    if !wake.landed() {
-                        wake.rewake(waker);
-                        return Poll::Pending;
-                    }
-                    yield_wake = None;
+                if yield_wake.waiting() {
+                    yield_wake.rewake(waker);
+                    return Poll::Pending;
                 }
 
                 loop {
@@ -3190,7 +3187,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     match outcome {
                         Outcome::Progress => continue,
                         Outcome::Yield => {
-                            yield_wake = Some(YieldWake::after_yield(waker));
+                            yield_wake.after_yield(waker);
                             return Poll::Pending;
                         }
                         // The turn left the store a flight, which the

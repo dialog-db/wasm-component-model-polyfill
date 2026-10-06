@@ -44,41 +44,54 @@
 //! the guest's next item or after it. Chrome serves a timeout of
 //! zero queued just before a yield before the guest's next item.
 //!
-//! The channel belongs to one wake and goes with it: a wake that
-//! drops before its message arrives, because the driver that
-//! arranged it dropped, takes its handler off the port and closes
-//! the channel, so nothing runs for it afterwards and nothing leaks.
-//! A wake whose message is posted but never delivered leaves the
-//! driver pending until something else wakes it. No browser loses a
-//! message posted to an open port, so the wake arms no timer to watch
-//! for it, which would cost a timer per yield.
+//! The channel belongs to one driver, which makes it at its first
+//! yield and posts every later wake through it: a driver has at most
+//! one wake on its way, so one port and one flag serve them all.
+//! Building and closing a channel costs Chrome about 8 µs, and the
+//! `yields` benchmark measured a yield at 16 µs end to end with a
+//! channel per wake and at 7 µs with one per driver, so the driver
+//! keeps it. A channel per store would also save the build of each
+//! later driver's channel, but several drivers of one store can each
+//! have a wake on its way at once, so it would need a queue of them;
+//! the channel per driver needs none, and is the one taken.
+//! A driver that drops before its message arrives takes the handler
+//! off the port and closes the channel, so nothing runs for it
+//! afterwards and nothing leaks. A wake whose message is posted but
+//! never delivered leaves the driver pending until something else
+//! wakes it. No browser loses a message posted to an open port, so
+//! the wake arms no timer to watch for it, which would cost a timer
+//! per yield.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use core::task::Waker;
 
-    /// The wake a driver arranges when a turn ends in a yield.
+    /// The wake a driver arranges each time a turn ends in a yield.
     ///
     /// Natively the wake is immediate: the driver wakes itself and
     /// returns pending, so the executor polls it again after it has
     /// run whatever else is ready. There is nothing to wait for
-    /// afterwards, so the wake has always landed.
+    /// afterwards, so no wake is ever on its way.
     pub struct YieldWake {
         _private: (),
     }
 
     impl YieldWake {
-        /// Arrange the wake that returns control to the host
-        /// executor after a yield.
-        pub fn after_yield(waker: &Waker) -> Self {
-            waker.wake_by_ref();
+        /// The wake of a driver that has not yielded yet.
+        pub fn new() -> Self {
             Self { _private: () }
         }
 
-        /// Whether the wake has landed and the driver may run the
-        /// item that yielded.
-        pub fn landed(&self) -> bool {
-            true
+        /// Arrange the wake that returns control to the host
+        /// executor after a yield.
+        pub fn after_yield(&mut self, waker: &Waker) {
+            waker.wake_by_ref();
+        }
+
+        /// Whether a wake is on its way, so that the driver may not
+        /// run the item that yielded yet.
+        pub fn waiting(&self) -> bool {
+            false
         }
 
         /// Wake `waker` rather than the waker the wake was arranged
@@ -96,25 +109,34 @@ mod imp {
     use wasm_bindgen::closure::Closure;
     use wasm_bindgen::{JsCast, JsValue};
 
-    /// The wake a driver arranges when a turn ends in a yield.
+    /// The wake a driver arranges each time a turn ends in a yield.
     ///
     /// In the browser the wake crosses a macrotask boundary: the
     /// driver posts a message to a port of its own and returns
     /// pending, so the guest's next item runs in a later task. The
-    /// flag says whether that message has arrived.
+    /// flag says whether the message of the last wake has arrived.
     pub struct YieldWake {
         landed: Rc<Cell<bool>>,
         waker: Rc<RefCell<Waker>>,
-        /// The channel the message crosses, while the wake lives.
+        /// The driver's channel, from its first wake that posts.
         channel: Option<Channel>,
     }
 
-    /// The two ports of a wake's own `MessageChannel` and the handler
-    /// the receiving port runs.
+    /// The two ports of a driver's own `MessageChannel`, the handler
+    /// the receiving port runs, and the sending port's `postMessage`.
     struct Channel {
         receiver: JsValue,
         sender: JsValue,
+        post: js_sys::Function,
         handler: Closure<dyn FnMut()>,
+    }
+
+    impl Channel {
+        /// Post one message through the channel, answering whether
+        /// the post was made.
+        fn post(&self) -> bool {
+            self.post.call1(&self.sender, &JsValue::UNDEFINED).is_ok()
+        }
     }
 
     impl Drop for Channel {
@@ -136,39 +158,50 @@ mod imp {
     }
 
     impl YieldWake {
+        /// The wake of a driver that has not yielded yet.
+        pub fn new() -> Self {
+            Self {
+                landed: Rc::new(Cell::new(true)),
+                waker: Rc::new(RefCell::new(Waker::noop().clone())),
+                channel: None,
+            }
+        }
+
         /// Arrange the wake that returns control to the host
         /// executor after a yield.
-        pub fn after_yield(waker: &Waker) -> Self {
-            Self::after_yield_on(&js_sys::global(), waker)
+        pub fn after_yield(&mut self, waker: &Waker) {
+            self.after_yield_on(&js_sys::global(), waker);
         }
 
         /// Arrange the wake through the `MessageChannel` or the
         /// `setTimeout` of `global`. A global with neither wakes
         /// `waker` at once, as the native target does, rather than
-        /// stall the driver.
-        pub fn after_yield_on(global: &JsValue, waker: &Waker) -> Self {
-            let landed = Rc::new(Cell::new(false));
-            let wakes = Rc::new(RefCell::new(waker.clone()));
-            let channel = post_message(global, &landed, &wakes);
-            if channel.is_none() && !schedule_timeout(global, &landed, &wakes) {
-                landed.set(true);
+        /// stall the driver. A channel whose post fails is given up,
+        /// and the wake falls back as it would with none.
+        pub fn after_yield_on(&mut self, global: &JsValue, waker: &Waker) {
+            self.landed.set(false);
+            *self.waker.borrow_mut() = waker.clone();
+            if self.channel.is_none() {
+                self.channel = open_channel(global, &self.landed, &self.waker);
+            }
+            if self.channel.as_ref().is_some_and(Channel::post) {
+                return;
+            }
+            self.channel = None;
+            if !schedule_timeout(global, &self.landed, &self.waker) {
+                self.landed.set(true);
                 waker.wake_by_ref();
             }
-            Self {
-                landed,
-                waker: wakes,
-                channel,
-            }
         }
 
-        /// Whether the wake has landed and the driver may run the
-        /// item that yielded.
-        pub fn landed(&self) -> bool {
-            self.landed.get()
+        /// Whether a wake is on its way, so that the driver may not
+        /// run the item that yielded yet.
+        pub fn waiting(&self) -> bool {
+            !self.landed.get()
         }
 
-        /// Whether the wake crosses a channel of its own, rather than
-        /// a timeout or nothing.
+        /// Whether the driver's wakes cross a channel of its own,
+        /// rather than a timeout or nothing.
         #[cfg(test)]
         pub fn posted(&self) -> bool {
             self.channel.is_some()
@@ -184,13 +217,11 @@ mod imp {
         }
     }
 
-    /// Post a message to one end of a fresh `MessageChannel` of
-    /// `global`, whose other end sets `landed` and wakes `waker` when
-    /// the message arrives, and answer the channel. `None` when the
-    /// global offers no `MessageChannel`, when building one from it
-    /// did not work, or when the post failed: the channel and its
-    /// handler drop then, and leave nothing behind.
-    fn post_message(
+    /// A fresh `MessageChannel` of `global`, whose receiving port sets
+    /// `landed` and wakes `waker` each time a message arrives. `None`
+    /// when the global offers no `MessageChannel`, or when building one
+    /// from it did not work.
+    fn open_channel(
         global: &JsValue,
         landed: &Rc<Cell<bool>>,
         waker: &Rc<RefCell<Waker>>,
@@ -210,6 +241,7 @@ mod imp {
         let channel = Channel {
             receiver,
             sender,
+            post,
             handler,
         };
         // Assigning the handler is what starts the receiving port.
@@ -220,7 +252,6 @@ mod imp {
         )
         .ok()
         .filter(|set| *set)?;
-        post.call1(&channel.sender, &JsValue::UNDEFINED).ok()?;
         Some(channel)
     }
 
@@ -257,3 +288,9 @@ mod imp {
 }
 
 pub use imp::YieldWake;
+
+impl Default for YieldWake {
+    fn default() -> Self {
+        Self::new()
+    }
+}
