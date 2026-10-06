@@ -1183,7 +1183,7 @@
           in
           pkgs.runCommand "wcmp-retired-runtime-layer-check" { } ''
             cd ${manifests}
-            if grep -rnE '^[[:space:]]*\[\[?(patch|replace)\b|^[[:space:]]*(patch|replace)\.|wasm[_-]runtime[_-]layer' .; then
+            if grep -rnE '^[[:space:]]*\[\[?(patch|replace)\b|^[[:space:]]*(patch|replace)\.|\b(js_)?wasm(time|i)?[_-]runtime[_-]layer\b' .; then
               echo "A manifest, lock, or Cargo configuration above patches a dependency" >&2
               echo "or names a retired runtime-layer crate." >&2
               exit 1
