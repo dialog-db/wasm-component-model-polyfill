@@ -99,11 +99,12 @@ impl Report {
         let _ = writeln!(out, "backend: {}", self.backend);
         let _ = writeln!(
             out,
-            "plan: warm-up {} iterations, {} samples, {} ms per sample, batch at most {}",
+            "plan: warm-up {} iterations, {} samples, {} ms per sample, batch at most {}, provider {}",
             self.plan.warmup_iterations,
             self.plan.samples,
             self.plan.target_sample_ms,
-            self.plan.max_batch
+            self.plan.max_batch,
+            if self.plan.provider { "on" } else { "off" }
         );
         out.push('\n');
         for cells in &rows {

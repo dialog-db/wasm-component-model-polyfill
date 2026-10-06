@@ -34,6 +34,10 @@ pub struct Plan {
     /// The ceiling on a batch, so that a benchmark whose iteration is
     /// far below the clock's resolution still ends.
     pub max_batch: u64,
+    /// Whether the engine may select a suspend provider, as it does by
+    /// default. `provider=off` measures the store with none, where a
+    /// blocking built-in waits in a nested turn.
+    pub provider: bool,
 }
 
 impl Default for Plan {
@@ -43,13 +47,14 @@ impl Default for Plan {
             samples: 25,
             target_sample_ms: 5.0,
             max_batch: 100_000,
+            provider: true,
         }
     }
 }
 
 impl Plan {
     /// The control names an override may set, for an error message.
-    const KEYS: &'static str = "warmup, samples, target-sample-ms, max-batch";
+    const KEYS: &'static str = "warmup, samples, target-sample-ms, max-batch, provider";
 
     /// Apply `key=value` overrides to this plan.
     ///
@@ -77,6 +82,17 @@ impl Plan {
                 "samples" => self.samples = parse(key, value)?,
                 "target-sample-ms" => self.target_sample_ms = parse(key, value)?,
                 "max-batch" => self.max_batch = parse(key, value)?,
+                "provider" => {
+                    self.provider = match value {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(Error::Setup(format!(
+                                "`{value}` is not a value for `provider` (`on` or `off`)"
+                            )));
+                        }
+                    };
+                }
                 other => {
                     return Err(Error::Setup(format!(
                         "`{other}` is not a run control (one of {})",
@@ -111,8 +127,12 @@ impl Plan {
     /// The plan as JSON, for the report.
     pub fn json(&self) -> String {
         format!(
-            "{{\"warmup_iterations\":{},\"samples\":{},\"target_sample_ms\":{},\"max_batch\":{}}}",
-            self.warmup_iterations, self.samples, self.target_sample_ms, self.max_batch
+            "{{\"warmup_iterations\":{},\"samples\":{},\"target_sample_ms\":{},\"max_batch\":{},\"provider\":{}}}",
+            self.warmup_iterations,
+            self.samples,
+            self.target_sample_ms,
+            self.max_batch,
+            self.provider
         )
     }
 }
@@ -181,5 +201,19 @@ mod tests {
                 .expect_err("the value is out of range");
             assert!(error.to_string().contains("must be"), "{control}: {error}");
         }
+    }
+
+    #[wcmp_macros::test]
+    fn it_turns_the_suspend_provider_off_with_a_run_control() {
+        assert!(Plan::default().provider, "the provider is on by default");
+        let plan = Plan::default()
+            .with_overrides(["provider=off"])
+            .expect("the control parses");
+        assert!(!plan.provider);
+        assert!(plan.json().contains("\"provider\":false"));
+        assert!(
+            Plan::default().with_overrides(["provider=maybe"]).is_err(),
+            "only `on` and `off` are values"
+        );
     }
 }

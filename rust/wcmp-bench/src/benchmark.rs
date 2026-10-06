@@ -117,6 +117,7 @@ mod tests {
             samples: 3,
             target_sample_ms: 0.0000001,
             max_batch: 8,
+            provider: true,
         }
     }
 

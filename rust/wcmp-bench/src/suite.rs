@@ -16,7 +16,9 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
-use wcmp::{Accessor, Component, Engine, Func, Instance, Linker, Store, Val, ValField};
+use wcmp::{
+    Accessor, Component, Engine, EngineConfig, Func, Instance, Linker, Store, Val, ValField,
+};
 
 use crate::benchmark::Benchmark;
 use crate::error::{Error, Result};
@@ -82,7 +84,7 @@ pub fn backend() -> Result<&'static str> {
 /// Wasmtime or Wasmi natively, as [`backend`] answers, and the
 /// browser's own engine in a browser.
 #[cfg(not(target_arch = "wasm32"))]
-fn engine() -> Result<Engine> {
+fn backend_engine() -> Result<Engine> {
     if backend()? == "wasmi" {
         return Ok(Engine::with_backend(wcmp_wasm_core_wasmi::Wasmi::new())?);
     }
@@ -95,8 +97,20 @@ fn engine() -> Result<Engine> {
 /// Wasmtime or Wasmi natively, as [`backend`] answers, and the
 /// browser's own engine in a browser.
 #[cfg(target_arch = "wasm32")]
-fn engine() -> Result<Engine> {
+fn backend_engine() -> Result<Engine> {
     Ok(Engine::with_backend(wcmp_wasm_core_web::Web::new())?)
+}
+
+/// An engine over the backend the suite measures on this run, with the
+/// suspend provider turned off where `run`'s plan says `provider=off`.
+fn engine(run: &Run) -> Result<Engine> {
+    let engine = backend_engine()?;
+    if run.plan().provider {
+        return Ok(engine);
+    }
+    let mut config = EngineConfig::new();
+    config.suspend_provider(false);
+    Ok(engine.with_config(&config)?)
 }
 
 /// Instantiate `bytes` into a store of its own, and hand back the
@@ -105,8 +119,8 @@ fn engine() -> Result<Engine> {
 /// Every benchmark calls this before its loop, so building a guest is
 /// never part of a sample — except in `component-new`, where parsing
 /// one is the thing measured.
-async fn instantiate(bytes: &[u8]) -> Result<(Engine, Store<()>, Instance)> {
-    let engine = engine()?;
+async fn instantiate(run: &Run, bytes: &[u8]) -> Result<(Engine, Store<()>, Instance)> {
+    let engine = engine(run)?;
     let component = Component::new(&engine, bytes).await?;
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ())?;
@@ -126,7 +140,7 @@ fn export(instance: &Instance, name: &str) -> Result<Func> {
     payload = "one u32 in and one u32 out, as `Val`: the floor, with no memory traffic under it"
 )]
 async fn u32_call(run: &mut Run) -> Result<()> {
-    let (_engine, mut store, instance) = instantiate(guests::GUEST).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::GUEST).await?;
     let double = export(&instance, "double")?;
     let arguments = [Val::U32(21)];
     while run.iterate() {
@@ -140,7 +154,7 @@ async fn u32_call(run: &mut Run) -> Result<()> {
     payload = "the same u32 in and out through `TypedFunc`, which is the floor without the untyped `Val` path's allocation"
 )]
 async fn u32_call_typed(run: &mut Run) -> Result<()> {
-    let (_engine, mut store, instance) = instantiate(guests::GUEST).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::GUEST).await?;
     let double = export(&instance, "double")?.typed::<(u32,), u32>()?;
     while run.iterate() {
         double.call(&mut store, (21,)).await?;
@@ -155,7 +169,7 @@ async fn u32_call_typed(run: &mut Run) -> Result<()> {
 )]
 async fn string_roundtrip(run: &mut Run) -> Result<()> {
     let size = usize::try_from(run.case().number()).unwrap_or(usize::MAX);
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-string")?;
     let arguments = [Val::String("a".repeat(size))];
     run.moves_bytes(run.case().number());
@@ -172,7 +186,7 @@ async fn string_roundtrip(run: &mut Run) -> Result<()> {
 )]
 async fn string_roundtrip_typed(run: &mut Run) -> Result<()> {
     let size = usize::try_from(run.case().number()).unwrap_or(usize::MAX);
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-string")?.typed::<(String,), String>()?;
     let payload = "a".repeat(size);
     run.moves_bytes(run.case().number());
@@ -189,7 +203,7 @@ async fn string_roundtrip_typed(run: &mut Run) -> Result<()> {
 )]
 async fn list_u8_roundtrip(run: &mut Run) -> Result<()> {
     let count = run.case().number();
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-list-u8")?;
     let elements: Vec<Val> = (0..count).map(|index| Val::U8(index as u8)).collect();
     let arguments = [Val::List(elements.into_boxed_slice())];
@@ -207,7 +221,7 @@ async fn list_u8_roundtrip(run: &mut Run) -> Result<()> {
 )]
 async fn list_u8_roundtrip_typed(run: &mut Run) -> Result<()> {
     let count = run.case().number();
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-list-u8")?.typed::<(Vec<u8>,), Vec<u8>>()?;
     let payload: Vec<u8> = (0..count).map(|index| index as u8).collect();
     run.moves_bytes(count);
@@ -224,7 +238,7 @@ async fn list_u8_roundtrip_typed(run: &mut Run) -> Result<()> {
 )]
 async fn list_u32_roundtrip(run: &mut Run) -> Result<()> {
     let count = run.case().number();
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-list-u32")?;
     let elements: Vec<Val> = (0..count).map(|index| Val::U32(index as u32)).collect();
     let arguments = [Val::List(elements.into_boxed_slice())];
@@ -242,7 +256,7 @@ async fn list_u32_roundtrip(run: &mut Run) -> Result<()> {
 )]
 async fn list_record_roundtrip(run: &mut Run) -> Result<()> {
     let count = run.case().number();
-    let (_engine, mut store, instance) = instantiate(guests::ECHO).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
     let echo = export(&instance, "echo-list-point")?;
     let elements: Vec<Val> = (0..count)
         .map(|index| {
@@ -274,7 +288,7 @@ async fn list_record_roundtrip(run: &mut Run) -> Result<()> {
     payload = "one owned handle per iteration: minted by the guest, held by the host, handed back, and dropped"
 )]
 async fn resource_handle(run: &mut Run) -> Result<()> {
-    let (_engine, mut store, instance) = instantiate(guests::RESOURCE).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::RESOURCE).await?;
     let make = export(&instance, "make")?;
     let dispose = export(&instance, "dispose")?;
     let arguments = [Val::U32(7)];
@@ -299,7 +313,7 @@ async fn resource_handle(run: &mut Run) -> Result<()> {
     payload = "one u32 in and one u32 out, across two component instances instead of one"
 )]
 async fn composition_call(run: &mut Run) -> Result<()> {
-    let (_engine, mut store, instance) = instantiate(guests::COMPOSITION).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::COMPOSITION).await?;
     let call_run = export(&instance, "run")?;
     let arguments = [Val::U32(20)];
     while run.iterate() {
@@ -316,7 +330,7 @@ const YIELDS: u32 = 16;
     payload = "one call that yields 16 times, so a sample is 16 rounds through the driver's wake after a yield, which in a browser posts a message to a channel of its own each time"
 )]
 async fn yields(run: &mut Run) -> Result<()> {
-    let (_engine, mut store, instance) = instantiate(guests::YIELDS).await?;
+    let (_engine, mut store, instance) = instantiate(run, guests::YIELDS).await?;
     let spin = export(&instance, "spin")?;
     let arguments = [Val::U32(YIELDS)];
     while run.iterate() {
@@ -422,7 +436,7 @@ impl Future for RelayCall {
 async fn host_calls_in_flight(run: &mut Run) -> Result<()> {
     let calls = u32::try_from(run.case().number()).unwrap_or(u32::MAX);
     let relay = Relay::default();
-    let engine = engine()?;
+    let engine = engine(run)?;
     let component = Component::new(&engine, guests::FAN_OUT).await?;
     let mut linker: Linker<()> = Linker::new(&engine);
     let answering = relay.clone();
@@ -459,7 +473,7 @@ async fn component_new(run: &mut Run) -> Result<()> {
             )));
         }
     };
-    let engine = engine()?;
+    let engine = engine(run)?;
     run.moves_bytes(bytes.len() as u64);
     while run.iterate() {
         Component::new(&engine, bytes).await?;

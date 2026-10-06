@@ -82,6 +82,11 @@ impl Run {
         self.case
     }
 
+    /// The plan this run is measured under.
+    pub fn plan(&self) -> Plan {
+        self.plan
+    }
+
     /// State how many bytes one iteration moves across the boundary.
     ///
     /// The report carries it as `bytes_per_iteration` and derives a
@@ -238,6 +243,7 @@ mod tests {
             samples: 3,
             target_sample_ms: 0.0000001,
             max_batch: 8,
+            provider: true,
         }
     }
 
@@ -289,6 +295,7 @@ mod tests {
             samples: 1,
             target_sample_ms: 1.0,
             max_batch: 64,
+            provider: true,
         };
         let mut run = Run::new(plan, Case::None).expect("a clock");
         run.batch = 1;

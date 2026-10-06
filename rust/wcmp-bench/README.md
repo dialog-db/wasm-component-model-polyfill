@@ -41,16 +41,18 @@ $CARGO_TARGET_DIR/bench/web.json
 Each also prints a table. Run controls follow the leaf as `key=value` words, and
 mean the same thing on either target:
 
-| control            | default | what it does                               |
-| ------------------ | ------- | ------------------------------------------ |
-| `warmup`           | 16      | iterations run before anything is measured |
-| `samples`          | 25      | timed batches per benchmark                |
-| `target-sample-ms` | 5.0     | how long one timed batch should last       |
-| `max-batch`        | 100000  | the ceiling on a batch's iterations        |
+| control            | default | what it does                                  |
+| ------------------ | ------- | --------------------------------------------- |
+| `warmup`           | 16      | iterations run before anything is measured    |
+| `samples`          | 25      | timed batches per benchmark                   |
+| `target-sample-ms` | 5.0     | how long one timed batch should last          |
+| `max-batch`        | 100000  | the ceiling on a batch's iterations           |
+| `provider`         | on      | `off` turns the engine's suspend provider off |
 
 ```
 bench native samples=50 warmup=4
 bench web samples=5
+bench web provider=off
 ```
 
 `bench web` also reads `WCMP_BENCH_BUDGET_SECONDS` (900 by default) for how long
