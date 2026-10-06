@@ -199,3 +199,36 @@ pub const FAN_OUT: &[u8] = component!(
         (canon lift (core func $i "fan-out") async (callback (core func $i "cb")))))
     "#
 );
+
+/// A component whose callback export `spin` gives way `n` times
+/// before it returns: its core function and each callback answer
+/// `YIELD` until the count runs out, and the last returns through
+/// `task.return`. Each yield is one round through the store's driver,
+/// which in a browser crosses a macrotask boundary.
+pub const YIELDS: &[u8] = component!(
+    r#"
+    (component
+      (core func $task-return (canon task.return))
+      (core module $m
+        (import "" "task.return" (func $task-return))
+        (global $left (mut i32) (i32.const 0))
+        (func $step (result i32)
+          (if (result i32) (i32.eqz (global.get $left))
+            (then
+              (call $task-return)
+              (i32.const 0))
+            (else
+              (global.set $left (i32.sub (global.get $left) (i32.const 1)))
+              (i32.const 1))))
+        (func (export "spin") (param $n i32) (result i32)
+          (global.set $left (local.get $n))
+          (call $step))
+        (func (export "spin-callback") (param i32 i32 i32) (result i32)
+          (call $step)))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "task.return" (func $task-return))))))
+      (func (export "spin") async (param "n" u32)
+        (canon lift (core func $i "spin") async
+          (callback (core func $i "spin-callback")))))
+    "#
+);

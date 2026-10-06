@@ -103,6 +103,7 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 | `resource-handle`           | one owned handle minted, passed, handed back, and dropped      |
 | `composition-call`          | a call through the adapter `wac plug` wrote between two guests |
 | `host-calls-in-flight/N`    | N host calls pending at once, completing one per turn          |
+| `yields`                    | one callback call that yields 16 times through the driver      |
 | `component-new/<fixture>`   | parsing and translating a component binary                     |
 
 Every benchmark names its guest and its payload in the report's second block and

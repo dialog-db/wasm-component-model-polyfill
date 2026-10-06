@@ -39,6 +39,7 @@ pub fn benchmarks() -> Vec<Benchmark> {
         resource_handle(),
         composition_call(),
         host_calls_in_flight(),
+        yields(),
         component_new(),
     ]
     .into_iter()
@@ -303,6 +304,23 @@ async fn composition_call(run: &mut Run) -> Result<()> {
     let arguments = [Val::U32(20)];
     while run.iterate() {
         call_run.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+/// How many times one call of [`yields`] gives way.
+const YIELDS: u32 = 16;
+
+#[wcmp_macros::bench(
+    guest = "a callback export assembled from text, `spin: async func(n: u32)`, whose core function and callbacks answer `YIELD` until `n` runs out",
+    payload = "one call that yields 16 times, so a sample is 16 rounds through the driver's wake after a yield, which in a browser posts a message to a channel of its own each time"
+)]
+async fn yields(run: &mut Run) -> Result<()> {
+    let (_engine, mut store, instance) = instantiate(guests::YIELDS).await?;
+    let spin = export(&instance, "spin")?;
+    let arguments = [Val::U32(YIELDS)];
+    while run.iterate() {
+        spin.call(&mut store, &arguments).await?;
     }
     Ok(())
 }
