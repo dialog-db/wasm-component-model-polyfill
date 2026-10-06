@@ -16,8 +16,9 @@
 //!
 //! The tests here cover what no corpus file reaches from a repository
 //! test: the lazy rule of a sync-typed caller's block, and what a
-//! trap in the callee leaves behind. The four combinations of lower and lift are the corpus's own, in
-//! `wasmtime/async/fused.wast` and the files beside it.
+//! trap in the callee leaves behind. The four combinations of lower
+//! and lift are the corpus's own, in `wasmtime/async/fused.wast` and
+//! the files beside it.
 
 #![cfg(test)]
 

@@ -20,8 +20,9 @@
 //
 // `buildsAFunctionFromSource` is the same probe the browser tests of
 // `rust/wcmp/tests/baseline_content_security_policy.rs` run before and
-// after they install the policy, written the same way on purpose: both build a function from source
-// and call it, and read a throw as an enforced policy. Those two are
+// after they install the policy, written the same way on purpose: both
+// build a function from source and call it, and read a throw as an
+// enforced policy. Those two are
 // the only places the repository asks the browser that question, and an
 // answer that differed between them would make one of the two artifacts
 // measure something else. Change them together.
