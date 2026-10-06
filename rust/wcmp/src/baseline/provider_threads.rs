@@ -1823,6 +1823,268 @@ async fn it_runs_nothing_in_a_store_dropped_while_a_resumed_thread_has_yet_to_ru
     assert_eq!(notes.lock().expect("notes").clone(), vec![500, 99]);
 }
 
+/// Stackful exports that each wait on `hold` and then go on in a way
+/// that leaves a store to drop around a thread the browser resumed:
+///
+/// - `fail-after-hold` notes `1` and traps.
+/// - `hold-twice` notes `1`, waits on `hold` again, and notes `2`.
+/// - `drop-store-after-hold` calls the host's `drop-store`, notes `1`,
+///   and returns 7.
+/// - `catch-around-hold` waits inside a `try_table` that catches every
+///   exception, noting `2` if it caught one and `1` otherwise.
+#[cfg(target_arch = "wasm32")]
+const GOES_ON_AFTER_A_BLOCK: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (import "hold" (func $hold async))
+      (import "drop-store" (func $drop-store))
+      (core func $note (canon lower (func $note)))
+      (core func $hold (canon lower (func $hold)))
+      (core func $drop-store (canon lower (func $drop-store)))
+      (core func $task-return (canon task.return (result u32)))
+      (core module $m
+        (import "" "note" (func $note (param i32)))
+        (import "" "hold" (func $hold))
+        (import "" "drop-store" (func $drop-store))
+        (import "" "task.return" (func $task-return (param i32)))
+        (func (export "fail-after-hold")
+          (call $hold)
+          (call $note (i32.const 1))
+          unreachable)
+        (func (export "hold-twice")
+          (call $hold)
+          (call $note (i32.const 1))
+          (call $hold)
+          (call $note (i32.const 2))
+          (call $task-return (i32.const 7)))
+        (func (export "drop-store-after-hold")
+          (call $hold)
+          (call $drop-store)
+          (call $note (i32.const 1))
+          (call $task-return (i32.const 7)))
+        (func (export "catch-around-hold")
+          (block $caught
+            (try_table (catch_all $caught)
+              (call $hold))
+            (call $note (i32.const 1))
+            (call $task-return (i32.const 7))
+            (return))
+          (call $note (i32.const 2))
+          (call $task-return (i32.const 0))))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "note" (func $note))
+        (export "hold" (func $hold))
+        (export "drop-store" (func $drop-store))
+        (export "task.return" (func $task-return))))))
+      (func (export "fail-after-hold") async (result u32)
+        (canon lift (core func $i "fail-after-hold") async))
+      (func (export "hold-twice") async (result u32)
+        (canon lift (core func $i "hold-twice") async))
+      (func (export "drop-store-after-hold") async (result u32)
+        (canon lift (core func $i "drop-store-after-hold") async))
+      (func (export "catch-around-hold") async (result u32)
+        (canon lift (core func $i "catch-around-hold") async)))
+    "#
+);
+
+#[cfg(target_arch = "wasm32")]
+std::thread_local! {
+    /// The store a host function of the `drop-store` test drops.
+    static KEPT_STORE: core::cell::RefCell<Option<Store<NotesItsDrop>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// An engine with the host-suspension provider, the notes its stores'
+/// host data and guests make, and a linker whose `hold` resolves on its
+/// second poll and whose `drop-store` drops the store kept in
+/// [`KEPT_STORE`].
+#[cfg(target_arch = "wasm32")]
+async fn going_on_after_a_block() -> (Engine, Notes, Linker<NotesItsDrop>, Component) {
+    let engine = engine(true);
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::HostSuspension
+    );
+    let notes: Notes = Arc::default();
+    let mut linker = noting::<NotesItsDrop>(&engine, &notes);
+    linker
+        .root()
+        .func_wrap_concurrent("hold", |_accessor: &Accessor<NotesItsDrop>, (): ()| {
+            PendingOnce { polled: false }
+        })
+        .expect("the registration of `hold`");
+    linker
+        .root()
+        .func_wrap(
+            "drop-store",
+            |_: HostCall<'_, NotesItsDrop>, (): ()| -> Result<(), Error> {
+                let store = KEPT_STORE.with(|kept| kept.borrow_mut().take());
+                assert!(store.is_some(), "the test kept the store");
+                drop(store);
+                Ok(())
+            },
+        )
+        .expect("the registration of `drop-store`");
+    let component = Component::new(&engine, GOES_ON_AFTER_A_BLOCK)
+        .await
+        .expect("component parses");
+    (engine, notes, linker, component)
+}
+
+/// Let the browser run one microtask.
+#[cfg(target_arch = "wasm32")]
+async fn next_microtask() {
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(
+        &wasm_bindgen::JsValue::UNDEFINED,
+    ))
+    .await
+    .expect("a resolved promise");
+}
+
+/// Call `name` in `store` and poll the call, letting microtasks run in
+/// between, until the guest has noted `1`, and then drop the call
+/// without polling it again: whatever the thread did after it noted
+/// `1` is still the store's to take up.
+#[cfg(target_arch = "wasm32")]
+async fn poll_until_noted(
+    store: &mut Store<NotesItsDrop>,
+    instance: &Instance,
+    name: &str,
+    notes: &Notes,
+) {
+    let export = func(instance, name);
+    let mut call = Box::pin(export.call(store, &[]));
+    for _ in 0..64 {
+        if let Poll::Ready(result) = poll_once(&mut call) {
+            panic!("`{name}` ended before the test dropped it: {result:?}");
+        }
+        next_microtask().await;
+        if notes.lock().expect("notes").contains(&1) {
+            return;
+        }
+    }
+    panic!("`{name}` never noted 1: {:?}", notes.lock().expect("notes"));
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_frees_a_store_dropped_after_its_resumed_thread_failed_before_the_store_took_the_failure()
+ {
+    // The browser runs the resumed thread on a microtask: it notes `1`
+    // and traps there, and the browser settles its call with the
+    // failure. The test drops the call and the store before any turn
+    // takes that failure up. The store is freed all the same.
+    let (engine, notes, linker, component) = going_on_after_a_block().await;
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    poll_until_noted(&mut store, &instance, "fail-after-hold", &notes).await;
+    drop(store);
+    run_microtasks_until(&notes, 500).await;
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![1, 500],
+        "the store was freed, and its host data with it"
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_frees_a_store_dropped_after_its_resumed_thread_suspended_again_before_the_store_took_the_stop()
+ {
+    // The resumed thread notes `1` and waits on `hold` again, which
+    // suspends it a second time. The test drops the call and the store
+    // before any turn takes that stop up, and the store is freed within
+    // a few microtasks, with no turn of it run.
+    let (engine, notes, linker, component) = going_on_after_a_block().await;
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    poll_until_noted(&mut store, &instance, "hold-twice", &notes).await;
+    drop(store);
+    for _ in 0..4 {
+        next_microtask().await;
+    }
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![1, 500],
+        "the suspended thread ran no further, and the store was freed at once"
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_frees_a_store_a_host_function_drops_while_the_thread_that_called_it_runs() {
+    // The host forgets the call's future once its first poll has resumed
+    // the export's thread, and keeps the store where the host function
+    // `drop-store` reaches it. The resumed thread calls `drop-store`,
+    // which drops the store while the thread runs. The runtime layer
+    // refuses the store to the dropping host then, so the store goes
+    // unmarked, the thread runs on to its end as it would have, and the
+    // store and its host data drop once the thread stops.
+    let (engine, notes, linker, component) = going_on_after_a_block().await;
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    {
+        let export = func(&instance, "drop-store-after-hold");
+        let mut call = Box::pin(export.call(&mut store, &[]));
+        assert!(
+            poll_once(&mut call).is_pending(),
+            "the resumed thread runs on a microtask"
+        );
+        core::mem::forget(call);
+    }
+    KEPT_STORE.with(|kept| *kept.borrow_mut() = Some(store));
+    run_microtasks_until(&notes, 500).await;
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![1, 500],
+        "the thread ran on to its end, and the store dropped once it stopped"
+    );
+    assert!(
+        KEPT_STORE.with(|kept| kept.borrow().is_none()),
+        "the host function took the store"
+    );
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_traps_a_thread_of_a_dropped_store_past_a_guest_handler_that_catches_every_exception() {
+    // As above, the test drops the store before the resumed thread runs,
+    // and the thread's shim finds the store dropped. It traps, and a trap
+    // is no exception: the guest's `catch_all` around the wait cannot
+    // catch it, so the guest goes no further.
+    let (engine, notes, linker, component) = going_on_after_a_block().await;
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    {
+        let export = func(&instance, "catch-around-hold");
+        let mut call = Box::pin(export.call(&mut store, &[]));
+        assert!(
+            poll_once(&mut call).is_pending(),
+            "the resumed thread runs on a microtask"
+        );
+    }
+    drop(store);
+    run_microtasks_until(&notes, 500).await;
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![500],
+        "the guest's handler caught nothing and the guest went no further"
+    );
+}
+
 #[wcmp_macros::test]
 async fn it_takes_the_stop_of_a_resume_whose_driver_was_dropped_on_the_next_call() {
     // The first poll of the call resumes the export's thread, which

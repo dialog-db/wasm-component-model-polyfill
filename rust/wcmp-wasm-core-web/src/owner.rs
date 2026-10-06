@@ -143,6 +143,14 @@ impl BackendStore for Owner {
         unsafe { &mut *self.cell.get() }.data_mut()
     }
 
+    fn try_data_mut(&mut self) -> Option<&mut StoreData> {
+        if !self.calls.try_claim() {
+            return None;
+        }
+        // SAFETY: as in `store_mut`, since the claim succeeded.
+        Some(unsafe { &mut *self.cell.get() }.data_mut())
+    }
+
     fn id(&self) -> StoreId {
         self.id
     }

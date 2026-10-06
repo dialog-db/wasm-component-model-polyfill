@@ -537,8 +537,17 @@ impl<T: 'static> Drop for Store<T> {
     /// so the thread's stack unwinds where it suspended and runs no
     /// guest code, host import, or destructor. The host's data drops
     /// with the store once the thread stopped.
+    ///
+    /// A host function that such a thread called can drop the store
+    /// itself, where the host forgot the future that awaited the thread
+    /// and kept the store where the function reaches it. The runtime
+    /// layer refuses the store to everything but that thread then, so
+    /// the store is not marked: the thread runs on to its next stop as
+    /// it would have, and the store and the host's data drop there.
     fn drop(&mut self) {
-        self.store_data_mut().mark_dropped();
+        if let Some(data) = self.inner.try_data_mut() {
+            data.mark_dropped();
+        }
     }
 }
 

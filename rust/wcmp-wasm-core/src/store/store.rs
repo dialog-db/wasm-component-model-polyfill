@@ -72,6 +72,16 @@ impl<T: 'static> Store<T> {
         self.inner.data_mut().user_mut::<T>()
     }
 
+    /// The host's data in the store, mutably, or `None` where
+    /// [`data_mut`](Store::data_mut) would panic: inside a host function
+    /// that a guest call running on its own called, after the host forgot
+    /// the future that waited for that call. A caller that must not
+    /// panic, such as the `Drop` of a store that wraps this one, reaches
+    /// the data through this.
+    pub fn try_data_mut(&mut self) -> Option<&mut T> {
+        self.inner.try_data_mut().map(|data| data.user_mut::<T>())
+    }
+
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
         self.inner.engine()
