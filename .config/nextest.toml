@@ -8,12 +8,15 @@
 # replacing it; `--ignore-default-filter` drops it.
 
 # The ordinary lanes (`tests native|web <profile>`): every test, with
-# the conformance corpus in its provider-allowed state. The Zena test
+# the conformance corpus in its provider-allowed state. Only the corpus
+# tests leave their provider-off twin to its lane: a test elsewhere whose
+# name ends the same way builds its own engine with the provider off, and
+# runs here like any other. The Zena test
 # that holds all three subjects to the record reads the browser's run
 # from a file, so only `tests zena` runs it. The fidelity suite of
 # each backend of the runtime layer runs in its own lane.
 [profile.default]
-default-filter = "not test(/without_a_provider$/) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
+default-filter = "not (binary(conformance) and test(/without_a_provider$/)) and not (binary(zena) and test(=it_holds_every_subject_to_the_record_and_prints_the_report)) and not binary(fidelity)"
 # A test that hangs fails its lane with its name instead of stalling it.
 # nextest names a test SLOW after each minute and kills it after ten,
 # and the lane reports it as TIMEOUT. Every other profile inherits this,
