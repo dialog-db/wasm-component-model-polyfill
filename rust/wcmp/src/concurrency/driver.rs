@@ -44,11 +44,11 @@ use super::yield_wake::YieldWake;
 /// - Dropping the store drops every task, host task, and suspended
 ///   thread, and no destructor runs.
 ///
-/// This type is the driver of a call into an export. An
-/// instantiation runs its plan inside one turn it awaits. The store's `run_concurrent` entry is a driver
-/// too, and it keeps every rule but the second: an idle turn leaves
-/// it pending rather than failing, because the closure it runs can
-/// wait on something outside the store.
+/// This type is the driver of a call into an export. An instantiation
+/// runs its plan inside one turn it awaits. The store's
+/// `run_concurrent` entry is a driver too, and it keeps every rule but
+/// the second: an idle turn leaves it pending rather than failing,
+/// because the closure it runs can wait on something outside the store.
 ///
 /// Under a provider that runs a thread once the driver awaits it, a
 /// turn that started or resumed such a thread ends there, and the

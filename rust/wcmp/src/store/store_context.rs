@@ -329,10 +329,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Canonical ABI says so under `canon resource.drop`, where the
     /// destructor call works like a synchronous cross-component call,
     /// and `canon lift` traps a call that is not `async`-typed and
-    /// blocks before it returns. Wasmtime enters a destructor as a synchronous call and traps a block
-    /// inside it with `Trap::CannotBlockSyncTask`. The destructor's
-    /// task holds its instance's may-not-suspend flag for as long as
-    /// it runs, which is what the seam reads for that rule.
+    /// blocks before it returns. Wasmtime enters a destructor as a
+    /// synchronous call and traps a block inside it with
+    /// `Trap::CannotBlockSyncTask`. The destructor's task holds its
+    /// instance's may-not-suspend flag for as long as it runs, which is
+    /// what the seam reads for that rule.
     ///
     /// A host resource's destructor is the host's own closure rather
     /// than guest code. It reaches the store's host data and nothing
@@ -1317,11 +1318,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// it when the poll completes it. Nothing happens when the store
     /// holds no such task pending, or when a turn has it out.
     ///
-    /// The suspend seam's fallback calls this before each nested
-    /// turn it runs for the lower, which is what makes a block poll
-    /// the call's own future at every check of its condition. A nested
-    /// turn held to one instance polls no host task, and a future that answered pending without asking for a
-    /// wake would otherwise never be polled again inside the block.
+    /// The suspend seam's fallback calls this before each nested turn
+    /// it runs for the lower, which is what makes a block poll the
+    /// call's own future at every check of its condition. A nested turn
+    /// held to one instance polls no host task, and a future that
+    /// answered pending without asking for a wake would otherwise never
+    /// be polled again inside the block.
     fn poll_parked_call(&mut self, subtask: SubtaskId) -> Result<()> {
         // The task's own waker passes a wake on to the waker of the
         // turn that is running, as a turn's poll of it does.

@@ -73,11 +73,11 @@ use super::thread_id::ThreadId;
 /// provider resumes a thread inside the call that asks for it, which
 /// returns when the thread suspends again or finishes. The
 /// host-suspension provider resumes a thread once the driver of the
-/// store awaits it, never inside that call, so its resume answers [`EntryStatus::Running`], and the caller
-/// learns where the thread stopped from
-/// [`poll_stop`](Self::poll_stop). The scheduler treats both the same
-/// way: a turn that resumes a thread waits until the thread stops,
-/// and runs nothing else in between.
+/// store awaits it, never inside that call, so its resume answers
+/// [`EntryStatus::Running`], and the caller learns where the thread
+/// stopped from [`poll_stop`](Self::poll_stop). The scheduler treats
+/// both the same way: a turn that resumes a thread waits until the
+/// thread stops, and runs nothing else in between.
 ///
 /// The provider is shared and never taken out of the store while a
 /// thread is suspended, so every method takes `&self`. A caller that
