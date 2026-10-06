@@ -187,3 +187,55 @@ fn it_lends_a_copy_of_a_shared_memory() {
         .expect("the range lies inside the memory");
     assert_eq!(copied, [7; 16]);
 }
+
+#[wcmp_macros::test]
+fn it_keeps_one_handle_for_a_function_that_crosses_the_boundary_again() {
+    // A guest that hands the host the same function on every call, and an
+    // export the host looks up again, each name one function: the store
+    // keeps one slot for it rather than one per crossing.
+    use wcmp_wasm_core::backend::RawHandle;
+
+    let engine = engine();
+    let bytes = wasm!(
+        r#"
+        (module
+          (func $triple (param i32) (result i32)
+            local.get 0
+            i32.const 3
+            i32.mul)
+          (elem declare func $triple)
+          (func (export "get") (result funcref)
+            ref.func $triple))
+        "#
+    );
+    let module = at_once(Module::compile(&engine, bytes)).expect("the module compiles");
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let instance =
+        at_once(Instance::instantiate(&mut store, &module, &[])).expect("the module instantiates");
+    let get = |store: &mut Store<()>| {
+        instance
+            .get_export(store, "get")
+            .expect("the instance belongs to the store")
+            .and_then(Extern::into_func)
+            .expect("the instance exports `get`")
+    };
+
+    let first_get = get(&mut store);
+    assert_eq!(get(&mut store).index(), first_get.index());
+
+    let mut handed = Vec::new();
+    for _ in 0..8 {
+        let mut result = [Val::FuncRef(None)];
+        first_get
+            .call(&mut store, &[], &mut result)
+            .expect("the call succeeds");
+        let Val::FuncRef(Some(triple)) = result[0] else {
+            panic!("the guest hands out a funcref: {result:?}");
+        };
+        handed.push(triple.index());
+    }
+    assert!(
+        handed.iter().all(|index| *index == handed[0]),
+        "every crossing of the one function has its first handle: {handed:?}"
+    );
+}

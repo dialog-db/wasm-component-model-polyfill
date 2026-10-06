@@ -6,6 +6,7 @@
 
 //! What the backend keeps in each Wasmtime store.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use wasmtime::OwnedRooted;
@@ -22,13 +23,19 @@ use crate::type_registry::TypeRegistry;
 ///
 /// A handle is the index of its object in the list of its kind. The lists
 /// only grow: a handle is `Copy`, and the host never releases one, so each
-/// object stays for the life of the store. A GC reference is held by an
-/// `OwnedRooted`, which keeps it alive until the store drops.
+/// object stays for the life of the store. A function keeps the one handle
+/// it first got, however often it crosses the boundary again, so a call
+/// that hands the host the same function references takes no new slots. A
+/// GC reference is held by an `OwnedRooted`, which keeps it alive until the
+/// store drops.
 pub struct State {
     data: StoreData,
     types: Arc<TypeRegistry>,
     instances: Vec<wasmtime::Instance>,
     funcs: Vec<wasmtime::Func>,
+    /// The index of each function in `funcs`, by the address of its
+    /// `VMFuncRef`, which stays the same for the life of the store.
+    func_indices: HashMap<usize, u64>,
     memories: Vec<MemoryObject>,
     globals: Vec<wasmtime::Global>,
     tables: Vec<wasmtime::Table>,
@@ -47,6 +54,7 @@ impl State {
             types,
             instances: Vec::new(),
             funcs: Vec::new(),
+            func_indices: HashMap::new(),
             memories: Vec::new(),
             globals: Vec::new(),
             tables: Vec::new(),
@@ -70,6 +78,18 @@ impl State {
     /// The concrete types of the backend.
     pub fn types(&self) -> &Arc<TypeRegistry> {
         &self.types
+    }
+
+    /// The handle of `func`, whose `VMFuncRef` is at `key`: the handle the
+    /// store gave the same function before, or a new one it keeps from now
+    /// on.
+    pub fn keep_func(&mut self, key: usize, func: wasmtime::Func) -> Func {
+        if let Some(&index) = self.func_indices.get(&key) {
+            return Func::from_raw(self.data.id(), index);
+        }
+        let handle = self.add_func(func);
+        self.func_indices.insert(key, handle.index());
+        handle
     }
 
     /// The handle of the Wasmtime extern `external`, which the store keeps

@@ -12,10 +12,18 @@
 //! the operation that made it returns.
 
 use wasmtime::{AsContext, AsContextMut, HeapTopType};
-use wcmp_wasm_core::{Error, Result, Val};
+use wcmp_wasm_core::{Error, Func, Result, Val};
 
 use crate::errors;
 use crate::state::State;
+
+/// The handle of the Wasmtime function `func`, which `store` keeps: the one
+/// the store gave it before, so a function that crosses the boundary again
+/// takes no new slot.
+pub fn func_handle(store: &mut impl AsContextMut<Data = State>, func: wasmtime::Func) -> Func {
+    let key = func.to_raw(&mut *store).addr();
+    store.as_context_mut().data_mut().keep_func(key, func)
+}
 
 /// The value of the runtime layer for Wasmtime's `value`, whose references
 /// `store` keeps from now on.
@@ -29,9 +37,7 @@ pub fn from_wasmtime(
         wasmtime::Val::F32(bits) => Val::F32(*bits),
         wasmtime::Val::F64(bits) => Val::F64(*bits),
         wasmtime::Val::V128(value) => Val::V128(value.as_u128()),
-        wasmtime::Val::FuncRef(func) => {
-            Val::FuncRef(func.map(|func| store.as_context_mut().data_mut().add_func(func)))
-        }
+        wasmtime::Val::FuncRef(func) => Val::FuncRef(func.map(|func| func_handle(store, func))),
         wasmtime::Val::ExternRef(None) => Val::ExternRef(None),
         wasmtime::Val::ExternRef(Some(extern_ref)) => {
             let extern_ref = extern_ref

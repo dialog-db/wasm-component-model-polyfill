@@ -123,7 +123,12 @@ impl<C: Context> BackendStore for WasmtimeStore<C> {
         let instance = *self.inner.state().instance(instance)?;
         Ok(instance
             .get_export(&mut self.inner, name)
-            .map(|export| self.inner.state_mut().add_extern(export)))
+            .map(|export| match export {
+                wasmtime::Extern::Func(func) => {
+                    Extern::Func(values::func_handle(&mut self.inner, func))
+                }
+                export => self.inner.state_mut().add_extern(export),
+            }))
     }
 
     fn func_new(&mut self, ty: FuncType, func: HostFunc) -> Result<Func> {
