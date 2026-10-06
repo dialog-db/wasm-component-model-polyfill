@@ -39,7 +39,7 @@ fixtures/wasi-http-same-instance.wast:2131 cascade no instance to invoke (given 
 fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http.wast:2246 cascade no instance to invoke
 fixtures/wasi-http.wast:2249 cascade no instance to invoke
-wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer has no i31 reference type, so the polyfill refuses the core module type before instantiation)
+wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer reads an i31 reference, but the polyfill's public `CoreValueType` names only `funcref` and `externref`, so it refuses the imported core module type with its `(ref i31)` table before instantiation)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 cascade no instance to invoke

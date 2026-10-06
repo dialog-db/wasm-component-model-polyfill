@@ -194,9 +194,13 @@ impl<T: Send + 'static> Store<T> {
     /// The construction also fails when the backend refuses to make a
     /// store, which no backend does today.
     ///
-    /// Natively the host data must be `Send`, as it must be for
-    /// Wasmtime's asynchronous API, because the store moves with the
-    /// futures that drive it. In the browser it need not be.
+    /// Natively the host data must be `Send`. The runtime layer erases
+    /// its type into a backend store that is `Send`, which an erased
+    /// value cannot become later, and the store must be `Send` because
+    /// it moves with the futures that drive it, as Wasmtime's
+    /// asynchronous API needs too. Wasmtime's own `Store::new` takes
+    /// any data and leaves the bound to that API. In the browser the
+    /// data need not be `Send`.
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
         Self::build(engine, data)
     }
@@ -213,9 +217,13 @@ impl<T: 'static> Store<T> {
     /// The construction also fails when the backend refuses to make a
     /// store, which no backend does today.
     ///
-    /// Natively the host data must be `Send`, as it must be for
-    /// Wasmtime's asynchronous API, because the store moves with the
-    /// futures that drive it. In the browser it need not be.
+    /// Natively the host data must be `Send`. The runtime layer erases
+    /// its type into a backend store that is `Send`, which an erased
+    /// value cannot become later, and the store must be `Send` because
+    /// it moves with the futures that drive it, as Wasmtime's
+    /// asynchronous API needs too. Wasmtime's own `Store::new` takes
+    /// any data and leaves the bound to that API. In the browser the
+    /// data need not be `Send`.
     pub fn new(engine: &Engine, data: T) -> Result<Self> {
         Self::build(engine, data)
     }

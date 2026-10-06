@@ -147,9 +147,9 @@
 //! // signatures serve native, where the futures complete at once.
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() {
-//!     // Create a new engine for instantiating a component. The
-//!     // polyfill owns its substrate selection, so there is no
-//!     // per-target engine type to thread in.
+//!     // Create a new engine for instantiating a component, over the
+//!     // backend the host names: Wasmtime here, the browser's own
+//!     // engine on the web. The polyfill has no backend of its own.
 //!     let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap()).unwrap();
 //!
 //!     // Create a store for managing component data and any custom
