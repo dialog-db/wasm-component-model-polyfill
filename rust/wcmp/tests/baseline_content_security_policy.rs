@@ -403,9 +403,8 @@ async fn it_runs_over_a_backend_without_multi_memory_under_the_policy() {
     });
     js_sys::Reflect::set(&namespace, &"validate".into(), refuse.as_ref()).expect("patch validate");
     let backend = wcmp_wasm_core_web::Web::new();
-    let capabilities =
-        wcmp_wasm_core::Engine::with_backend(wcmp_wasm_core_web::Web::new()).capabilities();
     js_sys::Reflect::set(&namespace, &"validate".into(), &validate).expect("restore validate");
+    let capabilities = wcmp_wasm_core::backend::Backend::capabilities(&backend);
     assert!(
         !capabilities.contains(wcmp_wasm_core::Capability::MultiMemory),
         "the backend was made as in a browser without `multi_memory`"

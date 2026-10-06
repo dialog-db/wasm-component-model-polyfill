@@ -212,9 +212,9 @@ mod tests {
     /// What the items of one test wrote as they ran, in order.
     type Log = Arc<Mutex<Vec<&'static str>>>;
 
-    /// A waker that counts the wakes a driver sends itself. Only the
-    /// native wake after a yield is a self-wake, so only the native
-    /// test needs to count them.
+    /// A waker that counts the wakes it is sent: the native driver's
+    /// self-wake after a yield, and the browser's yield wakes the tests
+    /// arrange by hand.
     #[derive(Default)]
     struct Wakes(AtomicUsize);
 
@@ -659,7 +659,14 @@ mod tests {
         let mut wake = YieldWake::new();
         wake.after_yield(&waker);
         assert!(wake.posted(), "the page has a MessageChannel");
+        let receiver = wake.receiver().expect("the channel's receiving port");
         drop(wake);
+        assert!(
+            js_sys::Reflect::get(&receiver, &wasm_bindgen::JsValue::from_str("onmessage"))
+                .expect("the port's handler")
+                .is_null(),
+            "the dropped wake took its handler off the port"
+        );
 
         // Let the posted message's task come and go.
         let log = log();

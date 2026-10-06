@@ -270,7 +270,7 @@ fn walk<T: 'static>(
         let size = (length - read_so_far).min(CHUNK);
         let last = read_so_far + size == length;
         let stepped = ctx
-            .with_source_bytes(at(offset, Some(read_so_far))?, size, |bytes| {
+            .with_source_bytes(read_at(offset, Some(read_so_far))?, size, |bytes| {
                 step(bytes, last, &mut out)
             })
             .map_err(|_| invalid("out-of-bounds string read in adapter"))??;
@@ -430,7 +430,7 @@ fn inflate_latin1<T: 'static>(
     while end > 0 {
         let start = end.saturating_sub(CHUNK);
         let bytes = ctx
-            .read_own_bytes(at(dst, Some(start))?, end - start)
+            .read_own_bytes(read_at(dst, Some(start))?, end - start)
             .map_err(|_| invalid("out-of-bounds string read in adapter"))?;
         let units: Vec<u8> = bytes.iter().flat_map(|b| [*b, 0]).collect();
         write(ctx, at(dst, start.checked_mul(2))?, &units)?;
@@ -446,6 +446,13 @@ fn inflate_latin1<T: 'static>(
 fn at(base: usize, by: Option<usize>) -> Result<usize> {
     by.and_then(|by| base.checked_add(by))
         .ok_or_else(|| invalid("out-of-bounds string write in adapter"))
+}
+
+/// [`at`] for an address the transcode reads at, which fails as a read
+/// does.
+fn read_at(base: usize, by: Option<usize>) -> Result<usize> {
+    by.and_then(|by| base.checked_add(by))
+        .ok_or_else(|| invalid("out-of-bounds string read in adapter"))
 }
 
 fn write<T: 'static>(ctx: &mut BoundaryContext<'_, T>, offset: usize, bytes: &[u8]) -> Result<()> {
@@ -1122,19 +1129,22 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_refuses_an_address_past_the_hosts_range_without_wrapping() {
-        // A prefix length that doubles past the host's address range
-        // is refused before anything is read or written, rather than
-        // wrapping round to an address near zero.
-        let mut copy = TwoMemories::new64();
-        copy.put(0, b"abc");
+        // A destination and a prefix length whose sum passes the host's
+        // address range are refused before anything is read or written,
+        // rather than wrapping round to an address near zero. On wasm32
+        // the host's range is 32 bits, so 32-bit arguments reach it; on a
+        // 64-bit host only a prefix that doubles past 64 bits does.
         for op in [
             TranscodeOp::Utf8ToCompactUtf16,
             TranscodeOp::Utf16ToCompactUtf16,
         ] {
-            let message = failure(copy.run64(op, &[0, 1, 0, 8, 1 << 63], 1));
+            #[cfg(target_arch = "wasm32")]
+            let result = TwoMemories::new().run(op, &[0, 1, 0xFFFF_FFF0, 8, 0x10], 1);
+            #[cfg(not(target_arch = "wasm32"))]
+            let result = TwoMemories::new64().run64(op, &[0, 1, 0, 8, 1 << 63], 1);
+            let message = failure(result);
             assert!(
-                message.contains("out-of-bounds string write")
-                    || message.contains("64-bit memory offset"),
+                message.contains("out-of-bounds string write in adapter"),
                 "{op:?}: {message}"
             );
         }

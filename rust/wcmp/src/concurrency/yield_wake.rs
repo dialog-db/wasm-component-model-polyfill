@@ -207,6 +207,15 @@ mod imp {
             self.channel.is_some()
         }
 
+        /// The receiving port of the driver's channel, for a test to
+        /// read after the wake has gone.
+        #[cfg(test)]
+        pub fn receiver(&self) -> Option<JsValue> {
+            self.channel
+                .as_ref()
+                .map(|channel| channel.receiver.clone())
+        }
+
         /// Wake `waker` rather than the waker the wake was arranged
         /// with, when it lands: the driver was polled again, with the
         /// waker of its latest poll, before the wake landed.
