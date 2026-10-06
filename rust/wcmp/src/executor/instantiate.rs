@@ -199,14 +199,50 @@ impl ReservedRecords {
     /// because there is no list left to read or write. The
     /// registrations go back either way: they are the store's own
     /// data rather than the records behind the lock.
-    fn withdraw<T: 'static>(self, store: &mut StoreContext<'_, T>) {
-        for (_, record) in self.resources {
+    fn withdraw<T: 'static>(&mut self, store: &mut StoreContext<'_, T>) {
+        for (_, record) in core::mem::take(&mut self.resources) {
             store.internal().restore_resource(record);
         }
         let Ok(mut guard) = self.tables.lock() else {
             return;
         };
         guard.tasks.truncate_instances(self.instances_before);
+    }
+}
+
+/// The records an instantiation reserved, with the store they stand
+/// in, until the instantiation commits them.
+///
+/// An instantiation awaits as it runs its plan, so the host can drop
+/// its future part way. The reservation withdraws the records then,
+/// as a failed plan does, so a dropped instantiation leaves the store
+/// as it found it too. A core `start` function the browser still runs
+/// for the dropped instantiation can still reach the store's records
+/// afterwards; the store's own records are what it finds.
+struct Reservation<'s, 'c, T: 'static> {
+    store: &'s mut StoreContext<'c, T>,
+    records: ReservedRecords,
+    committed: bool,
+}
+
+impl<'s, 'c, T: 'static> Reservation<'s, 'c, T> {
+    /// The store and the records, for the plan to run with.
+    fn parts(&mut self) -> (&mut StoreContext<'c, T>, &mut ReservedRecords) {
+        (&mut *self.store, &mut self.records)
+    }
+
+    /// Keep the records in the store, for an instantiation that ran
+    /// its plan to its end.
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl<T: 'static> Drop for Reservation<'_, '_, T> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.records.withdraw(self.store);
+        }
     }
 }
 
@@ -221,8 +257,9 @@ impl ReservedRecords {
 /// of the closures they need.
 ///
 /// The store records the plan needs are reserved before it runs and
-/// taken back when it fails, so a failed instantiation leaves the
-/// store as it found it. See [`ReservedRecords`].
+/// taken back when it fails or its future drops first, so a failed or
+/// dropped instantiation leaves the store as it found it. See
+/// [`ReservedRecords`] and [`Reservation`].
 #[tracing::instrument(level = "debug", name = "run instantiation plan", skip_all)]
 pub async fn instantiate<T: 'static>(
     component: &Component,
@@ -230,14 +267,16 @@ pub async fn instantiate<T: 'static>(
     linker: &Linker<T>,
     resolution: &Resolution,
 ) -> Result<Instance> {
-    let mut reserved = ReservedRecords::reserve(store, component.ir().num_component_instances)?;
-    match run_plan(component, store, linker, resolution, &mut reserved).await {
-        Ok(instance) => Ok(instance),
-        Err(error) => {
-            reserved.withdraw(store);
-            Err(error)
-        }
-    }
+    let records = ReservedRecords::reserve(store, component.ir().num_component_instances)?;
+    let mut reservation = Reservation {
+        store,
+        records,
+        committed: false,
+    };
+    let (store, reserved) = reservation.parts();
+    let instance = run_plan(component, store, linker, resolution, reserved).await?;
+    reservation.commit();
+    Ok(instance)
 }
 
 /// Walk the plan against `store`, with the records `reserved` holds

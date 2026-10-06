@@ -298,3 +298,39 @@ async fn it_puts_back_the_resource_name_a_failed_instantiation_displaced() {
         "the failed attempt left the store as it found it"
     );
 }
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_leaves_the_store_as_it_found_it_when_the_instantiation_future_drops() {
+    // The browser instantiates a core module on a promise, so the
+    // first poll of an instantiation returns pending with its records
+    // reserved. Dropping the future there withdraws them. Natively
+    // every backend instantiates within the first poll, so there is no
+    // point at which to drop it.
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let works = Component::new(&engine, REGISTERS_RESOURCES)
+        .await
+        .expect("component parses");
+    let linker = things_linker(&engine, thing());
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let _first = linker
+        .instantiate(&mut store, &works)
+        .await
+        .expect("the first instantiation runs to its end");
+    let before = records(&mut store);
+
+    {
+        let mut second = Box::pin(linker.instantiate(&mut store, &works));
+        let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+        assert!(
+            second.as_mut().poll(&mut context).is_pending(),
+            "the browser instantiates the first core module on a promise"
+        );
+    }
+
+    assert_eq!(
+        records(&mut store),
+        before,
+        "the dropped instantiation took back what it had reserved"
+    );
+}
