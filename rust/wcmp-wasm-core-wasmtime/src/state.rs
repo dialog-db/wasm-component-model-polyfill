@@ -24,8 +24,11 @@ use crate::type_registry::TypeRegistry;
 /// A handle is the index of its object in the list of its kind. The lists
 /// only grow: a handle is `Copy`, and the host never releases one, so each
 /// object stays for the life of the store. A function keeps the one handle
-/// it first got, however often it crosses the boundary again, so a call
-/// that hands the host the same function references takes no new slots. A
+/// it first got whenever it crosses the boundary again with the same
+/// `VMFuncRef`, so a call that hands the host the same function references
+/// takes no new slots. Wasmtime can give one function several `VMFuncRef`s,
+/// such as a `ref.func` of an imported function in each importing
+/// instance, and each takes a slot of its own, once. A
 /// GC reference is held by an `OwnedRooted`, which keeps it alive until the
 /// store drops.
 pub struct State {

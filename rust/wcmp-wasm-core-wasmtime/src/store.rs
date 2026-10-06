@@ -149,7 +149,7 @@ impl<C: Context> BackendStore for WasmtimeStore<C> {
                 call_host(&func, &slots, &result_types, caller, params, results)
             })
             .map_err(errors::backend)?;
-        Ok(self.inner.state_mut().add_func(host))
+        Ok(values::func_handle(&mut self.inner, host))
     }
 
     fn func_ty(&self, func: Func) -> Result<Option<FuncType>> {
