@@ -1947,6 +1947,11 @@ async fn it_allocates_from_index_one_in_each_nested_instance() {
 ///
 /// `run` takes a flag: when it is set the method drops the owning
 /// handle while the borrow is still out, which must trap.
+///
+/// `forward-rep` mints the same handle and then forwards the rep 42
+/// rather than its index as the `borrow<r>`. A definer receives its own
+/// resource's rep from a lower, but its table, like every other, holds
+/// handles by index, so the forward names index 42, where nothing is.
 const OUTER_DEFINES_INNER_BORROWS: &[u8] = component!(
     r#"
     (component
@@ -2002,7 +2007,10 @@ const OUTER_DEFINES_INNER_BORROWS: &[u8] = component!(
           local.get $handle local.get $drop-owner call $arm
           local.get $handle call $forward local.set $seen
           local.get $handle call $drop
-          local.get $seen))
+          local.get $seen)
+        (func (export "forward-rep") (result i32)
+          i32.const 42 call $new drop
+          i32.const 42 call $forward))
       (core instance $main-i (instantiate $main
         (with "" (instance
           (export "new" (func $new))
@@ -2011,9 +2019,39 @@ const OUTER_DEFINES_INNER_BORROWS: &[u8] = component!(
           (export "arm" (func $method-i "arm"))))))
       (export $r' "r" (type $r))
       (func (export "run") (param "drop-owner" u32) (result u32)
-        (canon lift (core func $main-i "run"))))
+        (canon lift (core func $main-i "run")))
+      (func (export "forward-rep") (result u32)
+        (canon lift (core func $main-i "forward-rep"))))
     "#
 );
+
+#[wcmp_macros::test]
+async fn it_traps_a_definer_that_forwards_a_bare_rep_as_a_borrow() {
+    // The reference's `lower_borrow` hands the definer the rep, and its
+    // `lift_borrow` reads the definer's table by index, so a rep passed
+    // on as a borrow names an index the table never gave out.
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let component = Component::new(&engine, OUTER_DEFINES_INNER_BORROWS)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let err = instance
+        .get_func("forward-rep")
+        .expect("forward-rep export")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the rep names no handle of the definer's table");
+    assert!(
+        err.to_string().contains("unknown handle index 42")
+            || format!("{err:?}").contains("unknown handle index 42"),
+        "the forward fails with the unknown-handle trap for index 42, got {err:?}"
+    );
+}
 
 #[wcmp_macros::test]
 async fn it_lifts_a_borrow_out_of_the_defining_instance_through_its_table() {

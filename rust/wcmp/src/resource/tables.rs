@@ -637,7 +637,12 @@ impl HandleTables {
     ///   callee's task. The two differ for a callback callee, which
     ///   can `task.return` and keep running: the caller's lend ends
     ///   at the delivery of the resolution, which is earlier than
-    ///   the callee's task exit.
+    ///   the callee's task exit. This follows the reference, whose
+    ///   `Subtask` keeps the lenders and gives them back in
+    ///   `deliver_resolve`. Wasmtime records the lend on the call
+    ///   context of the task current during the adapter's transfer,
+    ///   which is the callee's, and gives it back at that task's
+    ///   completion, so there the lend can outlast the delivery.
     /// - A guest calling another component's export through the
     ///   enter and exit intrinsics alone has no subtask record. The
     ///   callee's task is the record of that call, and its exit is
@@ -660,6 +665,14 @@ impl HandleTables {
     ///   host function lends to that call's subtask instead. That
     ///   lowering runs in the turn that resolves the subtask, while
     ///   the subtask is still the record of the call.
+    ///
+    /// # A caller that traps
+    ///
+    /// A lend on the subtask of a prepared call the caller never takes
+    /// delivery of, because the caller trapped first, is never given
+    /// back. Nothing reads it again: the trap poisons the store, so no
+    /// guest code of it runs, and the lend sits on an entry of the
+    /// caller's own table, which only that guest could drop.
     ///
     /// # A host lend is counted like any other
     ///

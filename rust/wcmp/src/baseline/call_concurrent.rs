@@ -60,7 +60,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Wake;
 
-use crate::internal::ResourceTypeIdInternal;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, Accessor, Component, Engine, Error, Func, HostCall, HostResource, Instance,
@@ -255,38 +254,47 @@ const BORROW_HOLDER: &[u8] = component!(
     "#
 );
 
-/// One callback export that lends a host handle and keeps running.
+/// One callback export that borrows a host handle and keeps running.
 ///
-/// Its core function calls the host's `lend`, which is where the
-/// host records a handle of its own as lent for this call, then
-/// `task.return`s and gives way. Its callback waits on a fresh set
-/// no turn ever fills, so the task stays in the store after the
-/// call's future has resolved. That is the gap the host lend's rule
-/// is read in: the lend ends with the resolution, not with the task.
-const LENDS_AND_KEEPS_RUNNING: &[u8] = component!(
+/// `answer` takes a `borrow<thing>`, which lends the host's handle for
+/// the call. Its core function calls the host's `try-drop`, which tries
+/// to release that handle while the lend stands, drops its borrow,
+/// `task.return`s, and gives way. Its callback waits on a fresh set no
+/// turn ever fills, so the task stays in the store after the call has
+/// resolved. That is the gap the host lend's rule is read in: the lend
+/// ends with the resolution, not with the task.
+const BORROWS_AND_KEEPS_RUNNING: &[u8] = component!(
     r#"
     (component
-      (import "lend" (func $lend))
-      (core func $lend (canon lower (func $lend)))
+      (import "pdd020-tests:host/lends@0.1.0" (instance $i
+        (export "thing" (type $thing (sub resource)))
+        (export "try-drop" (func))))
+      (alias export $i "thing" (type $thing))
+      (alias export $i "try-drop" (func $try-drop))
+      (core func $try-drop (canon lower (func $try-drop)))
+      (core func $drop (canon resource.drop $thing))
       (core func $task-return (canon task.return (result u32)))
       (core func $set-new (canon waitable-set.new))
       (core module $m
-        (import "" "lend" (func $lend))
+        (import "" "try-drop" (func $try-drop))
+        (import "" "drop" (func $drop (param i32)))
         (import "" "task.return" (func $task-return (param i32)))
         (import "" "waitable-set.new" (func $set-new (result i32)))
-        (func (export "answer") (param i32) (result i32)
-          (call $lend)
-          (call $task-return (i32.mul (local.get 0) (i32.const 2)))
+        (func (export "answer") (param $x i32) (param $h i32) (result i32)
+          (call $try-drop)
+          (call $drop (local.get $h))
+          (call $task-return (i32.mul (local.get $x) (i32.const 2)))
           (i32.const 1))
         (func (export "callback") (param i32 i32 i32) (result i32)
           (i32.or (i32.shl (call $set-new) (i32.const 4)) (i32.const 2))))
-      (core instance $i (instantiate $m
+      (core instance $c (instantiate $m
         (with "" (instance
-          (export "lend" (func $lend))
+          (export "try-drop" (func $try-drop))
+          (export "drop" (func $drop))
           (export "task.return" (func $task-return))
           (export "waitable-set.new" (func $set-new))))))
-      (func (export "answer") async (param "x" u32) (result u32)
-        (canon lift (core func $i "answer") async (callback (core func $i "callback")))))
+      (func (export "answer") async (param "x" u32) (param "h" (borrow $thing)) (result u32)
+        (canon lift (core func $c "answer") async (callback (core func $c "callback")))))
     "#
 );
 
@@ -992,89 +1000,86 @@ async fn it_ends_the_entry_with_the_borrows_a_concurrent_calls_guest_still_owes(
 }
 
 #[wcmp_macros::test]
-async fn it_gives_a_host_lend_back_when_the_awaited_future_resolves() {
-    // A handle the host lends for its call into a guest export goes
-    // on the export's task, and comes back when that task resolves,
-    // which for `call_concurrent` is when the awaited future does.
-    // The export here resolves and keeps running, so the task is
-    // still in the store when the future hands the result back: the
-    // drop below therefore says that the resolution and not the
-    // task's exit is what ended the lend.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, LENDS_AND_KEEPS_RUNNING)
-        .await
-        .expect("component parses");
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let tables = store.internal().tables().clone();
-    let ty = ResourceTypeId::fresh();
-    // What the host lent, and whether the lend stood at the moment
-    // it was made, which the `lend` import records from inside the
-    // call.
-    let lent = Arc::new(Mutex::new(None));
-    let stood = Arc::new(AtomicBool::new(false));
-    let recorded = lent.clone();
-    let witness = stood.clone();
-    let mut linker: Linker<()> = Linker::new(&engine);
-    linker
-        .root()
-        .func_wrap("lend", move |_: HostCall<'_, ()>, (): ()| -> Result<()> {
-            let mut guard = tables.lock().expect("handle tables");
-            // The export's task is the outermost scope on the stack:
-            // the host call the guest is inside pushed a subtask of
-            // its own above it.
-            let scope = guard
-                .tasks
-                .scopes()
-                .first()
-                .copied()
-                .expect("the export's task is on the stack");
-            let table = guard.host_table(ty);
-            let index = guard.insert_own(table, ty, false, 11);
-            guard
-                .lend_to(Some(scope), table, index)
-                .expect("the host lends a handle of its own for the call");
-            witness.store(
-                guard.remove_own(table, index, ty, false).is_err(),
-                Ordering::SeqCst,
-            );
-            *recorded.lock().expect("the lend") = Some((table, index));
-            Ok(())
-        })
-        .expect("the registration");
-    let instance = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate");
-    let answer = func(&instance, "answer");
+async fn it_gives_a_host_lend_back_when_the_call_resolves() {
+    // A handle the host lends for its call into a guest export, as the
+    // `borrow<thing>` it lowers, goes on the export's task, and comes
+    // back when that task resolves: the resolution of the awaited future
+    // of `call_concurrent`, or the return of `Func::call`. The export
+    // resolves and keeps running, so the task is still in the store when
+    // the call hands the result back, and the release below therefore
+    // says that the resolution and not the task's exit ended the lend.
+    // A release tried from inside the call is refused, which says the
+    // lend stood while the call ran.
+    for through_call in [false, true] {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let component = Component::new(&engine, BORROWS_AND_KEEPS_RUNNING)
+            .await
+            .expect("component parses");
+        let lent: Arc<Mutex<Option<crate::ResourceHandle>>> = Arc::default();
+        let refused = Arc::new(AtomicBool::new(false));
+        let mut linker: Linker<()> = Linker::new(&engine);
+        let interface: InterfaceIdentifier = "pdd020-tests:host/lends@0.1.0"
+            .parse()
+            .expect("the interface identifier");
+        let ty = linker
+            .instance(&interface)
+            .resource_with(
+                "thing",
+                HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+            )
+            .expect("the registration of `thing`");
+        let handle_slot = lent.clone();
+        let witness = refused.clone();
+        linker
+            .instance(&interface)
+            .func_wrap(
+                "try-drop",
+                move |mut call: HostCall<'_, ()>, (): ()| -> Result<()> {
+                    let handle = handle_slot
+                        .lock()
+                        .expect("the lent handle")
+                        .expect("the host minted its handle before the call");
+                    let released = call.store().internal().resource_drop(handle);
+                    witness.store(released.is_err(), Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .expect("the registration of `try-drop`");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let instance = linker
+            .instantiate(&mut store, &component)
+            .await
+            .expect("instantiate");
+        let answer = func(&instance, "answer");
+        let handle = store.resource_new(ty, 11).expect("mint");
+        *lent.lock().expect("the lent handle") = Some(handle);
+        let arguments = [Val::U32(21), Val::Borrow(handle)];
 
-    let returned = store
-        .run_concurrent(async |accessor| answer.call_concurrent(accessor, &[Val::U32(21)]).await)
-        .await
-        .expect("run the closure")
+        let returned = if through_call {
+            answer.call(&mut store, &arguments).await
+        } else {
+            store
+                .run_concurrent(async |accessor| answer.call_concurrent(accessor, &arguments).await)
+                .await
+                .expect("run the closure")
+        }
         .expect("the callback export returns its result");
-    assert_eq!(
-        returned.as_ref(),
-        [Val::U32(42)],
-        "the task returned through `task.return`, which resolved the future"
-    );
-    assert!(
-        stood.load(Ordering::SeqCst),
-        "the handle was lent while the call was in flight"
-    );
-
-    let (table, index) = lent
-        .lock()
-        .expect("the lend")
-        .expect("the guest called the host's `lend`");
-    let mut guard = store.internal().tables().lock().expect("handle tables");
-    assert_eq!(
-        guard.tasks.task_count(),
-        1,
-        "the callback task kept running past its `task.return`"
-    );
-    assert_eq!(
-        guard.remove_own(table, index, ty, false),
-        Ok(11),
-        "the resolution of the awaited future gave the host its handle back"
-    );
+        assert_eq!(
+            returned.as_ref(),
+            [Val::U32(42)],
+            "the task returned through `task.return`"
+        );
+        assert!(
+            refused.load(Ordering::SeqCst),
+            "the handle was lent while the call was in flight"
+        );
+        assert_eq!(
+            task_count(&store),
+            1,
+            "the callback task kept running past its `task.return`"
+        );
+        store
+            .resource_drop(handle)
+            .expect("the resolution gave the host its handle back");
+    }
 }

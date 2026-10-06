@@ -50,6 +50,8 @@
 
 #![cfg(test)]
 
+use std::sync::{Arc, Mutex};
+
 use crate::internal::FuncInternal;
 use crate::resource::HandleKind;
 use crate::runtime_layer::Capability;
@@ -481,7 +483,8 @@ const THROWS_AFTER_YIELD: &[u8] = component!(
 /// instance — for the rest of the test.
 ///
 /// The caller's callback takes the subtask event, which delivers the
-/// resolution, and drops the owning handle it lent from. That drop
+/// resolution, and at once drops the owning handle it lent from, before
+/// it so much as drops the subtask. That drop
 /// stands only if the lend went on the subtask: a lend on the
 /// callee's task would still be outstanding, because that task has
 /// not exited and will not. `run` therefore answers 43 — the
@@ -566,10 +569,10 @@ const RETURNS_AND_KEEPS_RUNNING: &[u8] = component!(
           (func (export "cb") (param i32 i32 i32) (result i32)
             (if (i32.ne (local.get 0) (i32.const 1)) (then unreachable))
             (if (i32.ne (local.get 2) (i32.const 2)) (then unreachable))
+            (call $drop-thing (global.get $handle))
             (call $join (local.get 1) (i32.const 0))
             (call $subtask-drop (local.get 1))
             (call $set-drop (global.get $set))
-            (call $drop-thing (global.get $handle))
             (call $task-return (i32.add (i32.load (i32.const 8)) (i32.const 1)))
             (i32.const 0)))
         (core instance $i (instantiate $m (with "" (instance
@@ -594,6 +597,226 @@ const RETURNS_AND_KEEPS_RUNNING: &[u8] = component!(
         (with "answer" (func $a "answer"))))
       (export "run" (func $b "run"))
       (export "drop-early" (func $b "drop-early")))
+    "#
+);
+
+/// The negative control that tells where a guest-to-guest lend lives.
+///
+/// The callee's `answer` gives way at once, and its callback calls
+/// `task.return`, notes `1`, and exits, so the callee's task is gone
+/// before the caller's callback runs. The caller's `drop-undelivered`
+/// lowers `answer` asynchronously and gives way without waiting on the
+/// call. Its callback notes `2` and drops the owning handle it lent
+/// from, never having taken the subtask event. A lend on the callee's
+/// task would have come back with that task's exit, and the drop would
+/// stand; the lend is on the subtask, whose resolution is undelivered,
+/// so the drop traps.
+const EXITS_BEFORE_DELIVERY: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (component $callee
+        (import "note" (func $note (param "step" u32)))
+        (type $t' (resource (rep i32)))
+        (core func $new (canon resource.new $t'))
+        (core func $note (canon lower (func $note)))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "new" (func $new (param i32) (result i32)))
+          (import "" "note" (func $note (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (func (export "make") (param i32) (result i32)
+            (call $new (local.get 0)))
+          (func (export "answer") (param i32) (result i32)
+            (i32.const 1))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (call $task-return (i32.const 42))
+            (call $note (i32.const 1))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "new" (func $new))
+          (export "note" (func $note))
+          (export "task.return" (func $task-return))))))
+        (export $t "thing" (type $t'))
+        (func (export "make") (param "rep" u32) (result (own $t))
+          (canon lift (core func $i "make")))
+        (func (export "answer") async (param "x" (borrow $t)) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "note" (func $note (param "step" u32)))
+        (import "thing" (type $t (sub resource)))
+        (import "make" (func $make (param "rep" u32) (result (own $t))))
+        (import "answer" (func $answer async (param "x" (borrow $t)) (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $note (canon lower (func $note)))
+        (core func $make (canon lower (func $make)))
+        (core func $lowered
+          (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+        (core func $drop-thing (canon resource.drop $t))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "note" (func $note (param i32)))
+          (import "" "make" (func $make (param i32) (result i32)))
+          (import "" "answer" (func $answer (param i32 i32) (result i32)))
+          (import "" "drop-thing" (func $drop-thing (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (global $handle (mut i32) (i32.const 0))
+          (func (export "drop-undelivered") (param i32) (result i32)
+            (local $status i32)
+            (global.set $handle (call $make (local.get 0)))
+            (local.set $status (call $answer (global.get $handle) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+              (then unreachable))
+            (i32.const 1))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (call $note (i32.const 2))
+            (call $drop-thing (global.get $handle))
+            (call $task-return (i32.const 0))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "note" (func $note))
+          (export "make" (func $make))
+          (export "answer" (func $lowered))
+          (export "drop-thing" (func $drop-thing))
+          (export "task.return" (func $task-return))))))
+        (func (export "drop-undelivered") async (param "x" u32) (result u32)
+          (canon lift (core func $i "drop-undelivered") async (callback (core func $i "cb")))))
+      (instance $a (instantiate $callee (with "note" (func $note))))
+      (alias export $a "thing" (type $t))
+      (instance $b (instantiate $caller
+        (with "note" (func $note))
+        (with "thing" (type $t))
+        (with "make" (func $a "make"))
+        (with "answer" (func $a "answer"))))
+      (export "drop-undelivered" (func $b "drop-undelivered")))
+    "#
+);
+
+/// Three components, each calling the next through a prepared
+/// asynchronous call that lends an owning handle of its own.
+///
+/// `root` mints a handle and lends it to `middle`'s `answer`. `middle`
+/// mints a handle of its own and lends it to `leaf`'s `answer`, which
+/// gives way once and then drops its borrow and returns. `middle`'s
+/// callback takes `leaf`'s resolution, drops its own handle at once,
+/// then drops the borrow it got from `root` and returns 10. `root`'s
+/// callback takes that resolution, drops its handle at once, and
+/// returns 11. Each drop stands only if each lend went on the subtask
+/// of the call that made it and came back with that subtask's delivery.
+const LENDS_DOWN_A_CHAIN: &[u8] = component!(
+    r#"
+    (component
+      (component $defs
+        (type $t' (resource (rep i32)))
+        (core func $new (canon resource.new $t'))
+        (core module $m
+          (import "" "new" (func $new (param i32) (result i32)))
+          (func (export "make") (param i32) (result i32)
+            (call $new (local.get 0))))
+        (core instance $i (instantiate $m (with "" (instance (export "new" (func $new))))))
+        (export $t "thing" (type $t'))
+        (func (export "make") (param "rep" u32) (result (own $t))
+          (canon lift (core func $i "make"))))
+      (component $leaf
+        (import "thing" (type $t (sub resource)))
+        (core func $drop (canon resource.drop $t))
+        (core func $task-return (canon task.return (result u32)))
+        (core module $m
+          (import "" "drop" (func $drop (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (global $x (mut i32) (i32.const 0))
+          (func (export "answer") (param i32) (result i32)
+            (global.set $x (local.get 0))
+            (i32.const 1))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (call $drop (global.get $x))
+            (call $task-return (i32.const 3))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "drop" (func $drop))
+          (export "task.return" (func $task-return))))))
+        (func (export "answer") async (param "x" (borrow $t)) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (component $caller
+        (import "thing" (type $t (sub resource)))
+        (import "make" (func $make (param "rep" u32) (result (own $t))))
+        (import "next" (func $next async (param "x" (borrow $t)) (result u32)))
+        (core module $libc (memory (export "mem") 1))
+        (core instance $libc (instantiate $libc))
+        (core func $make (canon lower (func $make)))
+        (core func $next (canon lower (func $next) async (memory (core memory $libc "mem"))))
+        (core func $drop (canon resource.drop $t))
+        (core func $task-return (canon task.return (result u32)))
+        (core func $set-new (canon waitable-set.new))
+        (core func $set-drop (canon waitable-set.drop))
+        (core func $join (canon waitable.join))
+        (core func $subtask-drop (canon subtask.drop))
+        (core module $m
+          (import "" "mem" (memory 1))
+          (import "" "make" (func $make (param i32) (result i32)))
+          (import "" "next" (func $next (param i32 i32) (result i32)))
+          (import "" "drop" (func $drop (param i32)))
+          (import "" "task.return" (func $task-return (param i32)))
+          (import "" "waitable-set.new" (func $set-new (result i32)))
+          (import "" "waitable-set.drop" (func $set-drop (param i32)))
+          (import "" "waitable.join" (func $join (param i32 i32)))
+          (import "" "subtask.drop" (func $subtask-drop (param i32)))
+          ;; The borrow this caller was given, when it was given one.
+          (global $given (mut i32) (i32.const 0))
+          (global $handle (mut i32) (i32.const 0))
+          (global $set (mut i32) (i32.const 0))
+          (func $start (result i32)
+            (local $status i32)
+            (global.set $handle (call $make (i32.const 7)))
+            (local.set $status (call $next (global.get $handle) (i32.const 8)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1))
+              (then unreachable))
+            (global.set $set (call $set-new))
+            (call $join (i32.shr_u (local.get $status) (i32.const 4)) (global.get $set))
+            (i32.or (i32.shl (global.get $set) (i32.const 4)) (i32.const 2)))
+          (func (export "run") (result i32)
+            (call $start))
+          (func (export "answer") (param i32) (result i32)
+            (global.set $given (local.get 0))
+            (call $start))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (if (i32.ne (local.get 0) (i32.const 1)) (then unreachable))
+            (if (i32.ne (local.get 2) (i32.const 2)) (then unreachable))
+            (call $drop (global.get $handle))
+            (call $join (local.get 1) (i32.const 0))
+            (call $subtask-drop (local.get 1))
+            (call $set-drop (global.get $set))
+            (if (global.get $given)
+              (then (call $drop (global.get $given))))
+            (call $task-return (i32.add (i32.load (i32.const 8)) (i32.const 7)))
+            (i32.const 0)))
+        (core instance $i (instantiate $m (with "" (instance
+          (export "mem" (memory $libc "mem"))
+          (export "make" (func $make))
+          (export "next" (func $next))
+          (export "drop" (func $drop))
+          (export "task.return" (func $task-return))
+          (export "waitable-set.new" (func $set-new))
+          (export "waitable-set.drop" (func $set-drop))
+          (export "waitable.join" (func $join))
+          (export "subtask.drop" (func $subtask-drop))))))
+        (func (export "run") async (result u32)
+          (canon lift (core func $i "run") async (callback (core func $i "cb"))))
+        (func (export "answer") async (param "x" (borrow $t)) (result u32)
+          (canon lift (core func $i "answer") async (callback (core func $i "cb")))))
+      (instance $defs (instantiate $defs))
+      (alias export $defs "thing" (type $t))
+      (instance $leaf (instantiate $leaf (with "thing" (type $t))))
+      (instance $middle (instantiate $caller
+        (with "thing" (type $t))
+        (with "make" (func $defs "make"))
+        (with "next" (func $leaf "answer"))))
+      (instance $root (instantiate $caller
+        (with "thing" (type $t))
+        (with "make" (func $defs "make"))
+        (with "next" (func $middle "answer"))))
+      (export "run" (func $root "run")))
     "#
 );
 
@@ -945,6 +1168,74 @@ async fn it_gives_a_lent_handle_back_when_the_caller_takes_delivery_of_the_resol
         subtask_count(&store),
         0,
         "the caller dropped the subtask the delivered resolution let it drop"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_gives_each_lend_of_a_chain_of_calls_back_at_its_own_delivery() {
+    // `root` lends to `middle`, which lends a handle of its own to
+    // `leaf`. `middle` drops its handle once `leaf`'s resolution is
+    // delivered, while `root`'s lend to `middle` still stands, and
+    // `root` drops its handle once `middle`'s is. Both drops stand, so
+    // each lend was on the subtask of its own call: a lend credited to
+    // the call below or above it would still be out at its drop.
+    let (mut store, instance) = instantiate(LENDS_DOWN_A_CHAIN).await;
+    let result = instance
+        .get_func("run")
+        .expect("the root's export")
+        .call(&mut store, &[])
+        .await
+        .expect("every drop stood");
+    assert_eq!(
+        result.as_ref(),
+        &[Val::U32(17)],
+        "`leaf` returned 3, `middle` 3 + 7, and `root` 10 + 7"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_a_handle_lent_past_the_callees_exit_until_the_resolution_is_delivered() {
+    // The callee's task exits before the caller drops its handle, so a
+    // lend kept on that task would be back by then. The drop traps all
+    // the same: the lend is on the subtask, and the caller never took
+    // its resolution.
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let component = Component::new(&engine, EXITS_BEFORE_DELIVERY)
+        .await
+        .expect("component parses");
+    let notes: Arc<Mutex<Vec<u32>>> = Arc::default();
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let noted = notes.clone();
+    linker
+        .root()
+        .func_wrap(
+            "note",
+            move |_: crate::HostCall<'_, ()>, (step,): (u32,)| {
+                noted.lock().expect("notes").push(step);
+                Ok(())
+            },
+        )
+        .expect("the registration");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let err = instance
+        .get_func("drop-undelivered")
+        .expect("the caller's export")
+        .call(&mut store, &[Val::U32(7)])
+        .await
+        .expect_err("the owning handle cannot be dropped while it is lent");
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![1, 2],
+        "the callee exited before the caller dropped its handle"
+    );
+    let message = chain(&err);
+    assert!(
+        message.contains("cannot remove owned resource while borrowed"),
+        "expected the lent-handle trap, got {message}"
     );
 }
 
