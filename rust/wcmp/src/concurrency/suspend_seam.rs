@@ -535,6 +535,25 @@ impl<T: 'static> SuspendSeam<T> {
             .deferred_mut()
             .may_defer_start = false;
         let step = step?;
+        let suspends = Self::suspend_for(store, thread, step, switcher);
+        if suspends.is_err() {
+            // The thread goes no further into the built-in, so the
+            // switch its first part named is not made either.
+            store.internal().scheduler_mut().forget_next_thread();
+        }
+        suspends
+    }
+
+    /// The rest of [`try_block`](Self::try_block) once the built-in's
+    /// first part answered `step` on `thread`, which suspends for it:
+    /// record the wait, or leave the work the part left to the store as
+    /// a plan, and answer whether the condition already holds.
+    fn suspend_for(
+        store: &mut StoreContext<'_, T>,
+        thread: ThreadId,
+        step: BlockStep<T>,
+        switcher: bool,
+    ) -> anyhow::Result<bool> {
         if store.internal().defers_work() {
             // The condition is recorded once the work is done, as it
             // would be once the first part returned. Until then the

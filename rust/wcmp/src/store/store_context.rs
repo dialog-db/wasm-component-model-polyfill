@@ -2557,7 +2557,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             let finished = parked.finish(self, Err(trap));
             // Whatever the finish left above the thread's scopes goes
             // with it, as a trap's unwind takes it.
-            self.lock_tables()?.tasks.cut_scopes(base);
+            self.lock_tables()?.discard_scopes_above(base);
             if let Err(error) = finished {
                 failed.get_or_insert(error);
             }
@@ -3104,7 +3104,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 );
             }
             if let Ok(mut guard) = self.lock_tables() {
-                guard.tasks.cut_scopes(base);
+                guard.discard_scopes_above(base);
             }
         }
     }

@@ -506,6 +506,16 @@ impl<T: 'static> Scheduler<T> {
         self.next_thread = Some(thread);
     }
 
+    /// Forget the thread a switch named to run next, when the thread
+    /// that named it goes no further into the built-in that would have
+    /// suspended it for the switch. A resumption left to the store
+    /// stays: no switch named it.
+    pub fn forget_next_thread(&mut self) {
+        if !self.deferred.next_left {
+            self.next_thread = None;
+        }
+    }
+
     /// Take the thread a switch named to run next.
     pub fn take_next_thread(&mut self) -> Option<ThreadId> {
         self.deferred.next_left = false;

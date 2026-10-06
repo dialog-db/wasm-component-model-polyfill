@@ -229,6 +229,22 @@ impl HandleTables {
         self.tasks.forget_running_thread(thread);
     }
 
+    /// Discard every scope above the first `base` on the stack, the
+    /// innermost first, and forget the explicit threads that ran among
+    /// them: what a thread that failed or was given up left on the
+    /// stack goes as a trap's unwind takes it, under the rule
+    /// [`exit_task`](Self::exit_task) states. A scope whose record is
+    /// gone already, such as the scope of a task that ended, gives
+    /// nothing back.
+    pub fn discard_scopes_above(&mut self, base: usize) {
+        while self.tasks.scopes().len() > base {
+            if let Some(top) = self.tasks.pop_scope() {
+                self.discard_scope(top);
+            }
+        }
+        self.tasks.cut_scopes(base);
+    }
+
     /// End the innermost task on the stack on its success path, for
     /// the one caller that cannot name the task it pushed: an
     /// adapter's enter and exit intrinsics are two separate calls
