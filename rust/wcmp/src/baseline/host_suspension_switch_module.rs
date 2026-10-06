@@ -40,7 +40,7 @@ use crate::runtime_layer::{
     Val as RuntimeVal, ValType as RuntimeValType, host_func, instantiate, test_suspending_backend,
 };
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
-use crate::{Engine, Store};
+use crate::{Engine, Error, Store, ThreadCause};
 
 /// The second guest instance. `middle` calls the blocking built-in
 /// through the shim it imports and adds one to what it returns, so
@@ -373,8 +373,12 @@ async fn it_returns_from_a_shim_whose_built_in_is_ready_without_a_suspension() {
         "each shim tried its built-in once and never retried after a resume"
     );
     assert!(
-        scenario.resume(FIRST).await.is_err(),
-        "the first thread finished, so no call of it waits"
+        matches!(
+            scenario.resume(FIRST).await,
+            Err(Error::Thread(ThreadCause::NotSuspended))
+        ),
+        "the first thread finished, so no call of it waits, and the resume \
+         is refused with the not-suspended cause"
     );
 }
 
@@ -406,6 +410,46 @@ async fn it_refuses_a_resume_while_another_resume_is_under_way() {
         "finished with [I32(21)]",
         "the refused resume left the second thread suspended"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_starts_an_entry_of_a_type_no_instantiation_prepared_only_where_the_backend_instantiates_at_once()
+ {
+    // The provider keeps a start for each entry type an instantiation
+    // prepared. A start of any other type makes the start module then,
+    // which only a backend that instantiates at once can do inside the
+    // call. Wasmi can, and runs the entry. The browser instantiates on a
+    // promise, so the start is refused with a structured error rather
+    // than run.
+    let mut scenario = setup().await;
+    let mut context = scenario.store.internal().context();
+    let entry = host_func(
+        context.internal().runtime_mut(),
+        FuncType::new([], []),
+        |_store, _args, _results| Ok(()),
+    )
+    .expect("the entry");
+    let started =
+        scenario
+            .provider
+            .start(&mut context, SECOND, &entry, &FuncType::new([], []), &[]);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let err = started.expect_err("the browser cannot make the start in the call");
+        assert!(
+            err.to_string()
+                .contains("a thread entry of a type no instantiation prepared"),
+            "got {err}"
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let status = started.expect("Wasmi makes the start in the call");
+        let status = stop_of(&scenario.provider, &mut context, SECOND, status)
+            .await
+            .expect("the entry stops");
+        assert_eq!(describe(&status), "finished with []");
+    }
 }
 
 #[wcmp_macros::test]

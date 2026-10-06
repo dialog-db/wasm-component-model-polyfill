@@ -44,7 +44,7 @@ use crate::runtime_layer::{
     instantiate, test_backend_declaring,
 };
 use crate::store::{StoreContext, StoreContextInternalExt, StoreInternalExt};
-use crate::{Engine, Store};
+use crate::{Engine, Error, Store, ThreadCause};
 
 /// The second guest instance. `middle` calls the blocking built-in
 /// through the shim it imports and adds one to what it returns, so
@@ -95,6 +95,8 @@ struct Scenario {
     provider: StackSwitchingProvider,
     first: RuntimeFunc,
     ready: Ready,
+    /// The keys whose finish panics rather than answering.
+    panics: Ready,
     spawned: Spawned,
 }
 
@@ -129,11 +131,13 @@ fn setup() -> Scenario {
     let mut store = Store::new(&engine, ()).expect("store");
     let mut context = store.internal().context();
     let ready: Ready = Arc::default();
+    let panics: Ready = Arc::default();
     let spawned: Spawned = Arc::default();
 
     // The try and the finish of the blocking built-in the shim
     // stands for.
     let tried = ready.clone();
+    let panicking = panics.clone();
     let try_part = host_func(
         context.internal().runtime_mut(),
         i32_to_i32(),
@@ -154,6 +158,10 @@ fn setup() -> Scenario {
             let [RuntimeVal::I32(key)] = args else {
                 anyhow::bail!("the finish part takes one key");
             };
+            assert!(
+                !panicking.lock().expect("panicking keys").contains(key),
+                "the finish part panicked"
+            );
             results[0] = RuntimeVal::I32(key * 10);
             Ok(())
         },
@@ -233,6 +241,7 @@ fn setup() -> Scenario {
         provider,
         first,
         ready,
+        panics,
         spawned,
     }
 }
@@ -340,8 +349,39 @@ fn it_refuses_to_resume_a_thread_that_is_not_suspended() {
 
     let mut context = scenario.store.internal().context();
     assert!(
-        scenario.provider.resume(&mut context, FIRST).is_err(),
-        "the first thread finished, so its slot holds no continuation"
+        matches!(
+            scenario.provider.resume(&mut context, FIRST),
+            Err(Error::Thread(ThreadCause::NotSuspended))
+        ),
+        "the first thread finished, so its slot holds no continuation, and \
+         the resume is refused with the not-suspended cause"
+    );
+}
+
+#[wcmp_macros::test]
+fn it_carries_a_panic_inside_a_continuation_out_to_the_frame_that_resumed_it() {
+    // The resumed thread's shim runs the built-in's finish, which
+    // panics. The panic unwinds out of the continuation and out of the
+    // resume, to the host frame that made it, rather than aborting.
+    let mut scenario = setup();
+    start_both(&mut scenario);
+    scenario.make_ready(1);
+    scenario.panics.lock().expect("panicking keys").insert(1);
+
+    let mut context = scenario.store.internal().context();
+    let provider = scenario.provider.clone();
+    let resumed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        provider.resume(&mut context, FIRST)
+    }));
+    let payload = resumed.expect_err("the finish's panic reaches the resume");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or_default();
+    assert!(
+        message.contains("the finish part panicked"),
+        "the resume unwound with the finish's own panic, got {message:?}"
     );
 }
 

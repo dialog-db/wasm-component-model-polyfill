@@ -8,10 +8,10 @@
 //! WebAssembly stack-switching proposal.
 
 use core::task::{Poll, Waker};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ThreadCause};
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
     Engine as RuntimeEngine, Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, Imports,
@@ -82,6 +82,10 @@ pub struct StackSwitchingProvider {
     workers: RuntimeFunc,
     starts: Arc<Mutex<Vec<(FuncType, RuntimeFunc)>>>,
     finished: Finished,
+    /// The index of each thread whose continuation waits in the base
+    /// module's table, so that a resume of any other thread is refused
+    /// before it reaches an empty slot.
+    suspended: Arc<Mutex<HashSet<u32>>>,
 }
 
 impl StackSwitchingProvider {
@@ -108,6 +112,7 @@ impl StackSwitchingProvider {
             workers: export("workers")?,
             starts: Arc::default(),
             finished: Arc::default(),
+            suspended: Arc::default(),
         })
     }
 
@@ -240,7 +245,13 @@ impl StackSwitchingProvider {
     /// Answer the status a start or a resume of `thread` returned.
     fn status(&self, thread: u32, status: &RuntimeVal) -> Result<EntryStatus> {
         match status {
-            RuntimeVal::I32(SwitchModule::SUSPENDED) => Ok(EntryStatus::Suspended),
+            RuntimeVal::I32(SwitchModule::SUSPENDED) => {
+                self.suspended
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(thread);
+                Ok(EntryStatus::Suspended)
+            }
             RuntimeVal::I32(SwitchModule::FINISHED) => self
                 .finished
                 .lock()
@@ -266,6 +277,10 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
     ) -> Result<EntryStatus> {
         let start = self.start_for(store, ty)?;
         let index = thread.index();
+        self.suspended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&index);
         let arguments = [
             RuntimeVal::I32(index.cast_signed()),
             RuntimeVal::FuncRef(Some(*entry)),
@@ -282,6 +297,14 @@ impl<T: 'static> SuspendProvider<T> for StackSwitchingProvider {
 
     fn resume(&self, store: &mut StoreContext<'_, T>, thread: ThreadId) -> Result<EntryStatus> {
         let index = thread.index();
+        if !self
+            .suspended
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&index)
+        {
+            return Err(Error::Thread(ThreadCause::NotSuspended));
+        }
         let mut status = [RuntimeVal::I32(0)];
         self.resume
             .call(

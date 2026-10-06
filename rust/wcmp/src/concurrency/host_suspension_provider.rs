@@ -13,7 +13,7 @@ use core::task::{Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ThreadCause};
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::{
     Extern as RuntimeExtern, Func as RuntimeFunc, FuncType, HostFrames, Imports,
@@ -699,7 +699,7 @@ impl<T: 'static> SuspendProvider<T> for HostSuspensionProvider {
         let call = threads
             .waiting
             .remove(&index)
-            .ok_or_else(|| Error::internal("cannot resume a thread which is not suspended"))?;
+            .ok_or(Error::Thread(ThreadCause::NotSuspended))?;
         threads.stops.remove(&index);
         threads.flight = Some(Flight::Resume {
             thread: index,
