@@ -28,6 +28,7 @@ kanban-plugin: basic
 - [ ] [[fbe4df]]
 - [ ] [[4c4890]]
 - [ ] [[bf9a7f]]
+- [ ] [[656c71]]
 
 ## In Progress
 
