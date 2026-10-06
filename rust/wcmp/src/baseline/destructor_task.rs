@@ -664,8 +664,8 @@ impl<V: Unpin> Future for PendingOnce<V> {
 /// import's call, or a host task in the store.
 fn assert_blocked_release(released: &mut Released, err: &Error) {
     assert!(
-        chain(err).contains(&Error::Scheduler(SchedulerCause::CannotBlock).to_string()),
-        "expected the cannot-block cause, got {err:?}"
+        matches!(err, Error::Scheduler(SchedulerCause::CannotBlock)),
+        "the cannot-block cause reaches the host as itself, so it downcasts, got {err:?}"
     );
     assert!(
         chain(err).contains("cannot block a synchronous task before returning"),
@@ -839,8 +839,8 @@ async fn it_fails_a_guest_drop_whose_destructor_blocks_with_the_cannot_block_cau
         .expect_err("a destructor may not block, whoever dropped the handle");
 
     assert!(
-        chain(&err).contains(&Error::Scheduler(SchedulerCause::CannotBlock).to_string()),
-        "expected the cannot-block cause, got {err:?}"
+        matches!(err, Error::Scheduler(SchedulerCause::CannotBlock)),
+        "the cannot-block cause reaches the host as itself, so it downcasts, got {err:?}"
     );
     assert!(
         chain(&err).contains("cannot block a synchronous task before returning"),

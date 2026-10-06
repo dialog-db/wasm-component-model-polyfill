@@ -369,6 +369,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     function
                         .call(&mut store.runtime, &[RuntimeVal::I32(rep as i32)], &mut [])
                         .map_err(|err| {
+                            // A failure the polyfill raised inside the
+                            // destructor, such as a block it refused,
+                            // reaches the host as itself, as it does
+                            // from a guest's own drop.
+                            let cause = match crate::runtime_layer::into_anyhow(err)
+                                .downcast::<Error>()
+                            {
+                                Ok(raised) => return raised,
+                                Err(cause) => cause,
+                            };
                             // The call that failed is the core
                             // destructor's, whose one argument is the
                             // resource's `u32` rep, not the own handle
@@ -377,9 +387,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                             Error::from(AbiError {
                                 position: AbiPosition::Argument(0),
                                 valtype: None,
-                                cause: AbiCause::SubstrateFailure(
-                                    crate::runtime_layer::into_anyhow(err),
-                                ),
+                                cause: AbiCause::SubstrateFailure(cause),
                             })
                         })?;
                     Ok(())
