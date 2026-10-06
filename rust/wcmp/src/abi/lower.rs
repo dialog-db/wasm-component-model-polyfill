@@ -18,7 +18,8 @@ use crate::abi::strings;
 use crate::concurrency::{EndId, EndKind, ErrorContextAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
 use crate::internal::{
-    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, StreamAnyInternal,
+    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceHandleInternal,
+    StreamAnyInternal,
 };
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
 use crate::types::{PrimitiveType, ValueType};
@@ -630,21 +631,47 @@ pub fn lower_handle<T: 'static>(
         // is a plain copyable record and says nothing about whether
         // the entry behind it is still live.
         let host_table = guard.host_table(handle.type_id());
+        // The entry must be the one the handle records, and an index
+        // on its own does not say that: the host's table frees an
+        // index and gives it to the next entry, so a handle kept past
+        // its entry's release names whatever took its place. The
+        // generation the handle records tells the two apart. The rep
+        // is checked too, as a narrower check: a host entry's rep never
+        // changes, so it can only disagree for a handle the host did not
+        // get from this table, and two entries holding the same rep
+        // pass it.
         let entry = guard
-            .lookup(
+            .lookup_host(
                 host_table,
                 handle.index(),
+                handle.generation(),
+                handle.rep(),
                 table.type_id,
                 table.guest_defined,
             )
             .map_err(|e| invalid_host_handle(e, ty, position))?;
         let rep = match entry {
-            HandleKind::Own { rep, .. } => rep,
-            // A borrow entry is not the host's to lend on: it is
-            // already owed to a call of its own.
+            HandleKind::Own { rep, .. } => {
+                // The entry is lent to the crossing's scope for the
+                // length of the call, so nothing can take it back out
+                // — a re-entrant `Store::resource_drop`, or a second
+                // lowering as an `own<T>` — while the guest still holds
+                // the borrow. The scope's end gives the lend back,
+                // exactly as it does for a borrow a guest lifted out of
+                // one of its own owning entries.
+                guard
+                    .lend_to(ctx.scope(), host_table, handle.index())
+                    .map_err(|e| invalid_host_handle(e, ty, position))?;
+                rep
+            }
+            // A borrow the host received out of a guest hands its rep
+            // over as Wasmtime's host borrow does, with no lend: the
+            // guest's own entry stays lent for the call that handed it
+            // out, and the host's entry goes when that call ends.
+            HandleKind::Borrow { rep, .. } => rep,
             _ => {
                 return Err(invalid_host_handle(
-                    HandleLookupError::NotOwned {
+                    HandleLookupError::WrongKind {
                         index: handle.index(),
                     },
                     ty,
@@ -652,38 +679,6 @@ pub fn lower_handle<T: 'static>(
                 ));
             }
         };
-        // The entry must be the one the handle records, and an index
-        // on its own does not say that: the host's table and every
-        // guest's table allocate from a free list that starts low, so
-        // one index names a live entry in each of them. A `borrow<T>`
-        // the host received out of a guest carries that guest's table
-        // index, and lowering it back would otherwise reach whatever
-        // host entry of the same type happens to sit at the same
-        // index — a different resource, lent and handed to the guest
-        // with nothing to say it went wrong. A host entry's rep never
-        // changes after it is minted, so the rep the handle carries
-        // and the rep the entry holds agree for every handle the host
-        // actually holds, and disagree exactly when the index came
-        // from somewhere else.
-        if rep != handle.rep() {
-            return Err(invalid_host_handle(
-                HandleLookupError::Unknown {
-                    index: handle.index(),
-                },
-                ty,
-                position,
-            ));
-        }
-        // The entry is lent to the crossing's scope for the length
-        // of the call, so nothing can take it back out — a
-        // re-entrant `Store::resource_drop`, or a second lowering as
-        // an `own<T>` — while the guest still holds the borrow. The
-        // scope's end gives the lend back, exactly as it does for a
-        // borrow a guest lifted out of one of its own owning
-        // entries.
-        guard
-            .lend_to(ctx.scope(), host_table, handle.index())
-            .map_err(|e| invalid_host_handle(e, ty, position))?;
         // The defining instance receives its own resource's rep; any
         // other instance receives a borrow entry owed to the current
         // task, which the guest must drop before that task returns.
@@ -712,9 +707,11 @@ pub fn lower_handle<T: 'static>(
     // handle must name a live owning entry the host holds.
     let host_table = guard.host_table(handle.type_id());
     let rep = guard
-        .remove_own(
+        .remove_host_own(
             host_table,
             handle.index(),
+            handle.generation(),
+            handle.rep(),
             handle.type_id(),
             table.guest_defined,
         )

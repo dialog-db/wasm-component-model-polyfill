@@ -68,6 +68,19 @@ pub enum HandleLookupError {
     /// The caller wanted an owning entry, but the index names a
     /// borrow.
     NotOwned { index: u32 },
+    /// A live entry sits at the index, but not the one the handle was
+    /// minted for: the handle's entry was removed and the index given
+    /// to another. Only a host handle carries the generation that says
+    /// so. The message is Wasmtime's for a host handle whose resource
+    /// is gone.
+    Stale { index: u32 },
+    /// A live entry of the right type sits at the index, but it holds
+    /// another rep than the one the handle records.
+    RepMismatch {
+        index: u32,
+        held: u32,
+        recorded: u32,
+    },
     /// A borrow was lifted out of an owning entry with no call to
     /// lend the entry to: either no scope is in flight, or the scope
     /// the caller named has already ended. Nothing gives the lend
@@ -89,6 +102,20 @@ impl fmt::Display for HandleLookupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown { index } => write!(f, "unknown handle index {index}"),
+            Self::Stale { index } => write!(
+                f,
+                "host-owned resource was already de-allocated: handle index {index} names \
+                 another resource now"
+            ),
+            Self::RepMismatch {
+                index,
+                held,
+                recorded,
+            } => write!(
+                f,
+                "handle index {index} is live in the host's resource table with rep {held}, \
+                 not the rep {recorded} the handle records"
+            ),
             Self::WrongType {
                 index,
                 expected_guest,

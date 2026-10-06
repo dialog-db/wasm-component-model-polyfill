@@ -21,6 +21,7 @@
 
 use super::handle_parts::ResourceHandleParts;
 use super::identity::ResourceTypeId;
+use crate::internal::ResourceHandleInternal;
 
 /// An opaque handle into one of a store's handle tables.
 ///
@@ -87,6 +88,11 @@ pub struct ResourceHandle {
     /// back into a guest, which re-inserts the rep and takes a fresh
     /// index.
     rep: u32,
+    /// The generation of the host-table entry the handle was minted
+    /// for. An index the host's table frees and gives to another entry
+    /// takes a new generation, so a handle kept past its entry's
+    /// release is told from the entry that took its index.
+    generation: u32,
 }
 
 impl ResourceHandle {
@@ -111,12 +117,19 @@ impl ResourceHandle {
     }
 }
 
+impl ResourceHandleInternal for ResourceHandle {
+    fn generation(&self) -> u32 {
+        self.generation
+    }
+}
+
 impl From<ResourceHandleParts> for ResourceHandle {
     fn from(parts: ResourceHandleParts) -> Self {
         Self {
             type_id: parts.type_id,
             index: parts.index,
             rep: parts.rep,
+            generation: parts.generation,
         }
     }
 }

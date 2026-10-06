@@ -818,13 +818,13 @@ pub fn lift_handle<T: 'static>(
         let rep = guard
             .remove_own(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
-        let host_index = guard.host_table(table.type_id);
-        let host_index = guard.insert_own(host_index, table.type_id, table.guest_defined, rep);
+        let (index, generation) = guard.insert_host_own(table.type_id, table.guest_defined, rep);
         Ok(Val::Own(
             ResourceHandleParts {
                 type_id: table.type_id,
-                index: host_index,
+                index,
                 rep,
+                generation,
             }
             .into(),
         ))
@@ -833,7 +833,11 @@ pub fn lift_handle<T: 'static>(
         // instance that defines the resource included: a lift of a
         // borrow always reads the entry the index names. Only the
         // lower side short-circuits to the rep, when the instance the
-        // borrow is lowered into is the resource's definer.
+        // borrow is lowered into is the resource's definer. That is
+        // never this instance at the host boundary: a component may not
+        // import a function whose type names a resource it defines
+        // itself, and the host has no way to hand one such a type, so
+        // no defining instance lifts its own borrow to the host.
         //
         // A borrow lifted out of an owning entry lends that entry to
         // the current scope, which gives it back when the scope ends;
@@ -846,13 +850,22 @@ pub fn lift_handle<T: 'static>(
                 .lend_to(scope, table.table, index)
                 .map_err(|e| invalid(e.to_string()))?;
         }
+        let rep = entry
+            .rep()
+            .ok_or_else(|| invalid(HandleLookupError::WrongKind { index }.to_string()))?;
+        // The host's handle names a borrow entry of its own table, which
+        // the scope's end removes, so the handle reads as the borrow it
+        // is when the host lowers it back into a guest, and as gone
+        // afterwards.
+        let (index, generation) = guard
+            .insert_host_borrow(scope, table.type_id, table.guest_defined, rep)
+            .ok_or_else(|| invalid(HandleLookupError::NoCallInFlight.to_string()))?;
         Ok(Val::Borrow(
             ResourceHandleParts {
                 type_id: table.type_id,
                 index,
-                rep: entry
-                    .rep()
-                    .expect("lookup only ever returns a resource entry"),
+                rep,
+                generation,
             }
             .into(),
         ))

@@ -49,10 +49,15 @@ enum Slot {
         /// Index of the next free slot, or `None` if this is the
         /// list tail.
         next: Option<u32>,
+        /// The generation the slot's next entry takes.
+        generation: u32,
     },
     Occupied {
         /// The entry's kind.
         entry: HandleKind,
+        /// How many entries the slot held before this one, so that a
+        /// handle that recorded an earlier one can be told from it.
+        generation: u32,
     },
 }
 
@@ -93,18 +98,21 @@ impl HandleTable {
 
     fn insert(&mut self, entry: HandleKind) -> u32 {
         if let Some(idx) = self.free_head {
-            let next = match self.slots[idx as usize] {
-                Slot::Free { next } => next,
+            let (next, generation) = match self.slots[idx as usize] {
+                Slot::Free { next, generation } => (next, generation),
                 Slot::Occupied { .. } | Slot::Reserved => {
                     unreachable!("free_head pointed at a slot that is not free")
                 }
             };
             self.free_head = next;
-            self.slots[idx as usize] = Slot::Occupied { entry };
+            self.slots[idx as usize] = Slot::Occupied { entry, generation };
             idx
         } else {
             let idx = self.slots.len() as u32;
-            self.slots.push(Slot::Occupied { entry });
+            self.slots.push(Slot::Occupied {
+                entry,
+                generation: 0,
+            });
             idx
         }
     }
@@ -115,10 +123,19 @@ impl HandleTable {
         self.entry(index).and_then(HandleKind::rep)
     }
 
+    /// The generation of the entry at a live index: how many entries
+    /// its slot held before it.
+    pub fn generation(&self, index: u32) -> Option<u32> {
+        match self.slots.get(index as usize)? {
+            Slot::Occupied { generation, .. } => Some(*generation),
+            Slot::Free { .. } | Slot::Reserved => None,
+        }
+    }
+
     /// The entry at a live index.
     pub fn entry(&self, index: u32) -> Option<&HandleKind> {
         match self.slots.get(index as usize)? {
-            Slot::Occupied { entry } => Some(entry),
+            Slot::Occupied { entry, .. } => Some(entry),
             Slot::Free { .. } | Slot::Reserved => None,
         }
     }
@@ -126,7 +143,7 @@ impl HandleTable {
     /// The entry at a live index, mutably.
     pub fn entry_mut(&mut self, index: u32) -> Option<&mut HandleKind> {
         match self.slots.get_mut(index as usize)? {
-            Slot::Occupied { entry } => Some(entry),
+            Slot::Occupied { entry, .. } => Some(entry),
             Slot::Free { .. } | Slot::Reserved => None,
         }
     }
@@ -134,12 +151,13 @@ impl HandleTable {
     /// Free a live index and return its entry.
     pub fn remove(&mut self, index: u32) -> Option<HandleKind> {
         let slot = self.slots.get_mut(index as usize)?;
-        let entry = match slot {
-            Slot::Occupied { entry } => *entry,
+        let (entry, generation) = match slot {
+            Slot::Occupied { entry, generation } => (*entry, *generation),
             Slot::Free { .. } | Slot::Reserved => return None,
         };
         *slot = Slot::Free {
             next: self.free_head,
+            generation: generation.wrapping_add(1),
         };
         self.free_head = Some(index);
         Some(entry)
@@ -187,6 +205,22 @@ mod tests {
         let c = table.insert_entry(own(3));
         assert_eq!(c, a);
         assert_eq!(table.get(c), Some(3));
+    }
+
+    #[wcmp_macros::test]
+    fn it_changes_the_generation_of_a_reused_slot() {
+        let mut table = HandleTable::new();
+        let a = table.insert_entry(own(1));
+        let first = table.generation(a).expect("a live entry");
+        table.remove(a);
+        assert_eq!(table.generation(a), None, "a free slot has no live entry");
+        let b = table.insert_entry(own(1));
+        assert_eq!(b, a, "the slot is reused");
+        assert_ne!(
+            table.generation(b),
+            Some(first),
+            "the entry that reused the slot is told from the one before it"
+        );
     }
 
     #[wcmp_macros::test]

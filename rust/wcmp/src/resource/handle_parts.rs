@@ -29,4 +29,6 @@ pub struct ResourceHandleParts {
     pub index: u32,
     /// The resource's 32-bit representation.
     pub rep: u32,
+    /// The generation of the host-table entry the handle names.
+    pub generation: u32,
 }

@@ -148,12 +148,12 @@ impl<'a, T: 'static> HostCall<'a, T> {
             }));
         };
         let mut guard = self.store.internal_ref().lock_tables()?;
-        let table = guard.host_table(type_id);
-        let index = guard.insert_own(table, type_id, known.guest_defined, rep);
+        let (index, generation) = guard.insert_host_own(type_id, known.guest_defined, rep);
         Ok(ResourceHandleParts {
             type_id,
             index,
             rep,
+            generation,
         }
         .into())
     }

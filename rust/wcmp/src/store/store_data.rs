@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
-use crate::internal::ErrorInternal;
+use crate::internal::{ErrorInternal, ResourceHandleInternal};
 use crate::resource::{
     HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts, ResourceTypeId,
 };
@@ -412,12 +412,12 @@ impl<T: 'static> StoreData<T> {
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
         let guest_defined = self.is_guest_defined(type_id);
         let mut guard = self.lock_tables()?;
-        let table = guard.host_table(type_id);
-        let index = guard.insert_own(table, type_id, guest_defined, rep);
+        let (index, generation) = guard.insert_host_own(type_id, guest_defined, rep);
         Ok(ResourceHandleParts {
             type_id,
             index,
             rep,
+            generation,
         }
         .into())
     }
@@ -430,7 +430,14 @@ impl<T: 'static> StoreData<T> {
         let mut guard = self.lock_tables()?;
         let table = guard.host_table(handle.type_id());
         guard
-            .remove_own(table, handle.index(), handle.type_id(), guest_defined)
+            .remove_host_own(
+                table,
+                handle.index(),
+                handle.generation(),
+                handle.rep(),
+                handle.type_id(),
+                guest_defined,
+            )
             .map_err(|e| {
                 let reason = match e {
                     HandleLookupError::Unknown { index } => {

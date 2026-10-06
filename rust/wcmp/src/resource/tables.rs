@@ -574,13 +574,21 @@ impl HandleTables {
         }
     }
 
-    /// Give back every owning entry lent to `scope`.
+    /// Give back every owning entry lent to `scope`, and remove every
+    /// borrow entry the host's tables held for it: the borrows the host
+    /// received out of a guest during the scope's call, which end with
+    /// it.
     fn undo_lends(&mut self, scope: Scope) {
         for (table, index) in self.tasks.take_lenders(scope) {
-            if let Some(HandleKind::Own { lend_count, .. }) =
-                self.for_table_mut(table).entry_mut(index)
-            {
-                *lend_count = lend_count.saturating_sub(1);
+            let table = self.for_table_mut(table);
+            match table.entry_mut(index) {
+                Some(HandleKind::Own { lend_count, .. }) => {
+                    *lend_count = lend_count.saturating_sub(1);
+                }
+                Some(HandleKind::Borrow { .. }) => {
+                    table.remove(index);
+                }
+                _ => {}
             }
         }
     }
@@ -737,6 +745,20 @@ impl HandleTables {
         })
     }
 
+    /// Insert an owning entry for `rep` into the host's table for
+    /// `type_id`, and return its index and generation, which the
+    /// host's handle records.
+    pub fn insert_host_own(
+        &mut self,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+        rep: u32,
+    ) -> (u32, u32) {
+        let table = self.host_table(type_id);
+        let index = self.insert_own(table, type_id, guest_defined, rep);
+        (index, self.generation(table, index).unwrap_or_default())
+    }
+
     /// Insert a borrow of `rep` of resource type `type_id` into
     /// `table`, owed to the current task. Returns the new index, or
     /// `None` when no task is in flight.
@@ -879,6 +901,94 @@ impl HandleTables {
             });
         }
         Ok(entry)
+    }
+
+    /// Insert a borrow of `rep` into the host's table for `type_id`, for
+    /// a `borrow<T>` the host receives out of a guest during the call
+    /// `scope` names, and return its index and generation. Returns
+    /// `None` when no call is in flight.
+    ///
+    /// The entry is the host's handle on the borrow, as Wasmtime's
+    /// host table takes a borrow lifted out of a guest: lowered back
+    /// into a guest, it hands over the rep and lends nothing, since the
+    /// guest's own entry is lent for the call already. It counts against
+    /// no task's borrows, so the host need not drop it, which Wasmtime's
+    /// dynamic `ResourceAny` borrow asks of the host. It goes with the
+    /// call instead: it joins the scope's lenders, and the scope's end
+    /// removes it, so a copy the host keeps past the call is refused.
+    pub fn insert_host_borrow(
+        &mut self,
+        scope: Option<Scope>,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+        rep: u32,
+    ) -> Option<(u32, u32)> {
+        let scope = self.tasks.counting_scope(scope)?;
+        let task = self.tasks.borrow_task(scope)?;
+        let table = self.host_table(type_id);
+        let index = self.for_table_mut(table).insert_entry(HandleKind::Borrow {
+            type_id,
+            guest_defined,
+            rep,
+            task,
+        });
+        if !self.tasks.add_lender(scope, (table, index)) {
+            self.for_table_mut(table).remove(index);
+            return None;
+        }
+        let generation = self.generation(table, index)?;
+        Some((index, generation))
+    }
+
+    /// The generation of the live entry at `index` of `table`.
+    pub fn generation(&self, table: TableId, index: u32) -> Option<u32> {
+        self.for_table(table).and_then(|t| t.generation(index))
+    }
+
+    /// Read the entry a host handle names in the host's `table`: the
+    /// entry at `index`, of type `type_id`, which must be the very entry
+    /// the handle was minted for. An entry of another generation took
+    /// the index after the handle's entry went, which is
+    /// [`HandleLookupError::Stale`]; one holding another rep is
+    /// [`HandleLookupError::RepMismatch`], a narrower check that only a
+    /// forged or misplaced handle can fail once the generation agrees.
+    pub fn lookup_host(
+        &self,
+        table: TableId,
+        index: u32,
+        generation: u32,
+        rep: u32,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+    ) -> Result<HandleKind, HandleLookupError> {
+        let entry = self.lookup(table, index, type_id, guest_defined)?;
+        if self.generation(table, index) != Some(generation) {
+            return Err(HandleLookupError::Stale { index });
+        }
+        match entry.rep() {
+            Some(held) if held != rep => Err(HandleLookupError::RepMismatch {
+                index,
+                held,
+                recorded: rep,
+            }),
+            _ => Ok(entry),
+        }
+    }
+
+    /// Remove the owning entry a host handle names in the host's
+    /// `table`, under the checks of [`lookup_host`](Self::lookup_host)
+    /// and of [`remove_own`](Self::remove_own), and return its rep.
+    pub fn remove_host_own(
+        &mut self,
+        table: TableId,
+        index: u32,
+        generation: u32,
+        rep: u32,
+        type_id: ResourceTypeId,
+        guest_defined: bool,
+    ) -> Result<u32, HandleLookupError> {
+        self.lookup_host(table, index, generation, rep, type_id, guest_defined)?;
+        self.remove_own(table, index, type_id, guest_defined)
     }
 
     /// Remove the owning entry at `index` of `table` and return its

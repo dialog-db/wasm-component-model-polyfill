@@ -16,9 +16,10 @@
 
 #![cfg(test)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::internal::ResourceTypeIdInternal;
+use crate::internal::{ResourceHandleInternal, ResourceTypeIdInternal};
 use crate::resource::ResourceHandleParts;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
@@ -209,6 +210,7 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
         type_id,
         index: 999,
         rep: 0,
+        generation: 0,
     }
     .into();
     let outcome = consume.call(&mut store, &[Val::Own(bogus)]).await;
@@ -1174,6 +1176,7 @@ async fn it_refuses_to_lower_a_borrow_the_host_never_minted() {
         type_id,
         index: 999,
         rep: 4,
+        generation: 0,
     }
     .into();
     let peek = instance.get_func("peek").expect("peek export");
@@ -1372,22 +1375,16 @@ async fn recording_borrower_instance(
 }
 
 #[wcmp_macros::test]
-async fn it_refuses_to_lower_a_borrow_the_host_received_out_of_a_guest() {
-    // A `borrow<T>` the host receives from a guest carries that
-    // guest's table index, not an index into the host's table. Handed
-    // back to an export as a `borrow<T>` it names whatever host entry
-    // of the same type sits at the same index, and both tables
-    // allocate from a free list that starts at one, so the collision
-    // is the ordinary case rather than a corner of one. Comparing the
-    // rep the entry holds with the rep the handle records is what
-    // tells the two apart: without it this lower would succeed
-    // against a different resource, lend that one, and put its rep in
-    // front of the guest with nothing to say the crossing went wrong.
+async fn it_refuses_to_lower_a_borrow_the_host_kept_past_the_call_that_lent_it() {
+    // A `borrow<T>` the host receives from a guest names a borrow entry
+    // of the host's own table, which the call that handed it over owns:
+    // it goes when that call ends. A copy the host keeps past the call
+    // names nothing, so lowering it back is refused, and nothing is lent
+    // to the refused call. The guest's own index plays no part: the
+    // guest sees the borrow at index one of its table, where the host's
+    // table holds another resource.
     let seen: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
     let (mut store, instance, type_id) = recording_borrower_instance(seen.clone()).await;
-    // Two host entries holding different reps. The call borrows the
-    // second, and the guest sees it at index one of its own table,
-    // which is where the first one sits in the host's.
     let first = store.resource_new(type_id, 100).expect("mint");
     let second = store.resource_new(type_id, 200).expect("mint");
     assert_eq!(
@@ -1411,31 +1408,298 @@ async fn it_refuses_to_lower_a_borrow_the_host_received_out_of_a_guest() {
         .lock()
         .expect("the borrowed handle")
         .expect("the guest called the host's `rep`");
-    assert_eq!(
-        (lifted.index(), lifted.rep()),
-        (1, 200),
-        "the handle the guest lent names the guest's own first slot, \
-         which in the host's table is the other resource"
+    assert_eq!(lifted.rep(), 200, "the host's borrow carries the rep");
+    assert_ne!(
+        lifted.index(),
+        first.index(),
+        "the host's borrow names an entry of its own table, not the guest's index"
     );
 
     let err = peek
         .call(&mut store, &[Val::Borrow(lifted)])
         .await
-        .expect_err("a guest's table index names no handle the host holds");
+        .expect_err("the borrow went with the call that handed it to the host");
     assert!(
         matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
         "expected the invalid-handle cause, got {err:?}"
     );
 
-    // Nothing was lent to the refused call: the entry the collision
-    // reached is still the host's to release, and so is the one the
-    // first call borrowed.
     store
         .resource_drop(first)
-        .expect("the refused lower left the colliding entry alone");
+        .expect("the refused lower left the other entry alone");
     store
         .resource_drop(second)
         .expect("the first call ended, so its lend came back");
+}
+
+/// The reason of the invalid-handle failure `err` carries.
+fn invalid_handle_reason(err: &Error) -> String {
+    match err {
+        Error::Abi(abi) => match &abi.cause {
+            AbiCause::InvalidHandle { reason } => reason.clone(),
+            other => panic!("expected the invalid-handle cause, got {other:?}"),
+        },
+        other => panic!("expected an ABI failure, got {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_lower_a_stale_handle_whose_slot_was_reminted_with_the_same_rep() {
+    // The host releases a handle and mints another with the same rep,
+    // which takes the freed index. The released handle and the new one
+    // carry the same index and the same rep, and only the generation of
+    // the entry tells them apart, as Wasmtime's host index does.
+    let (mut store, instance, type_id) = borrower_instance().await;
+    let stale = store.resource_new(type_id, 9).expect("mint");
+    store.resource_drop(stale).expect("release");
+    let fresh = store.resource_new(type_id, 9).expect("mint again");
+    assert_eq!(
+        (fresh.index(), fresh.rep()),
+        (stale.index(), stale.rep()),
+        "the new handle took the released index, with the same rep"
+    );
+
+    let peek = instance.get_func("peek").expect("peek export");
+    let err = peek
+        .call(&mut store, &[Val::Borrow(stale)])
+        .await
+        .expect_err("the released handle names another entry now");
+    assert!(
+        invalid_handle_reason(&err).contains("host-owned resource was already de-allocated"),
+        "the refusal is Wasmtime's for a host handle whose resource is gone, got {err}"
+    );
+    // The refused lower is a trap, which poisons the store, so the new
+    // handle is checked through its release, which runs no guest code.
+    store
+        .resource_drop(fresh)
+        .expect("the resource that took the index is still the host's");
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_to_release_a_stale_handle_whose_slot_was_reminted() {
+    // Releasing the old handle again must not release the resource that
+    // took its index, which would run that resource's destructor.
+    let (mut store, _instance, type_id) = borrower_instance().await;
+    let stale = store.resource_new(type_id, 9).expect("mint");
+    store.resource_drop(stale).expect("release");
+    let fresh = store.resource_new(type_id, 9).expect("mint again");
+
+    let err = store
+        .resource_drop(stale)
+        .expect_err("the released handle names another entry now");
+    assert!(
+        invalid_handle_reason(&err).contains("host-owned resource was already de-allocated"),
+        "got {err}"
+    );
+    store
+        .resource_drop(fresh)
+        .expect("the resource that took the index is still the host's");
+}
+
+#[wcmp_macros::test]
+async fn it_names_the_rep_mismatch_when_a_handle_records_another_rep() {
+    // A handle whose index and generation agree with a live entry but
+    // whose rep does not came from somewhere other than this entry. The
+    // refusal says so, rather than calling a live index unknown.
+    let (mut store, instance, type_id) = borrower_instance().await;
+    let first = store.resource_new(type_id, 100).expect("mint");
+    let forged: ResourceHandle = ResourceHandleParts {
+        type_id,
+        index: first.index(),
+        rep: 200,
+        generation: first.generation(),
+    }
+    .into();
+    let peek = instance.get_func("peek").expect("peek export");
+    let err = peek
+        .call(&mut store, &[Val::Borrow(forged)])
+        .await
+        .expect_err("the forged handle records another rep");
+    let reason = invalid_handle_reason(&err);
+    assert!(
+        reason.contains("with rep 100, not the rep 200 the handle records"),
+        "the refusal names the mismatch, got {reason}"
+    );
+    store
+        .resource_drop(first)
+        .expect("the refused lower lent nothing");
+}
+
+/// A component over the same imported `thing` whose callback export
+/// `lend` hands the borrow it was given to the host's asynchronous
+/// `hold-borrow`, waits for that call, and then drops the borrow.
+const LENDER: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd014-tests:host/things@0.1.0" (instance $i
+        (export "thing" (type $thing (sub resource)))
+        (export "hold-borrow" (func async (param "h" (borrow $thing))))))
+      (alias export $i "thing" (type $thing))
+      (alias export $i "hold-borrow" (func $hold))
+      (core module $libc (memory (export "mem") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $hold (canon lower (func $hold) async (memory (core memory $libc "mem"))))
+      (core func $drop (canon resource.drop $thing))
+      (core func $set-new (canon waitable-set.new))
+      (core func $join (canon waitable.join))
+      (core func $subtask-drop (canon subtask.drop))
+      (core func $task-return (canon task.return))
+      (core module $m
+        (import "" "hold" (func $hold (param i32) (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (import "" "waitable-set.new" (func $set-new (result i32)))
+        (import "" "waitable.join" (func $join (param i32 i32)))
+        (import "" "subtask.drop" (func $subtask-drop (param i32)))
+        (import "" "task.return" (func $task-return))
+        (global $h (mut i32) (i32.const 0))
+        (global $subtask (mut i32) (i32.const 0))
+        (func $finish (result i32)
+          (call $drop (global.get $h))
+          (call $task-return)
+          (i32.const 0))
+        (func (export "lend") (param $h i32) (result i32)
+          (local $status i32) (local $set i32)
+          (global.set $h (local.get $h))
+          (local.set $status (call $hold (local.get $h)))
+          (if (i32.eq (i32.and (local.get $status) (i32.const 15)) (i32.const 2))
+            (then (return (call $finish))))
+          (global.set $subtask (i32.shr_u (local.get $status) (i32.const 4)))
+          (local.set $set (call $set-new))
+          (call $join (global.get $subtask) (local.get $set))
+          (i32.or (i32.shl (local.get $set) (i32.const 4)) (i32.const 2)))
+        (func (export "lend-callback") (param i32 i32 i32) (result i32)
+          (call $join (global.get $subtask) (i32.const 0))
+          (call $subtask-drop (global.get $subtask))
+          (call $finish)))
+      (core instance $c (instantiate $m (with "" (instance
+        (export "hold" (func $hold))
+        (export "drop" (func $drop))
+        (export "waitable-set.new" (func $set-new))
+        (export "waitable.join" (func $join))
+        (export "subtask.drop" (func $subtask-drop))
+        (export "task.return" (func $task-return))))))
+      (func (export "lend") async (param "h" (borrow $thing))
+        (canon lift (core func $c "lend") async
+          (callback (core func $c "lend-callback")))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep() {
+    // While `lend`'s call to the host is in flight, the host lowers the
+    // borrow it received into a second instance's `peek`. The borrow
+    // hands over its rep, as Wasmtime's host borrow does, and lends
+    // nothing of its own. Once `lend` resolves, the borrow is gone, and
+    // every lend has come back, so the host can release its handle.
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let lender = Component::new(&engine, LENDER)
+        .await
+        .expect("component parses");
+    let borrower = Component::new(&engine, BORROWER)
+        .await
+        .expect("component parses");
+    let (mut linker, type_id) = borrower_linker(
+        &engine,
+        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
+    );
+    let held: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let release = Arc::new(AtomicBool::new(false));
+    {
+        let held = held.clone();
+        let release = release.clone();
+        let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
+            .parse()
+            .expect("identifier");
+        linker
+            .instance(&iface)
+            .func_new_concurrent(
+                "hold-borrow",
+                FunctionType {
+                    parameters: vec![FunctionParameter {
+                        name: "h".to_owned(),
+                        ty: ValueType::Borrow(ResourceType::new("thing")),
+                    }],
+                    result: None,
+                    async_: true,
+                },
+                move |_accessor: &crate::Accessor<()>, args: Vec<Val>| {
+                    let Some(Val::Borrow(handle)) = args.first() else {
+                        panic!("expected a borrowed handle, got {args:?}");
+                    };
+                    *held.lock().expect("the held handle") = Some(*handle);
+                    let release = release.clone();
+                    core::future::poll_fn(move |context| {
+                        if release.load(Ordering::Relaxed) {
+                            return core::task::Poll::Ready(Ok(Vec::new()));
+                        }
+                        context.waker().wake_by_ref();
+                        core::task::Poll::Pending
+                    })
+                },
+            )
+            .expect("the registration");
+    }
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let lending = linker
+        .instantiate(&mut store, &lender)
+        .await
+        .expect("instantiate the lender");
+    let borrowing = linker
+        .instantiate(&mut store, &borrower)
+        .await
+        .expect("instantiate the borrower");
+    let lend = lending.get_func("lend").expect("lend export");
+    let peek = borrowing.get_func("peek").expect("peek export");
+    let minted = store.resource_new(type_id, 77).expect("mint");
+
+    let (peeked, lifted) = store
+        .run_concurrent(async |accessor| {
+            let arguments = [Val::Borrow(minted)];
+            let mut lent = core::pin::pin!(lend.call_concurrent(accessor, &arguments));
+            core::future::poll_fn(|context| {
+                assert!(
+                    lent.as_mut().poll(context).is_pending(),
+                    "`lend` waits on the host"
+                );
+                if held.lock().expect("the held handle").is_some() {
+                    return core::task::Poll::Ready(());
+                }
+                context.waker().wake_by_ref();
+                core::task::Poll::Pending
+            })
+            .await;
+            let lifted = held
+                .lock()
+                .expect("the held handle")
+                .expect("the host holds the borrow");
+            let peeked = peek
+                .call_concurrent(accessor, &[Val::Borrow(lifted)])
+                .await
+                .expect("the host's borrow lowers back into a guest");
+            release.store(true, Ordering::Relaxed);
+            lent.await
+                .expect("`lend` resolves once the host's call does");
+            (peeked, lifted)
+        })
+        .await
+        .expect("the closure runs");
+    assert_eq!(
+        peeked.as_ref(),
+        &[Val::U32(77)],
+        "the second guest read the rep the borrow carries"
+    );
+
+    let err = peek
+        .call(&mut store, &[Val::Borrow(lifted)])
+        .await
+        .expect_err("the borrow went with the call that handed it over");
+    assert!(
+        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
+        "got {err:?}"
+    );
+    store
+        .resource_drop(minted)
+        .expect("every lend of the host's handle came back");
 }
 
 /// A component over the same imported `thing` whose `grab` export

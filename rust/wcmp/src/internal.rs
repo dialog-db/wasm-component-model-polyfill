@@ -354,6 +354,14 @@ pub trait CoreValueTypeInternal {
 }
 
 /// The crate-internal face of
+/// [`ResourceHandle`](crate::ResourceHandle).
+pub trait ResourceHandleInternal {
+    /// The generation of the host-table entry the handle was minted
+    /// for, which tells it from an entry that reused the same index.
+    fn generation(&self) -> u32;
+}
+
+/// The crate-internal face of
 /// [`ResourceTypeId`](crate::ResourceTypeId).
 pub trait ResourceTypeIdInternal {
     /// Mint a globally unique resource-type identity.
