@@ -1520,13 +1520,12 @@ impl<T: 'static> Scheduler<T> {
     /// the store. A thread suspended in the provider stays parked: its
     /// resumption is an item, which no turn of a poisoned store runs.
     ///
-    /// The work the host-suspension provider leaves to the store, in the browser,
-    /// is not let go of: a resume already issued, a failed start, the
-    /// thread named to run next, the switchers that are still parked,
-    /// and the plans. A later
-    /// driver's turn carries that work forward before it runs any item,
-    /// so it can still resume a guest thread of a poisoned store. Every
-    /// other provider, and none, leaves no such work.
+    /// The work frames left to the store is not let go of here: a start
+    /// left to the store, the thread named to run next, the switchers
+    /// that are still parked, and the plans. A frame the trap is
+    /// unwinding can still be reading it. The next turn of a driver lets
+    /// go of it before it runs any item, and starts and resumes no
+    /// thread as it does.
     ///
     /// Work that reaches the store after this is kept. Only the host
     /// can make any, because no guest code runs, and host work that
@@ -1547,7 +1546,7 @@ impl<T: 'static> Scheduler<T> {
         // switcher that is no longer parked can only be stale: a later
         // frame at the same level of deferred work would take it back
         // and resume a thread that is not suspended. A parked switcher
-        // keeps its record, for the work the provider left to the store.
+        // keeps its record until the next driver's turn lets go of it.
         let parked = &self.parked;
         self.switchers
             .retain(|(thread, _)| parked.contains_key(thread));

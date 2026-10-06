@@ -516,6 +516,21 @@ impl HostSuspensionProvider {
         Ok(EntryStatus::Running)
     }
 
+    /// Let go of the start of `thread` that
+    /// [`defer_start`](Self::defer_start) left as the store's flight,
+    /// before any driver ran it, for a store a trap poisoned: the thread
+    /// never runs. A flight of another thread, or one already under way,
+    /// stays.
+    pub fn abandon_start(&self, thread: ThreadId) {
+        let mut threads = self.threads();
+        if matches!(
+            threads.flight,
+            Some(Flight::Start { thread: index, .. }) if index == thread.index()
+        ) {
+            threads.flight = None;
+        }
+    }
+
     /// Start `thread` with `start`, called with `arguments`, where the
     /// store runs no guest code: in place, up to the thread's first stop.
     ///

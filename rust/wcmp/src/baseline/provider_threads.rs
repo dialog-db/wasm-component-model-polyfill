@@ -2099,3 +2099,93 @@ async fn it_fails_the_caller_of_a_nested_start_whose_callee_traps_before_it_susp
         assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
     }
 }
+
+/// A synchronous export, `yield-then-trap`, that starts a thread whose
+/// entry traps and yields to it with `thread.yield-then-resume`. The
+/// export's thread notes `1` once it goes on after the yield, which it
+/// never may: the trap of the thread it yielded to poisons the store
+/// first.
+const YIELDS_TO_A_THREAD_THAT_TRAPS: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (core module $libc
+        (table (export "__indirect_function_table") 1 funcref))
+      (core instance $libc (instantiate $libc))
+      (core func $note (canon lower (func $note)))
+      (core type $start-ty (func (param i32)))
+      (alias core export $libc "__indirect_function_table" (core table $table))
+      (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
+      (core func $yield-then-resume (canon thread.yield-then-resume))
+      (core module $m
+        (import "" "note" (func $note (param i32)))
+        (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
+        (import "" "thread.yield-then-resume" (func $yield-then-resume (param i32) (result i32)))
+        (import "libc" "__indirect_function_table" (table 1 funcref))
+        (func $trap (param i32) unreachable)
+        (elem (table 0) (i32.const 0) func $trap)
+        (func (export "yield-then-trap")
+          (drop (call $yield-then-resume
+            (call $new-indirect (i32.const 0) (i32.const 0))))
+          (call $note (i32.const 1))))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "note" (func $note))
+          (export "thread.new-indirect" (func $new-indirect))
+          (export "thread.yield-then-resume" (func $yield-then-resume))))
+        (with "libc" (instance $libc))))
+      (func (export "yield-then-trap")
+        (canon lift (core func $i "yield-then-trap"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_resumes_no_thread_that_yielded_before_a_trap_in_a_later_driver_of_the_poisoned_store() {
+    // Under a provider the export's thread suspends in the provider as
+    // it yields, and the store keeps it to take back, still ready, once
+    // the thread it yielded to stops. That thread traps, which poisons
+    // the store and ends the call before the take-back. A later driver
+    // runs only host work: it must not resume the export's thread, and
+    // nothing the store kept may hold it up. With no provider the
+    // started thread runs above the yield on the real stack, and its
+    // trap unwinds the export's thread with it.
+    for engine in [engine(true), engine(false), suspending_engine()] {
+        let notes: Notes = Arc::default();
+        let linker = noting(&engine, &notes);
+        let (mut store, instance) =
+            instantiate(&engine, &linker, YIELDS_TO_A_THREAD_THAT_TRAPS).await;
+
+        let err = func(&instance, "yield-then-trap")
+            .call(&mut store, &[])
+            .await
+            .expect_err("the thread the export yielded to traps");
+        let message = chain(&err);
+        assert!(
+            message.contains("unreachable"),
+            "the call fails with the started thread's trap, got {message}"
+        );
+
+        let polls = store
+            .run_concurrent(async |_accessor| {
+                let mut polls = 0;
+                core::future::poll_fn(|context| {
+                    polls += 1;
+                    if polls == 16 {
+                        return Poll::Ready(());
+                    }
+                    context.waker().wake_by_ref();
+                    Poll::Pending
+                })
+                .await;
+                polls
+            })
+            .await
+            .expect("a closure that does only host work runs in a poisoned store");
+        assert_eq!(polls, 16, "the later driver ran its closure to the end");
+        assert!(
+            notes.lock().expect("notes").is_empty(),
+            "no driver of the poisoned store resumed the export's thread, under {:?}",
+            engine.suspend_provider()
+        );
+    }
+}

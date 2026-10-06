@@ -133,6 +133,17 @@ impl StoreProvider {
         }
     }
 
+    /// Let go of the start of `thread` that [`defer_start`](Self::defer_start)
+    /// left as the store's flight, before the thread first runs, for a
+    /// store a trap poisoned. Only the host-suspension provider leaves
+    /// one.
+    pub fn abandon_start(&self, thread: ThreadId) {
+        match self {
+            Self::StackSwitching(_) => {}
+            Self::HostSuspension(provider) => provider.abandon_start(thread),
+        }
+    }
+
     /// Run the store's flight, the start or the resume a turn left for
     /// the driver, until the thread stops. Only the host-suspension
     /// provider leaves one.

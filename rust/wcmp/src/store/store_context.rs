@@ -1538,10 +1538,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// does every host task, producer, and consumer, each future
     /// dropped here. The task and subtask records stay until the
     /// store drops. A later driver therefore meets no stale work, and
-    /// fails only for an entry it makes itself. The one exception is
-    /// the work the host-suspension provider leaves to the store in the browser,
-    /// which the discard does not reach and a later turn still
-    /// carries forward. Wasmtime keeps its
+    /// fails only for an entry it makes itself. The work frames left to
+    /// the store, such as a switcher to take back or a plan, goes at
+    /// the next driver's first turn, which starts and resumes no thread
+    /// of a poisoned store. Wasmtime keeps its
     /// queued items and host futures, and a later `run_concurrent`
     /// runs them; the polyfill discards them, because the Component
     /// Model runs no guest code after a trap.
@@ -2009,11 +2009,20 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// first, then the failure of a start, then the thread named to run
     /// next, then a switcher recorded at the level the store runs now,
     /// then the innermost plan.
+    ///
+    /// A store a trap poisoned takes only the first step: the thread a
+    /// turn resumed was running before the driver came back to it, and
+    /// nothing can call it back, so its stop is awaited as ever. The
+    /// rest would start or resume a thread, and is let go of instead.
     fn step_deferred_work(&mut self, waker: &Waker) -> Result<Option<bool>> {
         match self.take_stop(waker, false)? {
             Some(true) => return Ok(Some(true)),
             Some(false) => {}
             None => return Ok(None),
+        }
+        if self.poisoned() {
+            self.release_deferred_work()?;
+            return Ok(Some(false));
         }
         let stopped = core::mem::take(&mut self.scheduler_mut().deferred_mut().stopped);
         if !stopped.is_empty() {
@@ -2043,6 +2052,53 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
         self.step_plan()?;
         Ok(Some(true))
+    }
+
+    /// Let go of the work frames left to the store, for a store a trap
+    /// poisoned, without starting or resuming a thread: a start a frame
+    /// left, the thread named to run next, the switchers to take back,
+    /// and every plan, with the marks each plan's trampoline put on the
+    /// stack and the scopes of the plans the store runs. The threads
+    /// stay where they are, suspended in the provider, until the store
+    /// drops, and so does a thread whose start never ran. Nothing is
+    /// left that keeps the store busy, so a later driver consults its
+    /// condition as in a store with no such work, and runs only host
+    /// work.
+    fn release_deferred_work(&mut self) -> Result<()> {
+        let (start, stopped, plans) = {
+            let deferred = self.scheduler_mut().deferred_mut();
+            deferred.request = None;
+            deferred.turn_note_owed = false;
+            (
+                deferred.deferred_start.take(),
+                core::mem::take(&mut deferred.stopped),
+                core::mem::take(&mut deferred.plans),
+            )
+        };
+        if let Some(start) = start
+            && let Some(provider) = self.provider()
+        {
+            provider.abandon_start(start.thread);
+        }
+        self.scheduler_mut().take_next_thread();
+        while self.scheduler_mut().pop_switcher_above(0).is_some() {}
+        if let Some(outermost) = plans.first() {
+            self.lock_tables()?.tasks.cut_scopes(outermost.base);
+        }
+        for plan in stopped.into_iter().chain(plans) {
+            if let Some(parked) = plan
+                .owner
+                .and_then(|owner| self.scheduler_mut().parked_mut(owner))
+            {
+                parked.held = false;
+            }
+            self.end_marks(
+                plan.ends_nested_start,
+                plan.restores_may_not_suspend,
+                plan.ends_thread_switch,
+            )?;
+        }
+        Ok(())
     }
 
     /// Act on the stop of the thread a turn resumed, or, with

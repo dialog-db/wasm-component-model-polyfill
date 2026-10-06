@@ -78,8 +78,12 @@ pub mod internal;
 /// future: the future of a host `async` function, a stream or future
 /// producer, and a consumer, each dropped there. Host work that
 /// starts after the trap, such as a pipe of the host's own stream to
-/// a consumer of its own, touches no guest and runs. The records of
-/// the store's tasks and subtasks stay until the store drops. A later
+/// a consumer of its own, touches no guest and runs. A thread that a
+/// switch set aside to take back, and a thread start or other work a
+/// suspend provider left to the store, go as the next driver begins,
+/// before it runs anything, and no thread starts or resumes there. A
+/// suspended thread stays suspended, and the records of the store's
+/// tasks and subtasks stay, until the store drops. A later
 /// driver therefore meets no stale work, and fails only for an entry
 /// it makes itself. A trap in a turn ends the driver that is polling,
 /// so a call future of a `run_concurrent` closure goes with the
