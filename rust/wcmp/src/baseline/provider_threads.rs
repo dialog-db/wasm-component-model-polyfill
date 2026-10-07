@@ -2498,8 +2498,9 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
     // scheduler with its reason, even in the browser, which reports it
     // on a microtask. A host import's error is the failure
     // either way, and one thread's host error does not leak into
-    // another's failure. A failure is a trap, and a trap poisons the
-    // store, so each call runs in a store of its own.
+    // another's failure: the last call traps on its own after a host
+    // error in the same engine. A failure is a trap, and a trap poisons
+    // the store, so each call runs in a store of its own.
     let engine = engine(true);
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
@@ -2516,6 +2517,7 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
         ("fail-early", "the host refused"),
         ("trap-late", "unreachable"),
         ("fail-late", "the host refused"),
+        ("trap-early", "unreachable"),
     ] {
         let (mut store, instance) = instantiate(&engine, &linker, FAILS_AROUND_A_SUSPENSION).await;
         let err = func(&instance, name)

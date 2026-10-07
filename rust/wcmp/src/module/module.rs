@@ -14,7 +14,8 @@ use crate::internal::{
     CoreExternInternal, CoreExternParts, CoreInstanceParts, ErrorInternal, ModuleInternal,
 };
 use crate::runtime_layer::{
-    Imports as RuntimeImports, Module as RuntimeModule, Shared, instantiate, substrate_failure,
+    Imports as RuntimeImports, Module as RuntimeModule, Shared, instantiate, instantiation_trapped,
+    substrate_failure,
 };
 use crate::store::Store;
 use crate::store::StoreInternalExt;
@@ -102,7 +103,14 @@ impl Module {
     /// The start function is guest code. One that traps poisons the
     /// store, and a store a trap poisoned refuses the instantiation
     /// with the cannot-enter cause, [`TaskCause::CannotEnter`], whether
-    /// or not the module declares a start function.
+    /// or not the module declares a start function. A failure raised
+    /// before the start function runs leaves the store usable, as in
+    /// Wasmtime: a wrong import count, an import of another store, and
+    /// an import of the wrong kind or type. A data or element segment
+    /// that does not fit fails as a trap of its own, and the polyfill
+    /// cannot tell it from a trap of the start function, so it poisons
+    /// the store of a module that declares one, where Wasmtime leaves
+    /// the store usable.
     ///
     /// The future completes without suspending on both targets today;
     /// it is awaited so that a module whose instantiation must yield
@@ -142,8 +150,9 @@ impl Module {
                 Ok(inner) => inner,
                 Err(error) => {
                     // The module's `start` function is guest code, and
-                    // its failure is a trap, which poisons the store.
-                    if self.start {
+                    // its failure is a trap, which poisons the store. A
+                    // link error is raised before it runs.
+                    if self.start && instantiation_trapped(&error) {
                         store.internal().poison();
                     }
                     return Err(substrate_failure(error));

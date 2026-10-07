@@ -36,9 +36,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    Accessor, Component, Engine, Error, FunctionType, FutureConsumer, FutureReader, HostCall,
-    Instance, Linker, Module, ResourceHandle, ResourceTypeId, SchedulerCause, Source, Store,
-    StoreContext, TaskCause, Val,
+    AbiCause, Accessor, Component, Engine, Error, FunctionType, FutureConsumer, FutureReader,
+    HostCall, Instance, InstantiationError, Linker, Module, ResourceHandle, ResourceTypeId,
+    SchedulerCause, Source, Store, StoreContext, TaskCause, Val,
 };
 use wcmp_macros::{component, wasm};
 
@@ -140,6 +140,50 @@ const MODULE_TRAPS_IN_START: &[u8] = wasm!(
 const MODULE_WITHOUT_START: &[u8] = wasm!(
     r#"
     (module (func (export "f")))
+    "#
+);
+
+/// A core module with a `start` function and one imported global, for
+/// an instantiation given a function in its place.
+const MODULE_IMPORTS_A_GLOBAL_WITH_START: &[u8] = wasm!(
+    r#"
+    (module
+      (import "host" "g" (global i32))
+      (func $start)
+      (start $start))
+    "#
+);
+
+/// A core module with a `start` function and one imported function of
+/// one parameter, for an instantiation given a function of none.
+const MODULE_IMPORTS_A_FUNCTION_WITH_START: &[u8] = wasm!(
+    r#"
+    (module
+      (import "host" "f" (func (param i32)))
+      (func $start)
+      (start $start))
+    "#
+);
+
+/// A component whose `wait` waits on a waitable set that nothing will
+/// ever fill, so its call deadlocks, and whose `ok` answers 7.
+const DEADLOCKS: &[u8] = component!(
+    r#"
+    (component
+      (core func $new (canon waitable-set.new))
+      (core module $M
+        (import "" "new" (func $new (result i32)))
+        (func (export "wait") (result i32)
+          (i32.or (i32.const 2) (i32.shl (call $new) (i32.const 4))))
+        (func (export "callback") (param i32 i32 i32) (result i32)
+          unreachable)
+        (func (export "ok") (result i32) (i32.const 7)))
+      (core instance $m (instantiate $M (with "" (instance
+        (export "new" (func $new))))))
+      (func (export "wait") async
+        (canon lift (core func $m "wait") async (callback (core func $m "callback"))))
+      (func (export "ok") (result u32)
+        (canon lift (core func $m "ok"))))
     "#
 );
 
@@ -469,6 +513,19 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
         .resource_drop(guest_resource)
         .expect_err("a poisoned store refuses the release of a guest's resource");
     assert_cannot_enter(&error, "`Store::resource_drop` of a guest's resource");
+    // The host's table let go of the handle before the entry into the
+    // guest was refused, as in Wasmtime, so a second release finds no
+    // handle.
+    match fixture.store.resource_drop(guest_resource) {
+        Err(Error::Abi(error)) => assert!(
+            matches!(
+                &error.cause,
+                AbiCause::InvalidHandle { reason } if reason.contains("is not live")
+            ),
+            "the second release fails with the unknown-handle cause, got {error}"
+        ),
+        other => panic!("the second release fails with the unknown-handle cause, got {other:?}"),
+    }
     fixture
         .store
         .resource_drop(host_resource)
@@ -865,3 +922,136 @@ async fn it_leaves_the_store_usable_when_a_pipe_of_the_hosts_own_fails() {
 
 #[path = "support/backend.rs"]
 mod test_backend;
+
+#[wcmp_macros::test]
+async fn it_leaves_the_store_usable_when_a_start_bearing_module_does_not_link() {
+    let mut fixture = Fixture::new().await;
+    let exporter = Module::new(&fixture.engine, MODULE_WITHOUT_START)
+        .await
+        .expect("the module compiles");
+    let function = exporter
+        .instantiate(&mut fixture.store, &[])
+        .await
+        .expect("the module instantiates")
+        .get_export(&fixture.store, "f")
+        .expect("the instance exports `f`");
+
+    // An import of the wrong kind, and one of the wrong type, fail as
+    // the link error they are, before the `start` function runs.
+    for (bytes, mismatch) in [
+        (MODULE_IMPORTS_A_GLOBAL_WITH_START, "of the wrong kind"),
+        (MODULE_IMPORTS_A_FUNCTION_WITH_START, "of the wrong type"),
+    ] {
+        let module = Module::new(&fixture.engine, bytes)
+            .await
+            .expect("the module compiles");
+        let error = module
+            .instantiate(&mut fixture.store, core::slice::from_ref(&function))
+            .await
+            .expect_err("the import does not link");
+        assert!(
+            matches!(error, Error::Instantiation(_)),
+            "an import {mismatch} fails the instantiation, got {error:?}"
+        );
+        let chain = core::iter::successors(
+            Some(&error as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ");
+        assert!(
+            chain.contains("does not link"),
+            "an import {mismatch} is a link error, got {chain}"
+        );
+        fixture
+            .assert_usable(&format!("an import {mismatch}"))
+            .await;
+    }
+
+    // A trap inside the `start` function still poisons the store.
+    let module = Module::new(&fixture.engine, MODULE_TRAPS_IN_START)
+        .await
+        .expect("the module compiles");
+    module
+        .instantiate(&mut fixture.store, &[])
+        .await
+        .expect_err("the start function traps");
+    fixture.assert_poisoned("a trap in a start function").await;
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_store_usable_after_a_wrong_import_count_or_store() {
+    let mut fixture = Fixture::new().await;
+    let module = Module::new(&fixture.engine, MODULE_IMPORTS_A_FUNCTION_WITH_START)
+        .await
+        .expect("the module compiles");
+    let error = module
+        .instantiate(&mut fixture.store, &[])
+        .await
+        .expect_err("the module declares one import");
+    assert!(
+        matches!(
+            &error,
+            Error::Instantiation(cause)
+                if matches!(**cause, InstantiationError::ImportCount { expected: 1, found: 0 })
+        ),
+        "a wrong import count fails as such, got {error:?}"
+    );
+    fixture.assert_usable("a wrong import count").await;
+
+    let mut other = Store::new(&fixture.engine, Drops::default()).expect("store");
+    let exporter = Module::new(&fixture.engine, MODULE_WITHOUT_START)
+        .await
+        .expect("the module compiles");
+    let foreign = exporter
+        .instantiate(&mut other, &[])
+        .await
+        .expect("the module instantiates in the other store")
+        .get_export(&other, "f")
+        .expect("the instance exports `f`");
+    let error = module
+        .instantiate(&mut fixture.store, &[foreign])
+        .await
+        .expect_err("the import lives in another store");
+    assert!(
+        matches!(
+            &error,
+            Error::Instantiation(cause) if matches!(**cause, InstantiationError::WrongStore)
+        ),
+        "an import of another store fails as such, got {error:?}"
+    );
+    fixture.assert_usable("an import of another store").await;
+}
+
+#[wcmp_macros::test]
+async fn it_poisons_the_store_when_a_driver_deadlocks() {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, DEADLOCKS)
+        .await
+        .expect("component parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component instantiates");
+
+    let error = instance
+        .get_func("wait")
+        .expect("`wait` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("nothing will fill the set");
+    assert!(
+        matches!(error, Error::Scheduler(SchedulerCause::Deadlock)),
+        "the call fails with the deadlock cause, got {error:?}"
+    );
+    let error = instance
+        .get_func("ok")
+        .expect("`ok` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the deadlock poisoned the store");
+    assert_cannot_enter(&error, "a call after a deadlock");
+}

@@ -31,7 +31,7 @@ use crate::resource::{HandleTables, ResourceTableRuntime, ResourceTypeId, TableI
 use crate::runtime_layer::{
     Extern as RuntimeExtern, ExternType as RuntimeExternType, Func as RuntimeFunc, FuncType,
     Imports, Instance as RuntimeInstance, ValType as CoreType, instantiate as instantiate_module,
-    substrate_failure,
+    instantiation_trapped, substrate_failure,
 };
 use crate::store::ResourceRecord;
 use crate::store::StoreContext;
@@ -723,8 +723,9 @@ async fn run_plan<T: 'static>(
 ///
 /// The `start` function is guest code, so its failure is a trap and
 /// poisons the store. A module that declares none runs no guest code
-/// here, and a failure of its instantiation — an import the substrate
-/// refuses, a feature it lacks — leaves the store as it was.
+/// here, and a failure that comes before the start function runs — an
+/// import the substrate refuses, a feature it lacks — leaves the store
+/// as it was.
 #[tracing::instrument(level = "debug", name = "instantiate core module", skip_all)]
 async fn instantiate_core<T: 'static>(
     store: &mut StoreContext<'_, T>,
@@ -737,7 +738,7 @@ async fn instantiate_core<T: 'static>(
         instantiate_module(store.internal().runtime_mut(), module.inner(), imports).await;
     drop(start);
     instance.map_err(|error| {
-        if module.has_start() {
+        if module.has_start() && instantiation_trapped(&error) {
             store.internal().poison();
         }
         substrate_failure(error)

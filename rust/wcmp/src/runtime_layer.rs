@@ -224,6 +224,27 @@ pub fn call_failure(error: impl SubstrateCause) -> Error {
     }
 }
 
+/// Whether the runtime-layer failure `error` of a core instantiation
+/// is a trap, and so poisons the store where the module declares a
+/// `start` function. Workspace-internal.
+///
+/// Wasmtime type-checks the imports of an instantiation before it
+/// instantiates (`Instance::new` in `crates/wasmtime/src/runtime/instance.rs`),
+/// and sets a store's trapped flag only where guest code it invoked
+/// traps (`invoke_wasm_and_catch_traps`, `func.rs`). So a link error,
+/// a wrong import count, a missing capability, and a failure of the
+/// backend leave the store as it was: no guest code ran. A trap is the
+/// failure of the `start` function, which poisons, or of a data or
+/// element segment, which the runtime layer reports as the same trap.
+/// The polyfill cannot tell those two apart, so a segment failure of a
+/// module with a `start` function poisons the store too, where
+/// Wasmtime leaves it usable. The core specification runs a segment's
+/// initialization as instructions that trap, so the store refuses
+/// guest code after a trap either way.
+pub fn instantiation_trapped(error: &RuntimeError) -> bool {
+    matches!(error, RuntimeError::Trap(_))
+}
+
 /// The data of a store that counts the host functions running in it.
 pub trait HostFrames {
     /// How many host functions run in the store now: the frames of
