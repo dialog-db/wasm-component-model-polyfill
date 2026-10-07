@@ -778,6 +778,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// creates in its first poll counts after the call's own record. A
     /// task that stays pending joins the store's host tasks, which count
     /// it from then on.
+    ///
+    /// Only the host task of an `async` host function is a record here.
+    /// Wasmtime pushes a `HostTask` for a call of a synchronous host
+    /// function too, so at a full table it refuses that call where the
+    /// polyfill runs it.
     fn reserve_host_call(&mut self, subtask: SubtaskId) -> Result<HostCallReservation> {
         let count = self.scheduler().shared_host_call_count();
         let mut guard = self.lock_tables()?;

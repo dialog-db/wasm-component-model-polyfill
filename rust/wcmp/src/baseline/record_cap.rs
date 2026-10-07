@@ -323,9 +323,11 @@ async fn it_counts_a_host_call_before_its_body_runs_and_releases_it_after() {
     let [during] = polls[..] else {
         panic!("the body ran once: {polls:?}");
     };
-    assert!(
-        during > live,
-        "the call's records count while its body runs"
+    assert_eq!(
+        during,
+        live + 4,
+        "while the body first runs, the caller's task and thread, the call's subtask, and \
+         the call's host task count"
     );
     assert_eq!(
         record_count(&mut store),
@@ -333,8 +335,9 @@ async fn it_counts_a_host_call_before_its_body_runs_and_releases_it_after() {
         "the call let go of every record, its host task's among them"
     );
 
-    // A cap one short of what the body saw refuses the call before the
-    // body runs, since the call's host task is the last record admitted.
+    // A cap one short of what the body saw leaves no room for the host
+    // task, which is admitted last, so the call is refused before the
+    // body runs.
     let (mut store, instance) = calling_the_host(&seen, false).await;
     set_max_records(&mut store, during - 1);
     let message = run(&mut store, &instance)
