@@ -173,11 +173,12 @@ impl Func {
     /// before they change anything. A trap is a failure of the
     /// export's core code, or of a built-in, a host function, a lift,
     /// or a lower that code reached, a host `async` function whose
-    /// future fails, a deadlock, or a [`Val`] of the
-    /// wrong type for a parameter, or a host handle that is stale or
-    /// invalid, which this call finds as it lowers the arguments. An arity mismatch, a call through another
-    /// store, and the recursive-driver cause do not poison the store,
-    /// because each is refused before anything changes.
+    /// future fails, a deadlock, or a [`Val`] of the wrong type for a
+    /// parameter, or a host handle that is stale or invalid, which
+    /// this call finds as it lowers the arguments. An arity mismatch,
+    /// a call through another store, and the recursive-driver cause do
+    /// not poison the store, because each is refused before anything
+    /// changes.
     ///
     /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
     ///
