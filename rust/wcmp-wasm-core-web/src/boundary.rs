@@ -6,7 +6,7 @@
 
 //! The boundary of a module, read from its bytes.
 
-use wasmparser::{CompositeInnerType, ExternalKind, Parser, Payload, SubType, TypeRef};
+use wasmparser::{CompositeInnerType, ExternalKind, Operator, Parser, Payload, SubType, TypeRef};
 use wcmp_wasm_core::{
     Error, ExportType, ExternType, FuncType, GlobalType, HeapType, ImportType, MemoryType,
     Mutability, RefType, Result, TableType, TagType, TypeHandle, ValType,
@@ -19,8 +19,9 @@ use crate::type_registry::TypeRegistry;
 /// The JavaScript API names the imports and exports of a module and their
 /// kinds, but not their types. So the backend reads the types from the
 /// bytes of the module. It reads the sections that the boundary needs, and
-/// stops at the export section: it never reads a function body, a data
-/// segment, or an element segment.
+/// the function bodies of a module that has a memory, only to learn
+/// whether one waits or notifies on a memory. It never reads a data
+/// segment or an element segment.
 #[derive(Debug)]
 pub struct Boundary {
     /// The imports, in the order an instantiation takes them.
@@ -32,6 +33,12 @@ pub struct Boundary {
     /// The memory section comes before the export section, so the reader
     /// sees every memory. The store reads a trap of an atomic wait by it.
     pub shared_memory: bool,
+    /// Whether a function of the module waits or notifies on a memory,
+    /// with `memory.atomic.wait32`, `memory.atomic.wait64`, or
+    /// `memory.atomic.notify`. The store reads JavaScriptCore's message
+    /// for an access out of the bounds of a memory by it, since that
+    /// engine gives a refused wait or notify the same message.
+    pub atomic_wait: bool,
 }
 
 /// The index spaces of a module, as far as the boundary needs them.
@@ -57,6 +64,7 @@ impl Boundary {
         let mut spaces = Spaces::default();
         let mut imports = Vec::new();
         let mut exports = Vec::new();
+        let mut atomic_wait = false;
         for payload in Parser::new(0).parse_all(bytes) {
             match payload.map_err(compile)? {
                 Payload::TypeSection(reader) => {
@@ -106,8 +114,13 @@ impl Boundary {
                         let ty = spaces.export(export.kind, export.index)?;
                         exports.push(ExportType::new(export.name, ty));
                     }
-                    // Nothing after the export section crosses the
-                    // boundary.
+                }
+                // Nothing after the export section crosses the boundary.
+                // A function body tells only whether it waits or
+                // notifies, which a module without a memory cannot.
+                Payload::CodeSectionStart { .. } if spaces.memories.is_empty() => break,
+                Payload::CodeSectionEntry(body) if waits(&body)? => {
+                    atomic_wait = true;
                     break;
                 }
                 _ => {}
@@ -118,8 +131,23 @@ impl Boundary {
             imports,
             exports,
             shared_memory,
+            atomic_wait,
         })
     }
+}
+
+/// Whether the function `body` waits or notifies on a memory.
+fn waits(body: &wasmparser::FunctionBody<'_>) -> Result<bool> {
+    let mut operators = body.get_operators_reader().map_err(compile)?;
+    while !operators.eof() {
+        match operators.read().map_err(compile)? {
+            Operator::MemoryAtomicWait32 { .. }
+            | Operator::MemoryAtomicWait64 { .. }
+            | Operator::MemoryAtomicNotify { .. } => return Ok(true),
+            _ => {}
+        }
+    }
+    Ok(false)
 }
 
 impl Spaces {
@@ -290,5 +318,58 @@ fn memory_type(ty: wasmparser::MemoryType) -> MemoryType {
 fn compile(error: impl core::fmt::Display) -> Error {
     Error::Compile {
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcmp_macros::wasm;
+
+    use super::*;
+
+    /// Whether the module `bytes` waits or notifies, as its boundary reads.
+    fn atomic_wait(bytes: &[u8]) -> bool {
+        Boundary::read(bytes, &TypeRegistry::default())
+            .expect("the boundary reads")
+            .atomic_wait
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_whether_a_function_waits_or_notifies() {
+        assert!(atomic_wait(wasm!(
+            r#"
+            (module
+              (memory 1)
+              (func (export "f") (result i32)
+                i32.const 0
+                i32.const 0
+                i64.const 0
+                memory.atomic.wait32))
+            "#
+        )));
+        assert!(atomic_wait(wasm!(
+            r#"
+            (module
+              (import "host" "memory" (memory 1 1 shared))
+              (func)
+              (func (result i32)
+                i32.const 0
+                i32.const 1
+                memory.atomic.notify))
+            "#
+        )));
+        assert!(!atomic_wait(wasm!(
+            r#"
+            (module
+              (memory 1)
+              (func (export "f") (result i32)
+                i32.const 0
+                i32.atomic.load))
+            "#
+        )));
+        assert!(
+            !atomic_wait(wasm!(r#"(module (func (export "f")))"#)),
+            "a module without a memory cannot wait"
+        );
     }
 }

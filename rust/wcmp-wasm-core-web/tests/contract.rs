@@ -7,7 +7,7 @@
 //! The backend contract of the runtime layer, on the browser backend.
 //!
 //! Every test of the contract runs here. The trap fixture runs with the
-//! one allowance below.
+//! allowances below.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -32,10 +32,23 @@ fn engine() -> Engine {
 /// <https://github.com/v8/v8/blob/6cb2fb511f6f0e7930a51cbd08ee15b693bf3610/src/common/message-template.h>.
 /// The test fails as stale once the backend reports `BadConversionToInteger`
 /// for the trap.
-const AMBIGUOUS: &[AmbiguousTrap] = &[AmbiguousTrap {
-    export: "bad_conversion_to_integer",
-    message: "float unrepresentable in integer range",
-}];
+///
+/// V8 words a `resume` of a consumed continuation, which Wasmtime calls
+/// `ContinuationAlreadyConsumed`, and of a null continuation, which
+/// Wasmtime calls `NullReference`, with one message too, the template
+/// `WasmTrapResume` of the same file. Chrome does not declare stack
+/// switching yet, so the fixture of that trap does not run, and the
+/// allowance waits for the day it does.
+const AMBIGUOUS: &[AmbiguousTrap] = &[
+    AmbiguousTrap {
+        export: "bad_conversion_to_integer",
+        message: "float unrepresentable in integer range",
+    },
+    AmbiguousTrap {
+        export: "continuation_already_consumed",
+        message: "WasmFX: resuming an invalid continuation",
+    },
+];
 
 #[wcmp_macros::test]
 async fn it_raises_each_core_trap_the_capabilities_permit() {

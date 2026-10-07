@@ -39,6 +39,11 @@ impl WebModule {
     pub fn shared_memory(&self) -> bool {
         self.boundary.shared_memory
     }
+
+    /// Whether a function of the module waits or notifies on a memory.
+    pub fn atomic_wait(&self) -> bool {
+        self.boundary.atomic_wait
+    }
 }
 
 impl BackendModule for WebModule {

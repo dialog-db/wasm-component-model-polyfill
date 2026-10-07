@@ -39,6 +39,7 @@ use crate::objects::{GlobalObject, InstanceObject, MemoryObject, Objects, TableO
 use crate::resumption::WebResumption;
 use crate::returns::Returns;
 use crate::suspended::WebSuspendedCall;
+use crate::traps::Atomics;
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
 use crate::wrapper::{self, Wrappers};
@@ -68,10 +69,14 @@ pub struct WebStore {
     bridges: HashMap<(u64, u64), Bridge>,
     calls: Rc<Calls>,
     wrappers: Wrappers,
-    /// Whether a memory of an instance of the store is shared. A guest
-    /// waits only on a memory of an instance, so where none is shared, a
-    /// wait that the engine refused was on a memory that is not shared.
-    shared_memory: bool,
+    /// What the modules the store instantiated tell about a trap whose
+    /// message names more than one kind: whether a memory of an instance
+    /// is shared, since a guest waits only on a memory of an instance, so
+    /// where none is shared, a wait that the engine refused was on a memory
+    /// that is not shared; and whether a module waits or notifies, since
+    /// where none does, JavaScriptCore's message for an access out of a
+    /// memory names that access alone.
+    atomics: Atomics,
     /// The functions of JavaScript Promise Integration, where the browser
     /// has them.
     jspi: Option<Rc<Jspi>>,
@@ -105,7 +110,7 @@ impl WebStore {
             bridges: HashMap::new(),
             calls,
             wrappers,
-            shared_memory: false,
+            atomics: Atomics::default(),
             jspi,
             entrances: BTreeMap::new(),
             entrance_modules: HashMap::new(),
@@ -174,7 +179,7 @@ impl WebStore {
         let failure = entry.leave();
         returned.map_err(|error| match failure {
             Some(failure) => Error::Trap(TrapKind::Host(failure)),
-            None => errors::guest(&error, &mut self.carrier, self.shared_memory),
+            None => errors::guest(&error, &mut self.carrier, self.atomics),
         })
     }
 
@@ -304,8 +309,10 @@ impl WebStore {
             .ok_or(Error::WrongEngine)?;
         let object = self.imports_object(module.imports(), imports)?;
         // The start function can wait on a memory of the instance, so the
-        // store counts its memories before it runs, here or later.
-        self.shared_memory |= module.shared_memory();
+        // store counts its memories, and whether it waits, before it runs,
+        // here or later.
+        self.atomics.shared_memory |= module.shared_memory();
+        self.atomics.atomic_wait |= module.atomic_wait();
         let webassembly = js::webassembly().map_err(|error| errors::call(&error))?;
         let calls = self.calls.clone();
         let flight = Flight::new(calls.next_id(), false, &calls);
@@ -362,7 +369,7 @@ impl WebStore {
                     &reason,
                     failed,
                     &mut self.carrier,
-                    self.shared_memory,
+                    self.atomics,
                 ));
             }
             Stop::Suspended => {
@@ -533,11 +540,9 @@ impl WebStore {
             Stop::Failed {
                 host: Some(host), ..
             } => Err(Error::Trap(TrapKind::Host(host))),
-            Stop::Failed { reason, .. } => Err(errors::guest(
-                &reason,
-                &mut self.carrier,
-                self.shared_memory,
-            )),
+            Stop::Failed { reason, .. } => {
+                Err(errors::guest(&reason, &mut self.carrier, self.atomics))
+            }
         }
     }
 

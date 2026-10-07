@@ -2093,6 +2093,109 @@ async fn it_reads_the_kind_of_a_trap_in_the_start_function() {
     }
 }
 
+#[wcmp_macros::test]
+async fn it_reads_an_uncaught_exception_and_a_refused_wait_in_the_start_function() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let throws = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (tag $oops (param i32))
+              (func $start
+                i32.const 7
+                throw $oops)
+              (start $start))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    match Instance::instantiate(&mut store, &throws, &[]).await {
+        Err(Error::Trap(TrapKind::UncaughtException(_))) => {}
+        other => panic!("the start function's exception is uncaught: {other:?}"),
+    }
+
+    // No memory of the store is shared, so the wait the engine refused
+    // was on a memory that is not shared.
+    let waits = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (memory 1)
+              (func $start
+                i32.const 0
+                i32.const 0
+                i64.const -1
+                memory.atomic.wait32
+                drop)
+              (start $start))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    match Instance::instantiate(&mut store, &waits, &[]).await {
+        Err(Error::Trap(TrapKind::AtomicWaitNonSharedMemory)) => {}
+        other => panic!("the start function's wait is refused: {other:?}"),
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_reads_a_trap_in_the_first_stretch_and_a_refused_wait_after_a_resumption() {
+    let engine = engine();
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    let wait = Func::new_suspending(&mut store, FuncType::new([], []), |_, _, _| {
+        Ok(Poll::Pending)
+    })
+    .expect("the store makes a suspending host function");
+    let module = Module::compile(
+        &engine,
+        wasm!(
+            r#"
+            (module
+              (import "host" "wait" (func $wait))
+              (memory 1)
+              ;; Traps before it ever suspends.
+              (func (export "trap-at-once")
+                unreachable)
+              ;; Suspends, and then waits on a memory that is not shared.
+              (func (export "wait-after")
+                call $wait
+                i32.const 0
+                i32.const 0
+                i64.const -1
+                memory.atomic.wait32
+                drop))
+            "#
+        ),
+    )
+    .await
+    .expect("the module compiles");
+    let instance = Instance::instantiate(&mut store, &module, &[wait.into()])
+        .await
+        .expect("the module instantiates");
+    let trap_at_once = func(&mut store, instance, "trap-at-once");
+    let wait_after = func(&mut store, instance, "wait-after");
+
+    match trap_at_once.call_resumable(&mut store, &[], &mut []).await {
+        Err(Error::Trap(TrapKind::UnreachableCodeReached)) => {}
+        other => panic!("the first stretch traps: {other:?}"),
+    }
+
+    let Ok(ResumableCall::Suspended(handle)) =
+        wait_after.call_resumable(&mut store, &[], &mut []).await
+    else {
+        panic!("the call suspends in `wait`");
+    };
+    match handle.resume(&mut store, &[], &mut []).await {
+        Err(Error::Trap(TrapKind::AtomicWaitNonSharedMemory)) => {}
+        other => panic!("the resumed stack's wait is refused: {other:?}"),
+    }
+}
+
 /// A value that a host function captures although the browser makes it
 /// neither `Send` nor `Sync`, as a host function must be.
 struct Shared<V>(V);

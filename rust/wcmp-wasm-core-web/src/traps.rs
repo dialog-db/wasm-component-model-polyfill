@@ -22,6 +22,31 @@ enum Names {
     /// the trap is [`TrapKind::AtomicWaitNonSharedMemory`] only where no
     /// memory of the store is shared.
     Wait,
+    /// The message of JavaScriptCore for an access out of the bounds of a
+    /// memory, which it gives an atomic wait or notify that it refused, or
+    /// that is misaligned, too. So the trap is
+    /// [`TrapKind::MemoryOutOfBounds`] only where no module of the store
+    /// waits or notifies.
+    Memory,
+}
+
+/// What the modules of a store tell about a trap whose message names more
+/// than one kind in some engine.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Atomics {
+    /// Whether a memory of an instance of the store is shared.
+    pub shared_memory: bool,
+    /// Whether a module of the store waits or notifies on a memory.
+    pub atomic_wait: bool,
+}
+
+impl Atomics {
+    /// What a step knows that cannot tell which store it ran in: that
+    /// any memory may be shared, and any module may wait.
+    pub const UNKNOWN: Self = Self {
+        shared_memory: true,
+        atomic_wait: true,
+    };
 }
 
 /// The messages of V8, the engine of Chromium, for each trap, as its
@@ -105,6 +130,15 @@ const V8: &[(&str, Names)] = &[
         "WasmFX: unhandled suspend",
         Names::One(|| TrapKind::UnhandledTag),
     ),
+    // A `resume` of a continuation that was consumed, which Wasmtime
+    // calls `ContinuationAlreadyConsumed`, and of a null continuation,
+    // which it calls `NullReference`.
+    ("WasmFX: resuming an invalid continuation", Names::Several),
+    // A `throw_ref` of a null reference.
+    (
+        "rethrowing null value",
+        Names::One(|| TrapKind::NullReference),
+    ),
     ("Atomics.wait cannot be called in this context", Names::Wait),
     (
         "Maximum call stack size exceeded",
@@ -163,6 +197,11 @@ const SPIDERMONKEY: &[(&str, Names)] = &[
         "atomic wait on non-shared memory",
         Names::One(|| TrapKind::AtomicWaitNonSharedMemory),
     ),
+    // An `array.new` of more elements than the engine allows.
+    (
+        "too many array elements",
+        Names::One(|| TrapKind::AllocationTooLarge),
+    ),
     ("too much recursion", Names::One(|| TrapKind::StackOverflow)),
 ];
 
@@ -182,10 +221,10 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
         "Unreachable code should not be executed",
         Names::One(|| TrapKind::UnreachableCodeReached),
     ),
-    // An access out of bounds of a memory, and an atomic wait that is
-    // misaligned, on a memory that is not shared, or on a thread that may
-    // not wait.
-    ("Out of bounds memory access", Names::Several),
+    // An access out of bounds of a memory, and an atomic wait or notify
+    // that is misaligned, a wait on a memory that is not shared, or a wait
+    // on a thread that may not wait.
+    ("Out of bounds memory access", Names::Memory),
     (
         "Unaligned memory access",
         Names::One(|| TrapKind::HeapMisaligned),
@@ -223,11 +262,23 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
         Names::One(|| TrapKind::NullReference),
     ),
     (
+        "throw_ref on a null reference",
+        Names::One(|| TrapKind::NullReference),
+    ),
+    (
         "i31.get_<sx> to a null reference",
         Names::One(|| TrapKind::NullReference),
     ),
     (
         "access to a null reference",
+        Names::One(|| TrapKind::NullReference),
+    ),
+    (
+        "array.init_elem to a null reference",
+        Names::One(|| TrapKind::NullReference),
+    ),
+    (
+        "array.init_data to a null reference",
         Names::One(|| TrapKind::NullReference),
     ),
     (
@@ -273,8 +324,7 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
 ];
 
 /// The kind of the trap whose message, in the words of the browser's
-/// engine, is `message`, in a store where `shared_memory` tells whether any
-/// memory is shared.
+/// engine, is `message`, in a store whose modules tell `atomics`.
 ///
 /// The browser gives no trap code, so the backend reads the kind from the
 /// message, through the table of each engine above. The backend does not
@@ -288,12 +338,13 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
 /// without it. V8 puts the name of the call of the JavaScript API before
 /// the message of a trap that an instantiation raised: see
 /// [`instantiation`].
-pub fn kind(message: &str, shared_memory: bool) -> TrapKind {
+pub fn kind(message: &str, atomics: Atomics) -> TrapKind {
     let other = || TrapKind::Other(message.to_string());
     match names(message) {
         Some(Names::One(kind)) => kind(),
-        Some(Names::Wait) if !shared_memory => TrapKind::AtomicWaitNonSharedMemory,
-        Some(Names::Wait | Names::Several) | None => other(),
+        Some(Names::Wait) if !atomics.shared_memory => TrapKind::AtomicWaitNonSharedMemory,
+        Some(Names::Memory) if !atomics.atomic_wait => TrapKind::MemoryOutOfBounds,
+        Some(Names::Wait | Names::Memory | Names::Several) | None => other(),
     }
 }
 
@@ -378,7 +429,7 @@ mod tests {
     fn it_gives_each_kind_the_message_of_wasmtime() {
         for (message, names) in every_message() {
             if let Names::One(_) = names {
-                let kind = kind(message, false);
+                let kind = kind(message, Atomics::default());
                 assert!(
                     kind.to_string().starts_with("wasm trap: "),
                     "{message:?} reads as {kind}"
@@ -395,6 +446,9 @@ mod tests {
         Several,
         /// A refused wait, as [`Names::Wait`] reads it.
         Wait,
+        /// An access out of the bounds of a memory, or a refused wait or
+        /// notify, as [`Names::Memory`] reads it.
+        Memory,
     }
 
     /// Asserts that `table` holds exactly the messages of `pinned`, in its
@@ -416,7 +470,7 @@ mod tests {
             "the table and its pinned messages differ"
         );
         for (message, expected) in pinned {
-            let read = kind(message, false);
+            let read = kind(message, Atomics::default());
             match expected {
                 Expected::Kind(name) => {
                     assert_eq!(format!("{read:?}"), *name, "{message:?}");
@@ -430,10 +484,33 @@ mod tests {
                         matches!(read, TrapKind::AtomicWaitNonSharedMemory),
                         "{message:?} reads as {read:?}"
                     );
-                    let shared = kind(message, true);
+                    let shared = kind(
+                        message,
+                        Atomics {
+                            shared_memory: true,
+                            ..Atomics::default()
+                        },
+                    );
                     assert!(
                         matches!(&shared, TrapKind::Other(text) if text == message),
                         "{message:?} reads as {shared:?} where a memory is shared"
+                    );
+                }
+                Expected::Memory => {
+                    assert!(
+                        matches!(read, TrapKind::MemoryOutOfBounds),
+                        "{message:?} reads as {read:?}"
+                    );
+                    let waits = kind(
+                        message,
+                        Atomics {
+                            atomic_wait: true,
+                            ..Atomics::default()
+                        },
+                    );
+                    assert!(
+                        matches!(&waits, TrapKind::Other(text) if text == message),
+                        "{message:?} reads as {waits:?} where a module waits"
                     );
                 }
             }
@@ -472,6 +549,8 @@ mod tests {
                 ("data segment out of bounds", Kind("MemoryOutOfBounds")),
                 ("element segment out of bounds", Kind("TableOutOfBounds")),
                 ("WasmFX: unhandled suspend", Kind("UnhandledTag")),
+                ("WasmFX: resuming an invalid continuation", Several),
+                ("rethrowing null value", Kind("NullReference")),
                 ("Atomics.wait cannot be called in this context", Wait),
                 ("Maximum call stack size exceeded", Kind("StackOverflow")),
             ],
@@ -502,6 +581,7 @@ mod tests {
                     "atomic wait on non-shared memory",
                     Kind("AtomicWaitNonSharedMemory"),
                 ),
+                ("too many array elements", Kind("AllocationTooLarge")),
                 ("too much recursion", Kind("StackOverflow")),
             ],
         );
@@ -517,7 +597,7 @@ mod tests {
                     "Unreachable code should not be executed",
                     Kind("UnreachableCodeReached"),
                 ),
-                ("Out of bounds memory access", Several),
+                ("Out of bounds memory access", Memory),
                 ("Unaligned memory access", Kind("HeapMisaligned")),
                 ("Out of bounds table access", Kind("TableOutOfBounds")),
                 ("Out of bounds call_indirect", Kind("TableOutOfBounds")),
@@ -527,8 +607,11 @@ mod tests {
                 ),
                 ("call_indirect to a signature that does not match", Several),
                 ("call_ref to a null reference", Kind("NullReference")),
+                ("throw_ref on a null reference", Kind("NullReference")),
                 ("i31.get_<sx> to a null reference", Kind("NullReference")),
                 ("access to a null reference", Kind("NullReference")),
+                ("array.init_elem to a null reference", Kind("NullReference")),
+                ("array.init_data to a null reference", Kind("NullReference")),
                 ("ref.as_non_null to a null reference", Kind("NullReference")),
                 ("Out of bounds Trunc operation", Several),
                 ("Division by zero", Kind("IntegerDivisionByZero")),
@@ -550,7 +633,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_reads_a_message_that_javascriptcore_gave_a_source() {
         assert!(matches!(
-            kind("Division by zero (evaluating 'f()')", false),
+            kind("Division by zero (evaluating 'f()')", Atomics::default()),
             TrapKind::IntegerDivisionByZero
         ));
     }
@@ -574,7 +657,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                format!("{:?}", kind(message, false)),
+                format!("{:?}", kind(message, Atomics::default())),
                 expected,
                 "{message:?}"
             );
@@ -585,7 +668,7 @@ mod tests {
             "data segment 0 is out of bounds (offset 1, length 1, memory size 0)",
         ] {
             assert!(
-                matches!(kind(message, false), TrapKind::Other(ref text) if text == message),
+                matches!(kind(message, Atomics::default()), TrapKind::Other(ref text) if text == message),
                 "{message:?}"
             );
         }
@@ -593,7 +676,7 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_leaves_a_message_it_does_not_know_as_other() {
-        let kind = kind("a trap no engine words this way", false);
+        let kind = kind("a trap no engine words this way", Atomics::default());
         assert!(
             matches!(&kind, TrapKind::Other(message) if message == "a trap no engine words this way")
         );
@@ -605,7 +688,7 @@ mod tests {
         for (message, names) in every_message() {
             if let Names::Several = names {
                 assert!(
-                    matches!(kind(message, false), TrapKind::Other(ref text) if text == message),
+                    matches!(kind(message, Atomics::default()), TrapKind::Other(ref text) if text == message),
                     "{message:?}"
                 );
             }
@@ -616,9 +699,34 @@ mod tests {
     fn it_reads_a_refused_wait_as_non_shared_only_where_no_memory_is_shared() {
         let message = "Atomics.wait cannot be called in this context";
         assert!(matches!(
-            kind(message, false),
+            kind(message, Atomics::default()),
             TrapKind::AtomicWaitNonSharedMemory
         ));
-        assert!(matches!(kind(message, true), TrapKind::Other(ref text) if text == message));
+        let shared = Atomics {
+            shared_memory: true,
+            ..Atomics::default()
+        };
+        assert!(matches!(kind(message, shared), TrapKind::Other(ref text) if text == message));
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_an_access_out_of_a_memory_of_javascriptcore_only_where_no_module_waits() {
+        let message = "Out of bounds memory access";
+        assert!(matches!(
+            kind(message, Atomics::default()),
+            TrapKind::MemoryOutOfBounds
+        ));
+        // A shared memory alone does not make the message ambiguous: only
+        // a wait or a notify can raise it otherwise.
+        let shared = Atomics {
+            shared_memory: true,
+            ..Atomics::default()
+        };
+        assert!(matches!(kind(message, shared), TrapKind::MemoryOutOfBounds));
+        let waits = Atomics {
+            atomic_wait: true,
+            ..Atomics::default()
+        };
+        assert!(matches!(kind(message, waits), TrapKind::Other(ref text) if text == message));
     }
 }

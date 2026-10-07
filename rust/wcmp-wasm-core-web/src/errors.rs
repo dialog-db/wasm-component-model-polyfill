@@ -12,7 +12,7 @@ use wcmp_wasm_core::backend::missing_capability;
 use wcmp_wasm_core::{Capabilities, Error, ImportType, TrapKind};
 
 use crate::carrier::Carrier;
-use crate::traps;
+use crate::traps::{self, Atomics};
 
 /// The message of the JavaScript error `error`, or the value in words where
 /// it is not an error.
@@ -52,7 +52,7 @@ pub fn instantiate(
     error: &JsValue,
     failed: Option<&ImportType>,
     carrier: &mut Carrier,
-    shared_memory: bool,
+    atomics: Atomics,
 ) -> Error {
     if let Some(error) = link(error, failed) {
         return error;
@@ -62,7 +62,7 @@ pub fn instantiate(
             message: message(error),
         };
     }
-    guest(error, carrier, shared_memory)
+    guest(error, carrier, atomics)
 }
 
 /// [`Error::Link`] for an instantiation that failed with `error` on the
@@ -86,16 +86,16 @@ fn link(error: &JsValue, failed: Option<&ImportType>) -> Option<Error> {
 ///
 /// An exception that no guest caught is [`TrapKind::UncaughtException`],
 /// with the exception rooted in the store's table of exceptions through
-/// `carrier`. Anything else is as [`call`] reads it, where `shared_memory`
-/// tells whether any memory of the store is shared.
-pub fn guest(error: &JsValue, carrier: &mut Carrier, shared_memory: bool) -> Error {
+/// `carrier`. Anything else is as [`call`] reads it, where `atomics` tells
+/// what the modules of the store tell about an ambiguous message.
+pub fn guest(error: &JsValue, carrier: &mut Carrier, atomics: Atomics) -> Error {
     if error.is_instance_of::<WebAssembly::Exception>() {
         return Error::Trap(match carrier.root(error) {
             Ok(exception) => TrapKind::UncaughtException(exception),
             Err(error) => TrapKind::Other(error.to_string()),
         });
     }
-    read(error, shared_memory)
+    read(error, atomics)
 }
 
 /// The error of a step over the JavaScript API that threw `error`.
@@ -111,18 +111,24 @@ pub fn call(error: &JsValue) -> Error {
     if error.is_instance_of::<WebAssembly::Exception>() {
         return Error::Trap(TrapKind::Other(message(error)));
     }
-    read(error, true)
+    read(error, Atomics::UNKNOWN)
 }
 
 /// The error that `error`, which is not an exception, stands for, where
-/// `shared_memory` tells whether any memory of the store is shared. See
-/// [`call`].
-fn read(error: &JsValue, shared_memory: bool) -> Error {
+/// `atomics` tells what the modules of the store tell about an ambiguous
+/// message. See [`call`].
+///
+/// An error whose message a table knows is a trap even where it is not a
+/// `RuntimeError` or a `RangeError`. SpiderMonkey's exhausted stack is the
+/// case that needs this. No engine words an error that is not a trap with
+/// a trap's words today, so the reading is safe, but it reads the message
+/// alone.
+fn read(error: &JsValue, atomics: Atomics) -> Error {
     let text = message(error);
     if error.is_instance_of::<js_sys::TypeError>() {
         return Error::TypeMismatch { message: text };
     }
-    let kind = traps::kind(&text, shared_memory);
+    let kind = traps::kind(&text, atomics);
     if error.is_instance_of::<WebAssembly::RuntimeError>()
         || error.is_instance_of::<js_sys::RangeError>()
         || !matches!(kind, TrapKind::Other(_))
@@ -197,9 +203,9 @@ mod tests {
         // neither a `RuntimeError` nor a `RangeError`.
         let error = js_sys::Error::new("too much recursion");
         error.set_name("InternalError");
-        for shared_memory in [false, true] {
+        for atomics in [Atomics::default(), Atomics::UNKNOWN] {
             assert!(matches!(
-                read(&error, shared_memory),
+                read(&error, atomics),
                 Error::Trap(TrapKind::StackOverflow)
             ));
         }
@@ -216,7 +222,7 @@ mod tests {
             let error = js_sys::TypeError::new(text);
             assert!(
                 matches!(
-                    read(&error, false),
+                    read(&error, Atomics::default()),
                     Error::TypeMismatch { ref message } if message == text
                 ),
                 "{text:?}"
