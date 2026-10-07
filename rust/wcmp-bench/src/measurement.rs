@@ -12,6 +12,10 @@ use crate::error::Error;
 use crate::json;
 use crate::run::Run;
 
+/// The note a capped measurement's row carries. See
+/// [`Measurement::capped`].
+const CAPPED: &str = "batch capped below the clock floor: raise max-batch";
+
 /// What one benchmark measured: its samples and the facts that give
 /// them a meaning.
 ///
@@ -27,6 +31,7 @@ pub struct Measurement {
     case: Case,
     iterations: u64,
     batch: u64,
+    capped: bool,
     samples_ns: Vec<f64>,
     bytes: Option<u64>,
     elements: Option<u64>,
@@ -49,6 +54,7 @@ impl Measurement {
             case: benchmark.case(),
             iterations: run.iterations(),
             batch: run.batch(),
+            capped: run.capped(),
             samples_ns: run.samples_ns().to_vec(),
             bytes: run.bytes(),
             elements: run.elements(),
@@ -65,6 +71,7 @@ impl Measurement {
             case: benchmark.case(),
             iterations: 0,
             batch: 0,
+            capped: false,
             samples_ns: Vec::new(),
             bytes: None,
             elements: None,
@@ -90,6 +97,13 @@ impl Measurement {
     /// Why the benchmark has no numbers, when it has none.
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    /// Whether the batch reached the plan's ceiling while it still lasted
+    /// less than half a sample, so that each sample sits near the clock's
+    /// resolution. See [`Run::capped`].
+    pub fn capped(&self) -> bool {
+        self.capped
     }
 
     /// The sample at `percentile`, by nearest rank. `None` when the
@@ -164,7 +178,11 @@ impl Measurement {
             median,
             spread,
             throughput,
-            self.error.clone().unwrap_or_default(),
+            match &self.error {
+                Some(error) => error.clone(),
+                None if self.capped => CAPPED.to_owned(),
+                None => String::new(),
+            },
         ]
     }
 
@@ -185,7 +203,7 @@ impl Measurement {
         format!(
             concat!(
                 "{{\"name\":\"{}\",\"guest\":\"{}\",\"payload\":\"{}\",\"case\":{},",
-                "\"iterations\":{},\"batch\":{},\"samples\":{},",
+                "\"iterations\":{},\"batch\":{},\"batch_capped\":{},\"samples\":{},",
                 "\"median_ns\":{},\"min_ns\":{},\"p10_ns\":{},\"p90_ns\":{},\"spread_percent\":{},",
                 "\"bytes_per_iteration\":{},\"elements_per_iteration\":{},",
                 "\"bytes_per_second\":{},\"elements_per_second\":{},\"error\":{}}}"
@@ -196,6 +214,7 @@ impl Measurement {
             self.case.json(),
             self.iterations,
             self.batch,
+            self.capped,
             self.samples_ns.len(),
             quantile(0.5),
             quantile(0.0),
@@ -211,5 +230,76 @@ impl Measurement {
                 None => "null".to_owned(),
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A measurement of `samples_ns`, with no payload and no error.
+    fn of(samples_ns: &[f64]) -> Measurement {
+        Measurement {
+            name: "known".to_owned(),
+            guest: "no guest",
+            payload: "nothing",
+            case: Case::None,
+            iterations: samples_ns.len() as u64,
+            batch: 1,
+            capped: false,
+            samples_ns: samples_ns.to_vec(),
+            bytes: None,
+            elements: None,
+            error: None,
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_takes_each_percentile_by_nearest_rank() {
+        // The samples arrive unsorted, as a run records them.
+        let measurement = of(&[4.0, 1.0, 5.0, 3.0, 2.0]);
+        assert_eq!(measurement.median_ns(), Some(3.0));
+        assert_eq!(measurement.percentile_ns(0.0), Some(1.0));
+        assert_eq!(measurement.percentile_ns(0.1), Some(1.0));
+        assert_eq!(measurement.percentile_ns(0.9), Some(5.0));
+        assert_eq!(measurement.percentile_ns(1.0), Some(5.0));
+    }
+
+    #[wcmp_macros::test]
+    fn it_gives_the_spread_as_a_percentage_of_the_median() {
+        // From the tenth percentile, 1, to the ninetieth, 5, is 4, which
+        // is 133.3 percent of the median, 3.
+        let spread = of(&[1.0, 2.0, 3.0, 4.0, 5.0])
+            .spread_percent()
+            .expect("a spread");
+        assert!((spread - 400.0 / 3.0).abs() < 1e-9, "{spread}");
+        assert_eq!(
+            of(&[0.0, 0.0]).spread_percent(),
+            None,
+            "no median to divide by"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_has_no_numbers_without_a_sample() {
+        let measurement = of(&[]);
+        assert_eq!(measurement.median_ns(), None);
+        assert_eq!(measurement.spread_percent(), None);
+        let json = measurement.json();
+        assert!(json.contains("\"median_ns\":null"), "{json}");
+        assert!(json.contains("\"spread_percent\":null"), "{json}");
+    }
+
+    #[wcmp_macros::test]
+    fn it_marks_a_capped_batch_in_its_row_and_its_json() {
+        let mut measurement = of(&[1.0]);
+        assert!(!measurement.row()[6].contains("capped"));
+        assert!(measurement.json().contains("\"batch_capped\":false"));
+        measurement.capped = true;
+        assert_eq!(measurement.row()[6], CAPPED);
+        assert!(measurement.json().contains("\"batch_capped\":true"));
+        // An error is the note, capped or not.
+        measurement.error = Some("the guest trapped".to_owned());
+        assert_eq!(measurement.row()[6], "the guest trapped");
     }
 }

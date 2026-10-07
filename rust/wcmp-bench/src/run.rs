@@ -42,6 +42,7 @@ pub struct Run {
     iterations: u64,
     samples_ns: Vec<f64>,
     started: f64,
+    capped: bool,
 }
 
 /// Where a run has got to.
@@ -59,8 +60,10 @@ enum Phase {
 }
 
 impl Run {
-    /// Start a run of `case` under `plan`.
+    /// Start a run of `case` under `plan`, once the plan is checked as
+    /// [`Plan::validate`] checks it.
     pub fn new(plan: Plan, case: Case) -> Result<Self> {
+        let plan = plan.validate()?;
         Ok(Self {
             plan,
             clock: Clock::new()?,
@@ -74,6 +77,7 @@ impl Run {
             iterations: 0,
             samples_ns: Vec::with_capacity(plan.samples),
             started: 0.0,
+            capped: false,
         })
     }
 
@@ -135,10 +139,15 @@ impl Run {
                 // cannot settle on a clock that reads in steps of a
                 // tenth of a millisecond.
                 let elapsed = self.clock.now() - self.started;
-                if elapsed < self.plan.target_sample_ms * 0.5 && self.batch < self.plan.max_batch {
+                let too_short = elapsed < self.plan.target_sample_ms * 0.5;
+                if too_short && self.batch < self.plan.max_batch {
                     self.batch = self.grown_batch(elapsed);
                     self.open(Phase::Calibrate);
                 } else {
+                    // A batch at the ceiling that still lasts less than
+                    // half a sample measures near the clock's resolution,
+                    // and the report says so.
+                    self.capped = too_short;
                     self.open(Phase::Measure);
                 }
                 true
@@ -211,6 +220,13 @@ impl Run {
     /// The iterations one timed sample covers.
     pub fn batch(&self) -> u64 {
         self.batch
+    }
+
+    /// Whether the batch reached [`Plan::max_batch`] while it still
+    /// lasted less than half of [`Plan::target_sample_ms`], so that each
+    /// sample sits near the clock's resolution.
+    pub fn capped(&self) -> bool {
+        self.capped
     }
 
     /// The samples, each already divided down to nanoseconds per
@@ -286,6 +302,49 @@ mod tests {
         let mut run = Run::new(quick(), Case::None).expect("a clock");
         while run.iterate() {}
         assert!(!run.iterate(), "a finished run stays finished");
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_a_plan_no_run_can_be_made_of() {
+        let plan = Plan {
+            max_batch: 0,
+            ..quick()
+        };
+        assert!(
+            Run::new(plan, Case::None).is_err(),
+            "a plan built field by field is checked too"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_marks_a_batch_that_reached_the_ceiling_before_it_lasted_long_enough() {
+        // Two iterations of an empty body last far less than half a
+        // second, and the batch may hold no more than two.
+        let plan = Plan {
+            warmup_iterations: 1,
+            samples: 1,
+            target_sample_ms: 1000.0,
+            max_batch: 2,
+            provider: true,
+        };
+        let mut run = Run::new(plan, Case::None).expect("a clock");
+        while run.iterate() {}
+        assert_eq!(run.batch(), 2);
+        assert!(run.capped());
+
+        // Each iteration waits for the clock to move, so even a browser's
+        // coarse clock reads every batch as longer than the target, and
+        // the batch is not capped.
+        let mut run = Run::new(quick(), Case::None).expect("a clock");
+        let clock = Clock::new().expect("a clock");
+        while run.iterate() {
+            let start = clock.now();
+            while clock.now() <= start {}
+        }
+        assert!(
+            !run.capped(),
+            "a batch that lasted long enough is not capped"
+        );
     }
 
     #[wcmp_macros::test]

@@ -114,10 +114,13 @@ in the JSON, so the table above is a summary, not the record.
 ## How to read the numbers
 
 A benchmark's iterations are not fixed in advance. The warm-up is timed as a
-whole, and its cost per iteration proposes a batch size; one untimed calibration
-batch then grows that size until a batch lasts about `target-sample-ms`, which
-is what keeps a browser's clamped clock from being the thing measured. The
-report quotes:
+whole, and its cost per iteration proposes a batch size. Calibration batches,
+each timed and its reading thrown away, then grow that size until a batch lasts
+about `target-sample-ms`, which is what keeps a browser's clamped clock from
+being the thing measured. A batch that reaches `max-batch` first stops there,
+and the report marks the benchmark: the note reads "batch capped below the clock
+floor", and the JSON's `batch_capped` is `true`. Its samples sit near the
+clock's resolution, so raise `max-batch` before reading them. The report quotes:
 
 - **iterations** — every iteration the body ran, including the warm-up and the
   calibration batches.

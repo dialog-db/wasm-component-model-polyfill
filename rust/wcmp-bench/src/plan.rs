@@ -17,10 +17,16 @@ use crate::error::{Error, Result};
 ///
 /// A number of iterations is not fixed in advance. A benchmark's
 /// iterations are grouped into batches sized from the warm-up's own
-/// timing and then grown by an untimed calibration batch, so that one
-/// timed batch lasts about [`Plan::target_sample_ms`] however fast the
-/// target is. That is what keeps a browser's coarse clock from being
-/// the thing measured.
+/// timing and then grown by calibration batches, each timed and its
+/// reading thrown away, so that one timed batch lasts about
+/// [`Plan::target_sample_ms`] however fast the target is. That is what
+/// keeps a browser's coarse clock from being the thing measured. A
+/// batch that reaches [`Plan::max_batch`] first stops growing, and the
+/// report marks its samples as capped.
+///
+/// [`Run::new`](crate::Run::new) checks a plan as
+/// [`Plan::with_overrides`] does, so a plan built field by field cannot
+/// reach a run with a value no run can be made of.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Plan {
     /// Iterations run before any measurement, both to reach a steady
@@ -105,8 +111,9 @@ impl Plan {
     }
 
     /// The plan with every control checked for a value a run can be
-    /// made of.
-    fn validate(self) -> Result<Self> {
+    /// made of: at least one warm-up iteration, one sample, and one
+    /// iteration in a batch, and a positive sample length.
+    pub fn validate(self) -> Result<Self> {
         if self.warmup_iterations == 0 {
             return Err(Error::Setup("`warmup` must be at least 1".to_owned()));
         }

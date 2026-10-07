@@ -150,3 +150,19 @@ impl Report {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[wcmp_macros::test]
+    fn it_writes_the_target_the_backend_the_plan_and_the_benchmarks_at_the_top() {
+        let report = Report::new("native", "wasmtime", Plan::default(), Vec::new());
+        let json = report.json();
+        let expected = format!(
+            "{{\"target\":\"native\",\"backend\":\"wasmtime\",\"plan\":{},\"benchmarks\":[]}}\n",
+            Plan::default().json()
+        );
+        assert_eq!(json, expected);
+    }
+}

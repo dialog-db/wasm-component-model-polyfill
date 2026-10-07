@@ -79,3 +79,34 @@ pub async fn measure(plan: Plan, backend: &'static str) -> Report {
 // the clock they exercise is the browser's.
 #[cfg(all(test, target_arch = "wasm32"))]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[wcmp_macros::test]
+    async fn it_measures_every_benchmark_once_on_this_target() {
+        // One sample of a one-iteration batch: enough to run every guest,
+        // every `canon lift` shape, and every export name the suite
+        // relies on, and no more.
+        let plan = Plan {
+            warmup_iterations: 1,
+            samples: 1,
+            target_sample_ms: 0.000_001,
+            max_batch: 1,
+            provider: true,
+        };
+        let report = measure(plan, backend().expect("a backend")).await;
+        assert_eq!(report.measurements().len(), benchmarks().len());
+        let failed = report
+            .measurements()
+            .iter()
+            .filter_map(|measurement| {
+                measurement
+                    .error()
+                    .map(|error| format!("{}: {error}", measurement.name()))
+            })
+            .collect::<Vec<_>>();
+        assert!(failed.is_empty(), "{failed:#?}");
+    }
+}
