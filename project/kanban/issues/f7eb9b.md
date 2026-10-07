@@ -19,7 +19,7 @@ Non-blocking findings from the independent review of 215523 (browser memory acce
 ## Acceptance criteria
 - [x] Shared copies without `multi_memory` batch at least eight bytes per call.
 - [x] A lane shows the non-isolated case, or the crate docs state the limit.
-- [x] The missing tests exist and run in the web lanes.
+- [ ] The missing tests exist and run in the web lanes.
 - [x] Global test state is restored on every path.
 - [ ] `tests all` and `lint` pass.
 
@@ -52,4 +52,7 @@ Non-blocking findings from the independent review of 215523 (browser memory acce
     page, and wbg-pool gives each test a fresh page, so nothing leaks.
   - Gate: web lane for the crate 105/105, `lint clippy-wasm32 rustfmt` green.
     `tests all` and full `lint` run on the composed series tip.
-
+- 2026-10-07 context-free review: the "missing tests" box is unticked because the worker dispatcher
+  install test is not written. The reason is above: the build has no
+  `atomics`, so a worker runs its own instance. The owner decides whether
+  the stated limit closes it.

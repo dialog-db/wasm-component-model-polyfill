@@ -52,4 +52,8 @@ Close the findings the review of card 2170bc left open.
     expectation:` lines; `lint clippy clippy-wasm32 rustfmt public-api
     doctests package downstream-build downstream-guard sharedWorkspaceDeps`
     green. `tests all` and full `lint` run on the composed series tip.
-
+- 2026-10-07 context-free review: only the host task of an `async` host function is reserved.
+  Wasmtime pushes a `HostTask` for synchronous host calls too, so at a full
+  table it refuses a call the polyfill runs. The `reserve_host_call` doc now
+  says so. The first host-call test pins the exact count (`live + 4`), so it
+  fails without the reservation.
