@@ -38,12 +38,14 @@
 //!   and the cancel waits until it resolves on its own.
 //!
 //! When the callee has not resolved by then, an asynchronous cancel
-//! gives way once, as `thread.yield` does, unless it already gave way
-//! to the callee it woke, and answers `BLOCKED` when the callee still
-//! has not resolved; the caller then waits for the subtask event. A
-//! synchronous cancel blocks until the callee resolves, as every
-//! blocking built-in blocks, and a block that cannot progress fails
-//! with the cause the suspend seam names. The subtask is waited on
+//! answers `BLOCKED`, and the caller waits for the subtask event. It
+//! gives way only to a callee the request woke, never on its own, as
+//! the reference's `canon_subtask_cancel` does since component-model
+//! #726, and as Wasmtime 49 does, which yields only on its wake paths.
+//! A ready callee that the request did not wake therefore does not
+//! run inside the cancel. A synchronous cancel blocks until the callee
+//! resolves, as every blocking built-in blocks, and a block that
+//! cannot progress fails with the cause the suspend seam names. The subtask is waited on
 //! synchronously for as long as the built-in runs, so the callee
 //! cannot add it to a waitable set meanwhile.
 //!
@@ -215,7 +217,7 @@ fn begin_subtask_cancel<T: 'static>(
     });
     let woken = ending_wait_on_failure(&tables, subtask, woken)?;
     let Some(callee_instance) = woken else {
-        let step = after_request(&tables, subtask, async_, false);
+        let step = after_request(&tables, subtask, async_);
         return Ok(ending_wait_on_failure(&tables, subtask, step)?);
     };
 
@@ -258,7 +260,7 @@ fn begin_subtask_cancel<T: 'static>(
             },
         ));
     }
-    let step = after_request(&tables, subtask, async_, true);
+    let step = after_request(&tables, subtask, async_);
     Ok(ending_wait_on_failure(&tables, subtask, step)?)
 }
 
@@ -315,11 +317,27 @@ fn claim(
 ///
 /// The thread woken is the first of the task's threads that can take
 /// the request, in the order Wasmtime tries them: a callback task
-/// waiting in its loop, then a thread suspended in the provider in a
-/// cancellable `waitable-set.wait` whose set holds no event yet, or in
-/// a cancellable yield. A thread that blocks on the real stack lies
-/// below this frame and cannot run from here; a request ends its
-/// cancellable wait all the same once control goes back to it.
+/// waiting in its loop on a set that holds no event yet, then a thread
+/// suspended in the provider in a cancellable `waitable-set.wait`
+/// whose set holds no event yet, or in a cancellable yield. A thread
+/// that blocks on the real stack lies below this frame and cannot run
+/// from here; a request ends its cancellable wait all the same once
+/// control goes back to it.
+///
+/// Wasmtime takes a waiter out of the cancel's reach for good when an
+/// event of its set is handed to it (`mark_ready`, which clears the
+/// thread's `wake_on_cancel`, in
+/// `crates/wasmtime/src/runtime/component/concurrent.rs` at
+/// `v49.0.0-rc.1`). The polyfill reads the same thing off the set at
+/// the moment of the cancel: a waiter whose set holds an event is out
+/// of reach. The two differ in two cases, which the polyfill leaves
+/// as departures. When two threads wait cancellably on one set and
+/// an event arrives, Wasmtime hands it to the first and can still wake
+/// the second, where the polyfill wakes neither while the event is
+/// pending. When the event leaves the set before the waiter runs,
+/// Wasmtime keeps the waiter out of reach, where the polyfill can wake
+/// it again. Matching them needs a mark per waiter, set as the wait
+/// begins and cleared when a turn hands it an event.
 fn request_cancellation<T: 'static>(
     store: &mut StoreContext<'_, T>,
     subtask: SubtaskId,
@@ -353,11 +371,22 @@ fn request_cancellation<T: 'static>(
             // delivered before any event of the set. The thread stops
             // waiting, and the set counts it as a waiter until the item
             // runs.
-            let Some((set, slot, item)) = store
-                .internal()
-                .scheduler_mut()
-                .take_held_callback_of(thread)
-            else {
+            // A callback whose set holds an event takes that event
+            // first, as Wasmtime hands it to the waiting callback before
+            // any cancel can reach it.
+            let held = match store.internal().scheduler().held_callback_set(thread) {
+                Some(set) => !lock(&tables)?.tasks.set_has_pending_event(set)?,
+                None => false,
+            };
+            let taken = if held {
+                store
+                    .internal()
+                    .scheduler_mut()
+                    .take_held_callback_of(thread)
+            } else {
+                None
+            };
+            let Some((set, slot, item)) = taken else {
                 // A thread in a cancellable wait or yield, suspended in
                 // the provider, resumes next. Its wait's condition
                 // holds now that a request is pending, and the
@@ -402,7 +431,7 @@ fn abort_host_callee<T: 'static>(
     if !resolved(tables, subtask)? {
         store.internal().scheduler_mut().abort_host_task(subtask);
     }
-    after_request(tables, subtask, async_, true)
+    after_request(tables, subtask, async_)
 }
 
 /// Give up a callee the entry gate still holds, which is the
@@ -431,28 +460,22 @@ fn cancel_before_start<T: 'static>(
     Ok(())
 }
 
-/// The rest of `subtask.cancel` once the request was made: answer at
-/// once when the callee resolved, and otherwise give way once or
-/// block, as the module documentation states. `gave_way` says the
-/// cancel already gave way to a callee it woke, or that it does not
-/// give way at all, as the cancel of a host callee does not.
+/// The rest of `subtask.cancel` once the request was made, and once
+/// the cancel gave way to a callee it woke, if it woke one: answer at
+/// once when the callee resolved or the cancel is asynchronous, and
+/// otherwise block until the callee resolves, as the module
+/// documentation states.
 fn after_request<T: 'static>(
     tables: &Arc<Mutex<HandleTables>>,
     subtask: SubtaskId,
     async_: bool,
-    gave_way: bool,
 ) -> crate::error::Result<BlockStep<T>> {
-    if resolved(tables, subtask)? || (async_ && gave_way) {
+    if async_ || resolved(tables, subtask)? {
         return Ok(BlockStep::Ready(vec![status(tables, subtask)?]));
     }
-    let readiness = if async_ {
-        Readiness::Yielded
-    } else {
-        Readiness::Subtask { subtask }
-    };
     let tables = tables.clone();
     Ok(BlockStep::wait(
-        readiness,
+        Readiness::Subtask { subtask },
         move |_store: &mut StoreContext<'_, T>, waited| {
             if let Err(error) = waited {
                 end_synchronous_wait(&tables, subtask);

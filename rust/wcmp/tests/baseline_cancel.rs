@@ -28,9 +28,13 @@
 //!   `CANCELLED_BEFORE_RETURNED`, and one that returns a result
 //!   instead resolves to `RETURNED`.
 //! - A stackful callee has no built-in that takes the request, so it
-//!   is never told. An asynchronous cancel gives way once and answers
-//!   `BLOCKED`, and a synchronous one waits until the callee returns
-//!   on its own.
+//!   is never told. An asynchronous cancel answers `BLOCKED`, and a
+//!   synchronous one waits until the callee returns on its own.
+//! - A callback callee that yielded is ready, but the request does not
+//!   wake it. An asynchronous cancel answers `BLOCKED` without running
+//!   it, as the reference and Wasmtime do; the callee takes the
+//!   request when its yield ends, and the subtask event carries its
+//!   confirmation.
 //! - A request comes before an event the callee's set already holds
 //!   when the request arrives. The set keeps that event for the
 //!   callee's next wait.
@@ -194,6 +198,14 @@ const CALLS: &[u8] = component!(
             (i32.const 0 (; EXIT ;)))
           (func (export "unreachable-cb") (param i32 i32 i32) (result i32)
             unreachable)
+          (func (export "yield") (result i32)
+            (i32.const 1 (; YIELD ;)))
+          (func (export "yield-confirm-cb") (param i32 i32 i32) (result i32)
+            (if (i32.eq (local.get 0) (i32.const 6 (; TASK_CANCELLED ;)))
+              (then
+                (call $task.cancel)
+                (return (i32.const 0 (; EXIT ;)))))
+            (i32.const 1 (; YIELD ;)))
           (func (export "confirm-at-once") (result i32)
             (call $task.cancel)
             (i32.const 0 (; EXIT ;)))
@@ -248,6 +260,8 @@ const CALLS: &[u8] = component!(
           (canon lift (core func $cm "quick") async (callback (core func $cm "unreachable-cb"))))
         (func (export "stackful") async (result u32)
           (canon lift (core func $cm "stackful") async))
+        (func (export "yield-confirm") async (result u32)
+          (canon lift (core func $cm "yield") async (callback (core func $cm "yield-confirm-cb"))))
         (func (export "sync-confirm") (canon lift (core func $cm "sync-confirm")))
         (func (export "set-backpressure") (canon lift (core func $cm "set-backpressure")))
         (func (export "clear-backpressure") (canon lift (core func $cm "clear-backpressure"))))
@@ -261,6 +275,7 @@ const CALLS: &[u8] = component!(
         (import "confirm-at-once" (func $confirm-at-once async (result u32)))
         (import "quick" (func $quick async (result u32)))
         (import "stackful" (func $stackful async (result u32)))
+        (import "yield-confirm" (func $yield-confirm async (result u32)))
         (import "set-backpressure" (func $set-backpressure))
         (import "clear-backpressure" (func $clear-backpressure))
         (core module $Memory (memory (export "mem") 1))
@@ -282,6 +297,7 @@ const CALLS: &[u8] = component!(
           (import "" "confirm-at-once" (func $confirm-at-once (param i32) (result i32)))
           (import "" "quick" (func $quick (param i32) (result i32)))
           (import "" "stackful" (func $stackful (param i32) (result i32)))
+          (import "" "yield-confirm" (func $yield-confirm (param i32) (result i32)))
           (import "" "set-backpressure" (func $set-backpressure))
           (import "" "clear-backpressure" (func $clear-backpressure))
 
@@ -345,6 +361,20 @@ const CALLS: &[u8] = component!(
             (call $expect-result (i32.const 7))
             (i32.load (i32.const 12)))
 
+          (func (export "cancel-yielding-async") (result i32)
+            (local $sub i32) (local $ws i32)
+            (local.set $sub (call $started (call $yield-confirm (i32.const 0))))
+            (if (i32.ne (call $cancel-async (local.get $sub)) (i32.const -1 (; BLOCKED ;)))
+              (then unreachable))
+            (local.set $ws (call $waitable-set.new))
+            (call $waitable.join (local.get $sub) (local.get $ws))
+            (if (i32.ne (call $waitable-set.wait (local.get $ws) (i32.const 8))
+                        (i32.const 1 (; SUBTASK ;)))
+              (then unreachable))
+            (if (i32.ne (i32.load (i32.const 8)) (local.get $sub))
+              (then unreachable))
+            (i32.load (i32.const 12)))
+
           (func (export "cancel-stackful-sync") (result i32)
             (local $status i32)
             (i32.store (i32.const 0) (i32.const 0))
@@ -397,6 +427,8 @@ const CALLS: &[u8] = component!(
           (core func $quick'))
         (canon lower (func $stackful) async (memory (core memory $memory "mem"))
           (core func $stackful'))
+        (canon lower (func $yield-confirm) async (memory (core memory $memory "mem"))
+          (core func $yield-confirm'))
         (canon lower (func $set-backpressure) (core func $set-backpressure'))
         (canon lower (func $clear-backpressure) (core func $clear-backpressure'))
         (core instance $dm (instantiate $DM (with "" (instance
@@ -415,6 +447,7 @@ const CALLS: &[u8] = component!(
           (export "confirm-at-once" (func $confirm-at-once'))
           (export "quick" (func $quick'))
           (export "stackful" (func $stackful'))
+          (export "yield-confirm" (func $yield-confirm'))
           (export "set-backpressure" (func $set-backpressure'))
           (export "clear-backpressure" (func $clear-backpressure'))))))
         (func (export "cancel-at-gate") async (result u32)
@@ -427,6 +460,8 @@ const CALLS: &[u8] = component!(
           (canon lift (core func $dm "cancel-stackful-async")))
         (func (export "cancel-stackful-sync") async (result u32)
           (canon lift (core func $dm "cancel-stackful-sync")))
+        (func (export "cancel-yielding-async") async (result u32)
+          (canon lift (core func $dm "cancel-yielding-async")))
         (func (export "cancel-twice") async (result u32)
           (canon lift (core func $dm "cancel-twice")))
         (func (export "cancel-after-terminal") async (result u32)
@@ -448,6 +483,7 @@ const CALLS: &[u8] = component!(
         (with "confirm-at-once" (func $c "confirm-at-once"))
         (with "quick" (func $c "quick"))
         (with "stackful" (func $c "stackful"))
+        (with "yield-confirm" (func $c "yield-confirm"))
         (with "set-backpressure" (func $c "set-backpressure"))
         (with "clear-backpressure" (func $c "clear-backpressure"))))
       (func (export "cancel-at-gate") (alias export $d "cancel-at-gate"))
@@ -455,6 +491,7 @@ const CALLS: &[u8] = component!(
       (func (export "cancel-returning") (alias export $d "cancel-returning"))
       (func (export "cancel-stackful-async") (alias export $d "cancel-stackful-async"))
       (func (export "cancel-stackful-sync") (alias export $d "cancel-stackful-sync"))
+      (func (export "cancel-yielding-async") (alias export $d "cancel-yielding-async"))
       (func (export "cancel-twice") (alias export $d "cancel-twice"))
       (func (export "cancel-after-terminal") (alias export $d "cancel-after-terminal"))
       (func (export "confirm-twice") (alias export $d "confirm-twice"))
@@ -591,6 +628,134 @@ const EVENT_QUEUED: &[u8] = component!(
       (instance $d (instantiate $D (with "fill-then-wait" (func $c "fill-then-wait"))))
       (func (export "cancel-with-an-event-queued")
         (alias export $d "cancel-with-an-event-queued")))
+    "#
+);
+
+/// A callee whose set takes an event after the callee parked on it,
+/// and a caller that cancels it before any turn hands it that event.
+///
+/// The caller makes a future and passes its readable end to the callee.
+/// The callee starts a read of it, joins it to a set, and returns the
+/// wait word while the set holds nothing, so the store holds its
+/// callback for an event. The caller then writes the future from its
+/// own code, which gives the callee's set the read's event with no
+/// turn in between, and cancels at once. Wasmtime hands the event to
+/// the waiting callback as it arrives, which takes the callback out of
+/// the cancel's reach, so the cancel answers `BLOCKED`. The callback
+/// then receives the task-cancelled event, before the read's event, and
+/// confirms at once. A cancel that woke the callback would have run it
+/// to that confirmation inside the cancel, and answered
+/// `CANCELLED_BEFORE_RETURNED` instead.
+///
+/// The caller traps unless the cancel answered `BLOCKED`, and answers
+/// the state the subtask event delivers.
+const EVENT_AFTER_PARKING: &[u8] = component!(
+    r#"
+    (component
+      (component $C
+        (type $f (future u32))
+        (core module $Memory (memory (export "mem") 1))
+        (core instance $memory (instantiate $Memory))
+        (core func $future.read
+          (canon future.read $f async (memory (core memory $memory "mem"))))
+        (core func $task.cancel (canon task.cancel))
+        (core func $waitable-set.new (canon waitable-set.new))
+        (core func $waitable.join (canon waitable.join))
+        (core module $CM
+          (import "" "mem" (memory 1))
+          (import "" "future.read" (func $future.read (param i32 i32) (result i32)))
+          (import "" "task.cancel" (func $task.cancel))
+          (import "" "waitable-set.new" (func $waitable-set.new (result i32)))
+          (import "" "waitable.join" (func $waitable.join (param i32 i32)))
+          (global $ws (mut i32) (i32.const 0))
+          (global $readable (mut i32) (i32.const 0))
+          (func $wait (result i32)
+            (i32.or (i32.const 2 (; WAIT ;)) (i32.shl (global.get $ws) (i32.const 4))))
+          (func (export "read-then-wait") (param $readable i32) (result i32)
+            (global.set $readable (local.get $readable))
+            (global.set $ws (call $waitable-set.new))
+            (if (i32.ne (call $future.read (global.get $readable) (i32.const 104))
+                        (i32.const -1 (; BLOCKED ;)))
+              (then unreachable))
+            (call $waitable.join (global.get $readable) (global.get $ws))
+            (call $wait))
+          (func (export "cb") (param i32 i32 i32) (result i32)
+            (if (i32.ne (local.get 0) (i32.const 6 (; TASK_CANCELLED ;)))
+              (then unreachable))
+            (call $task.cancel)
+            (i32.const 0 (; EXIT ;))))
+        (core instance $cm (instantiate $CM (with "" (instance
+          (export "mem" (memory $memory "mem"))
+          (export "future.read" (func $future.read))
+          (export "task.cancel" (func $task.cancel))
+          (export "waitable-set.new" (func $waitable-set.new))
+          (export "waitable.join" (func $waitable.join))))))
+        (func (export "read-then-wait") async (param "f" $f) (result u32)
+          (canon lift (core func $cm "read-then-wait") async (callback (core func $cm "cb")))))
+
+      (component $D
+        (type $f (future u32))
+        (import "read-then-wait" (func $read-then-wait async (param "f" $f) (result u32)))
+        (core module $Memory (memory (export "mem") 1))
+        (core instance $memory (instantiate $Memory))
+        (core func $future.new (canon future.new $f))
+        (core func $future.write
+          (canon future.write $f async (memory (core memory $memory "mem"))))
+        (core func $cancel-async (canon subtask.cancel async))
+        (core func $waitable.join (canon waitable.join))
+        (core func $waitable-set.new (canon waitable-set.new))
+        (core func $waitable-set.wait
+          (canon waitable-set.wait (memory (core memory $memory "mem"))))
+        (core func $read-then-wait'
+          (canon lower (func $read-then-wait) async (memory (core memory $memory "mem"))))
+        (core module $DM
+          (import "" "mem" (memory 1))
+          (import "" "future.new" (func $future.new (result i64)))
+          (import "" "future.write" (func $future.write (param i32 i32) (result i32)))
+          (import "" "cancel-async" (func $cancel-async (param i32) (result i32)))
+          (import "" "waitable.join" (func $waitable.join (param i32 i32)))
+          (import "" "waitable-set.new" (func $waitable-set.new (result i32)))
+          (import "" "waitable-set.wait" (func $waitable-set.wait (param i32 i32) (result i32)))
+          (import "" "read-then-wait" (func $read-then-wait (param i32 i32) (result i32)))
+          (func (export "cancel-after-the-event") (result i32)
+            (local $ends i64) (local $status i32) (local $sub i32) (local $ws i32)
+            (local.set $ends (call $future.new))
+            (local.set $status
+              (call $read-then-wait (i32.wrap_i64 (local.get $ends)) (i32.const 0)))
+            (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1 (; STARTED ;)))
+              (then unreachable))
+            (local.set $sub (i32.shr_u (local.get $status) (i32.const 4)))
+            (i32.store (i32.const 100) (i32.const 9))
+            (if (i32.ne
+                  (call $future.write
+                    (i32.wrap_i64 (i64.shr_u (local.get $ends) (i64.const 32)))
+                    (i32.const 100))
+                  (i32.const 0 (; COMPLETED ;)))
+              (then unreachable))
+            (if (i32.ne (call $cancel-async (local.get $sub)) (i32.const -1 (; BLOCKED ;)))
+              (then unreachable))
+            (local.set $ws (call $waitable-set.new))
+            (call $waitable.join (local.get $sub) (local.get $ws))
+            (if (i32.ne (call $waitable-set.wait (local.get $ws) (i32.const 8))
+                        (i32.const 1 (; SUBTASK ;)))
+              (then unreachable))
+            (i32.load (i32.const 12))))
+        (core instance $dm (instantiate $DM (with "" (instance
+          (export "mem" (memory $memory "mem"))
+          (export "future.new" (func $future.new))
+          (export "future.write" (func $future.write))
+          (export "cancel-async" (func $cancel-async))
+          (export "waitable.join" (func $waitable.join))
+          (export "waitable-set.new" (func $waitable-set.new))
+          (export "waitable-set.wait" (func $waitable-set.wait))
+          (export "read-then-wait" (func $read-then-wait'))))))
+        (func (export "cancel-after-the-event") async (result u32)
+          (canon lift (core func $dm "cancel-after-the-event"))))
+
+      (instance $c (instantiate $C))
+      (instance $d (instantiate $D
+        (with "read-then-wait" (func $c "read-then-wait"))))
+      (func (export "cancel-after-the-event") (alias export $d "cancel-after-the-event")))
     "#
 );
 
@@ -1561,6 +1726,16 @@ async fn it_never_tells_a_stackful_callee_and_answers_blocked_to_an_asynchronous
 }
 
 #[wcmp_macros::test]
+async fn it_answers_blocked_to_an_asynchronous_cancel_of_a_ready_callee_it_did_not_wake() {
+    assert_eq!(
+        cancel("cancel-yielding-async").await,
+        CANCELLED_BEFORE_RETURNED,
+        "the cancel answers `BLOCKED` without running the yielded callee, which confirms \
+         once its yield ends"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_waits_for_a_stackful_callee_to_return_in_a_synchronous_cancel() {
     assert_eq!(
         cancel("cancel-stackful-sync").await,
@@ -1629,6 +1804,16 @@ async fn it_delivers_the_request_before_an_event_the_set_already_holds() {
         cancel_in(EVENT_QUEUED, "cancel-with-an-event-queued").await,
         CANCELLED_BEFORE_RETURNED,
         "the callback receives event 6 first and the write's event at its next wait"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_a_parked_callback_whose_set_took_an_event_to_take_it_first() {
+    assert_eq!(
+        cancel_in(EVENT_AFTER_PARKING, "cancel-after-the-event").await,
+        CANCELLED_BEFORE_RETURNED,
+        "the cancel answers `BLOCKED` without running the callback, which takes event 6 \
+         before the read's event and confirms"
     );
 }
 

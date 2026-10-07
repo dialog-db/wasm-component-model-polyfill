@@ -1248,6 +1248,18 @@ impl<T: 'static> Scheduler<T> {
         })
     }
 
+    /// The set the callback item held for an event on behalf of
+    /// `thread` waits on, or `None` when no such item is held.
+    pub fn held_callback_set(&self, thread: ThreadId) -> Option<WaitableSetId> {
+        self.held_callbacks
+            .entries
+            .values()
+            .find_map(|entry| match entry.condition {
+                HeldFor::Event { thread: held, set } if held == thread => Some(set),
+                _ => None,
+            })
+    }
+
     /// Take the callback item held for an event on behalf of
     /// `thread` out of the held items, with the set the thread waits
     /// on and the slot the item's event goes in. `None` when no such
