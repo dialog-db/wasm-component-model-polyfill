@@ -2099,6 +2099,9 @@ struct Sweep {
     typed: crate::TypedFunc<(), u32>,
     resource: crate::ResourceTypeId,
     handle: crate::ResourceHandle,
+    /// A stream the host made while the store was its own, which the
+    /// sweep tries to close.
+    reader: crate::StreamReader<u32>,
 }
 
 /// What each operation `reach-store` tried answered, by its name.
@@ -2121,7 +2124,7 @@ std::thread_local! {
 /// Tries every fallible operation of the polyfill on `store`, which a
 /// host function reached past the context it was handed.
 #[cfg(target_arch = "wasm32")]
-fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &Sweep) -> Swept {
+fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &mut Sweep) -> Swept {
     /// What `future` answers on its first poll. A future that is not
     /// ready answers `Ok`, which no refusal is.
     fn first_poll<T>(future: impl Future<Output = Result<T, Error>>) -> Result<(), Error> {
@@ -2164,6 +2167,7 @@ fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &Sweep) -> Swept {
         "FutureReader::new",
         crate::FutureReader::<u32>::new(&mut context, async { Ok::<u32, Error>(5) }).map(drop),
     ));
+    swept.push(("StreamReader::close", sweep.reader.close(&mut context)));
     swept
 }
 
@@ -2198,7 +2202,7 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
                     let mut reached = reached.borrow_mut();
                     let (store, sweep, swept) = &mut *reached;
                     let store = store.as_mut().expect("the test kept the store");
-                    let sweep = sweep.as_ref().expect("the test kept the sweep");
+                    let sweep = sweep.as_mut().expect("the test kept the sweep");
                     *swept = Some(sweep_the_store(store, sweep));
                 });
                 Ok(())
@@ -2221,6 +2225,8 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
         .await
         .expect("instantiate");
     let handle = store.resource_new(resource, 1).expect("a host handle");
+    let reader = crate::StreamReader::<u32>::new(&mut store.as_context_mut(), Vec::new())
+        .expect("a host stream");
     {
         let export = func(&instance, "reach-store-after-hold");
         let mut call = Box::pin(export.call(&mut store, &[]));
@@ -2240,13 +2246,14 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
             .expect("the export takes nothing and returns a `u32`"),
         resource,
         handle,
+        reader,
     };
     REACHED.with(|reached| *reached.borrow_mut() = (Some(store), Some(sweep), None));
     run_microtasks_until(&notes, 1).await;
 
-    let (store, _, swept) = REACHED.with(|reached| core::mem::take(&mut *reached.borrow_mut()));
+    let (store, sweep, swept) = REACHED.with(|reached| core::mem::take(&mut *reached.borrow_mut()));
     let swept = swept.expect("`reach-store` ran");
-    assert_eq!(swept.len(), 10, "every operation was tried");
+    assert_eq!(swept.len(), 11, "every operation was tried");
     for (operation, outcome) in swept {
         assert!(
             matches!(outcome, Err(Error::StoreRefused)),
@@ -2262,6 +2269,26 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
     store
         .resource_drop(handle)
         .expect("the refused drop left the handle live");
+    // The refused close left the reader its end, so this close is the
+    // one that lets the stream's record go.
+    let records = |store: &mut Store<NotesItsDrop>| {
+        store
+            .internal()
+            .lock_tables()
+            .expect("handle tables")
+            .tasks
+            .record_count()
+    };
+    let before = records(&mut store);
+    let mut reader = sweep.expect("the sweep is back").reader;
+    reader
+        .close(&mut store.as_context_mut())
+        .expect("the store is its own again");
+    assert_eq!(
+        records(&mut store),
+        before - 1,
+        "the close released the stream the refused close left alone"
+    );
 }
 
 #[cfg(target_arch = "wasm32")]

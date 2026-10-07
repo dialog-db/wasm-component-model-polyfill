@@ -54,12 +54,15 @@ use crate::store::{StoreContext, StoreContextInternalExt};
 /// [`TaskTables::held_by_host`](crate::concurrency::TaskTables::held_by_host)
 /// states the rule and where it departs from Wasmtime. The value
 /// names no end afterwards whether the close succeeds or fails, as
-/// Wasmtime replaces the id before it looks the end up.
+/// Wasmtime replaces the id before it looks the end up. A store that
+/// refuses itself refuses the close before that, and the value keeps
+/// its end.
 pub fn close_readable_end<T: 'static>(
     store: &mut StoreContext<'_, T>,
     reader: &mut EndId,
     kind: EndKind,
 ) -> Result<()> {
+    store.internal().reachable()?;
     let end = core::mem::replace(reader, EndId::CLOSED);
     let released = store
         .internal()
