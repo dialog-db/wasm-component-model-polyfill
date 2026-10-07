@@ -252,10 +252,9 @@ fn subtask_cancel(async_, index) -> status:
     trap if it is in a waitable set           // "cannot be used synchronously ..."
     if not subtask.resolved():
         subtask.cancellation_requested = true
-        subtask.callee.request_cancellation()
-        if not subtask.resolved():
-            if async_: give way once          // the cooperative yield
-            else:      block until resolved   // under the existing blocking rules
+        subtask.callee.request_cancellation()  // runs a callee thread it wakes
+        if not async_ and not subtask.resolved():
+            block until resolved              // under the existing blocking rules
         if not subtask.resolved():
             return BLOCKED                    // 0xffff_ffff
     deliver the resolution
@@ -269,10 +268,21 @@ store when the caller drops it.
 A started guest callee receives the request as the next section states. A
 started host callee is the subject of The Host Callee.
 
-An asynchronous `subtask.cancel` gives way once when the callee has not
-resolved. The give-way is the one `thread.yield` makes under [PDD019], so ready
-work, including the callee, can run. If the callee still has not resolved, the
-built-in returns `BLOCKED`. The caller then waits for the subtask event.
+An asynchronous `subtask.cancel` does not give way on its own. The callee runs
+inside the cancel only when the request wakes one of its threads, as Delivery to
+a Guest Callee states. If the callee has not resolved after that, the built-in
+returns `BLOCKED`. The caller then waits for the subtask event. So a ready
+callee that the request does not wake does not run inside the cancel. An example
+is a callback task that returned the yield code. The cancel answers `BLOCKED`,
+and the callee learns of the request when its yield ends.
+
+This rule follows the reference at a later commit than the corpus. Before
+component-model #723 (commit `07afb81`, 2026-09-16), an asynchronous cancel gave
+way once whenever the callee had not resolved. #723 removed that give-way, and
+the reference still has none at `a25fc0b` ([`definitions.py`],
+`canon_subtask_cancel`). Wasmtime 49 also gives way only when it wakes a thread
+([Wasmtime subtask cancel]). The reference and Wasmtime agree, so the polyfill
+follows them.
 
 A synchronous `subtask.cancel` blocks until the callee resolves. It blocks as
 every blocking built-in blocks: through the provider of [PDD022], or in a nested
@@ -308,6 +318,23 @@ callback task waiting in its loop, a thread in a cancellable
 `waitable-set.wait`, and a thread in a cancellable yield. Wasmtime wakes the
 first such thread it finds and gives way to it ([Wasmtime subtask cancel]). The
 polyfill does the same.
+
+A waiter whose set already holds an event is not a candidate. Wasmtime hands an
+event to the first thread that waits on its set when the event arrives, and from
+then on no cancel can wake that thread ([Wasmtime mark ready]). The polyfill
+reads the same condition from the set when the cancel runs, for a waiting thread
+and for a callback task waiting in its loop alike. The two differ in two cases,
+which the polyfill accepts as departures:
+
+- Two threads wait cancellably on one set, and an event arrives. Wasmtime hands
+  the event to the first thread and can still wake the second. The polyfill
+  wakes neither while the event is pending.
+- The event leaves the set before the waiter runs. Wasmtime keeps the waiter out
+  of reach. The polyfill can wake it again.
+
+To match both cases, the polyfill would need a mark on each waiter, set when the
+wait starts and cleared when a turn hands the waiter an event. Both cases need a
+second thread of the instance to use the set while the first waits on it.
 
 ### The Cancellable Immediate
 
@@ -822,6 +849,8 @@ states of [PDD022], and each state is green against its lists.
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L1325-L1340
 [Wasmtime subtask cancel]:
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L4161-L4345
+[Wasmtime mark ready]:
+  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L5384-L5400
 [Wasmtime cancellable wait]:
   https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L4085-L4103
 [Wasmtime cancellable suspend]:
