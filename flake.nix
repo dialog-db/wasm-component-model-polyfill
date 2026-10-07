@@ -2893,6 +2893,10 @@
             # The web smoke page must still run, and report what the native
             # binary reports: see `smokeWebCheck`.
             smoke-web = smokeWebCheck;
+            # The benchmark runner `bench web` uses, built so that its
+            # shellcheck pass runs with every `lint` rather than when a
+            # person next measures.
+            bench-web-driver = benchWebDriver;
             # The suite must build for both targets on every check; running
             # it stays a menu command, so a number is never a cached one.
             bench-native = benchNative;
