@@ -5,6 +5,8 @@ type: bug
 blocked_by: []
 labels: [resource, backlog-burndown-001-q2]
 created: 2026-09-22T06:53:00Z
+disposition: accepted
+disposition_at: 2026-10-07T17:53:58Z
 ---
 
 ## What to build
