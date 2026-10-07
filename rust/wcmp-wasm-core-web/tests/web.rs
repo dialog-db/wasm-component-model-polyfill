@@ -77,15 +77,50 @@ fn webassembly() -> JsValue {
     Reflect::get(&js_sys::global(), &"WebAssembly".into()).expect("the page has WebAssembly")
 }
 
+/// The property `name` of `target`, set to a value of the test until the
+/// setting drops, which puts back what the property was.
+///
+/// The setting puts the property back on every path that unwinds. A
+/// panic aborts the page instead, and the runner gives each test a page
+/// of its own, so no setting outlives its test.
+struct Setting {
+    target: Object,
+    name: JsValue,
+    /// What the property was, where `target` held it as its own. An
+    /// inherited property is deleted instead, to show the inherited one
+    /// again.
+    original: Option<JsValue>,
+}
+
+impl Setting {
+    fn new(target: &JsValue, name: &str, value: &JsValue) -> Self {
+        let target = target.unchecked_ref::<Object>().clone();
+        let name = JsValue::from_str(name);
+        let original = Object::has_own(&target, &name)
+            .then(|| Reflect::get(&target, &name).expect("the property reads"));
+        Reflect::set(&target, &name, value).expect("the property is writable");
+        Self {
+            target,
+            name,
+            original,
+        }
+    }
+}
+
+impl Drop for Setting {
+    fn drop(&mut self) {
+        let _ = match &self.original {
+            Some(original) => Reflect::set(&self.target, &self.name, original),
+            None => Reflect::delete_property(&self.target, &self.name),
+        };
+    }
+}
+
 /// Runs `body` while the property `name` of the `WebAssembly` namespace
 /// is `value`, and puts the property back after.
 fn with_webassembly_property<R>(name: &str, value: &JsValue, body: impl FnOnce() -> R) -> R {
-    let namespace = webassembly();
-    let original = Reflect::get(&namespace, &name.into()).expect("the property reads");
-    Reflect::set(&namespace, &name.into(), value).expect("the property is writable");
-    let result = body();
-    Reflect::set(&namespace, &name.into(), &original).expect("the property is writable");
-    result
+    let _setting = Setting::new(&webassembly(), name, value);
+    body()
 }
 
 #[wcmp_macros::test]
@@ -367,12 +402,8 @@ async fn it_refuses_an_import_of_the_wrong_kind_or_type_with_a_link_error() {
 /// Awaits `body` while `WebAssembly.instantiate` is `instantiate`, and
 /// puts the browser's own back after.
 async fn with_instantiate<R>(instantiate: &JsValue, body: impl Future<Output = R>) -> R {
-    let namespace = webassembly();
-    let original = Reflect::get(&namespace, &"instantiate".into()).expect("the property reads");
-    Reflect::set(&namespace, &"instantiate".into(), instantiate).expect("the property is writable");
-    let result = body.await;
-    Reflect::set(&namespace, &"instantiate".into(), &original).expect("the property is writable");
-    result
+    let _setting = Setting::new(&webassembly(), "instantiate", instantiate);
+    body.await
 }
 
 /// A `WebAssembly.instantiate` that refuses every instantiation with a
@@ -1339,15 +1370,10 @@ fn typed_array_sets<R>(body: impl FnOnce() -> R) -> (R, u32) {
             )
         }
     });
-    Reflect::set(
-        &prototype,
-        &"set".into(),
-        &proxy(&set, "apply", apply.as_ref()),
-    )
-    .expect("the prototype is writable");
-    let result = body();
-    Reflect::delete_property(prototype.unchecked_ref::<Object>(), &"set".into())
-        .expect("the prototype is writable");
+    let result = {
+        let _spy = Setting::new(&prototype, "set", &proxy(&set, "apply", apply.as_ref()));
+        body()
+    };
     (result, count.get())
 }
 
@@ -1473,8 +1499,8 @@ async fn it_copies_in_bulk_with_one_typed_array_set_where_multi_memory_is_off() 
 #[wcmp_macros::test]
 async fn it_lends_a_copy_of_a_shared_memory() {
     // The runner of the web lane serves every page cross-origin isolated,
-    // so this test cannot show a page without isolation. The backend asks
-    // for none: `new WebAssembly.Memory({ shared: true })` needs none.
+    // so this test cannot show a page without isolation. The crate
+    // documentation states that limit.
     let engine = engine();
     let mut store = Store::new(&engine, ()).expect("the engine makes a store");
 
@@ -1526,14 +1552,64 @@ async fn it_lends_a_copy_of_a_shared_memory() {
     );
 }
 
-#[wcmp_macros::test]
-async fn it_reads_and_writes_guest_memory_from_a_host_function() {
-    let engine = engine();
-    assert!(engine.capabilities().contains(Capability::MultiMemory));
-    let mut store = Store::new(&engine, None::<Memory>).expect("the engine makes a store");
-    // The host function reads the `u32` the guest stored at the address it
-    // passes, writes its bytes back reversed, and stores the value plus one
-    // after them.
+/// Runs `body`, and counts the instantiations of `WebAssembly.Instance`
+/// meanwhile: the synchronous instantiation that makes each generated
+/// module, the accessor of a memory among them.
+fn instantiations<R>(body: impl FnOnce() -> R) -> (R, u32) {
+    let count = Rc::new(Cell::new(0));
+    let construct =
+        Closure::<dyn Fn(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>::new({
+            let count = count.clone();
+            move |target: JsValue, args: JsValue, new_target: JsValue| {
+                count.set(count.get() + 1);
+                Reflect::construct_with_new_target(
+                    target.unchecked_ref(),
+                    args.unchecked_ref(),
+                    new_target.unchecked_ref(),
+                )
+            }
+        });
+    let constructor = property(&webassembly(), "Instance");
+    let result = with_webassembly_property(
+        "Instance",
+        &proxy(&constructor, "construct", construct.as_ref()),
+        body,
+    );
+    (result, count.get())
+}
+
+/// Runs `body`, and counts the calls of `WebAssembly.Table.prototype.grow`
+/// meanwhile: the step the dispatcher takes where it has no free slot for
+/// a function of a new accessor.
+fn table_grows<R>(body: impl FnOnce() -> R) -> (R, u32) {
+    let prototype = property(&property(&webassembly(), "Table"), "prototype");
+    let grow = property(&prototype, "grow");
+    let count = Rc::new(Cell::new(0));
+    let apply = Closure::<dyn Fn(JsValue, JsValue, JsValue) -> Result<JsValue, JsValue>>::new({
+        let count = count.clone();
+        move |target: JsValue, this: JsValue, args: JsValue| {
+            count.set(count.get() + 1);
+            Reflect::apply(
+                target.unchecked_ref::<Function>(),
+                &this,
+                args.unchecked_ref(),
+            )
+        }
+    });
+    let result = {
+        let _spy = Setting::new(&prototype, "grow", &proxy(&grow, "apply", apply.as_ref()));
+        body()
+    };
+    (result, count.get())
+}
+
+/// A store of `engine` whose host function reverses the bytes of the
+/// `u32` the guest stored at the address it passes, and stores the value
+/// plus one after them, through the guest memory the store holds; and the
+/// guest's function `run`, which stores `0x04030201`, calls the host
+/// function, and returns the two `u32`s.
+async fn reversing_host(engine: &Engine) -> (Store<Option<Memory>>, Func) {
+    let mut store = Store::new(engine, None::<Memory>).expect("the engine makes a store");
     let reverse = Func::new(
         &mut store,
         FuncType::new([ValType::I32], []),
@@ -1554,7 +1630,7 @@ async fn it_reads_and_writes_guest_memory_from_a_host_function() {
     )
     .expect("the store makes a host function");
     let module = Module::compile(
-        &engine,
+        engine,
         wasm!(
             r#"
             (module
@@ -1589,28 +1665,150 @@ async fn it_reads_and_writes_guest_memory_from_a_host_function() {
         .and_then(Extern::into_func)
         .expect("the instance exports `run`");
     *store.data_mut() = Some(memory);
+    (store, run)
+}
+
+/// Calls `run` of [`reversing_host`] with `address`, and returns its two
+/// results, the number of generated modules the call instantiated, and
+/// the number of `TypedArray.set` calls it made.
+fn run_reversing_host(
+    store: &mut Store<Option<Memory>>,
+    run: Func,
+    address: i32,
+) -> ((Option<i32>, Option<i32>), u32, u32) {
+    let ((results, instantiated), sets) = typed_array_sets(|| {
+        instantiations(|| {
+            let mut results = [Val::I32(0), Val::I32(0)];
+            run.call(&mut *store, &[Val::I32(address)], &mut results)
+                .expect("the call succeeds");
+            (results[0].i32(), results[1].i32())
+        })
+    });
+    (results, instantiated, sets)
+}
+
+#[wcmp_macros::test]
+async fn it_reads_and_writes_guest_memory_from_a_host_function() {
+    let engine = engine();
+    assert!(engine.capabilities().contains(Capability::MultiMemory));
+    let (mut store, run) = reversing_host(&engine).await;
 
     // The first call makes the accessor of the memory inside the host
-    // function. The second finds it made, and crosses into no
-    // `TypedArray.set`.
-    let call = |store: &mut Store<Option<Memory>>, address: i32| {
-        let mut results = [Val::I32(0), Val::I32(0)];
-        run.call(store, &[Val::I32(address)], &mut results)
-            .expect("the call succeeds");
-        (results[0].i32(), results[1].i32())
-    };
-    assert_eq!(call(&mut store, 64), (Some(0x0102_0304), Some(0x0403_0202)));
-    let (seen, sets) = typed_array_sets(|| call(&mut store, 128));
+    // function. The second finds it made: it instantiates nothing, and
+    // crosses into no `TypedArray.set`.
+    let (seen, made, _) = run_reversing_host(&mut store, run, 64);
+    assert_eq!(seen, (Some(0x0102_0304), Some(0x0403_0202)));
+    assert!(made >= 1, "the first call makes the accessor");
+    let (seen, made, sets) = run_reversing_host(&mut store, run, 128);
     assert_eq!(
         seen,
         (Some(0x0102_0304), Some(0x0403_0202)),
         "the guest sees each write of the host function"
     );
+    assert_eq!(made, 0, "the second call reuses the accessor");
     assert_eq!(
         sets, 0,
         "the host function reaches memory through its accessor"
     );
+    let memory = store.data().expect("the memory is set");
     assert_eq!(memory.load_u32(&store, 132).ok(), Some(0x0403_0202));
+}
+
+#[wcmp_macros::test]
+async fn it_reads_and_writes_guest_memory_from_a_host_function_without_multi_memory() {
+    let engine = engine_without_multi_memory();
+    assert!(!engine.capabilities().contains(Capability::MultiMemory));
+    let (mut store, run) = reversing_host(&engine).await;
+
+    let (seen, made, _) = run_reversing_host(&mut store, run, 64);
+    assert_eq!(seen, (Some(0x0102_0304), Some(0x0403_0202)));
+    assert!(made >= 1, "the first call makes the accessor");
+    let (seen, made, sets) = run_reversing_host(&mut store, run, 128);
+    assert_eq!(
+        seen,
+        (Some(0x0102_0304), Some(0x0403_0202)),
+        "the guest sees each write of the host function"
+    );
+    assert_eq!(made, 0, "the second call reuses the accessor");
+    assert_eq!(
+        sets, 2,
+        "the read and the write of the host function are each one `TypedArray.set`"
+    );
+    let memory = store.data().expect("the memory is set");
+    assert_eq!(memory.load_u32(&store, 132).ok(), Some(0x0403_0202));
+}
+
+#[wcmp_macros::test]
+async fn it_keeps_a_store_reading_while_a_later_store_takes_the_slots_another_freed() {
+    let engine = engine();
+    let page = |store: &mut Store<()>, value: u32| {
+        let memory = Memory::new(&mut *store, MemoryType::new(1, None)).expect("a memory");
+        memory.store_u32(&mut *store, 0, value).expect("inside");
+        memory
+    };
+    let mut first = Store::new(&engine, ()).expect("the engine makes a store");
+    page(&mut first, 0x1111_1111);
+    let mut survivor = Store::new(&engine, ()).expect("the engine makes a store");
+    let kept = page(&mut survivor, 0x2222_2222);
+    drop(first);
+
+    let ((third, made), grows) = table_grows(|| {
+        let mut third = Store::new(&engine, ()).expect("the engine makes a store");
+        let memory = page(&mut third, 0x3333_3333);
+        (third, memory)
+    });
+    assert_eq!(
+        grows, 0,
+        "the accessor of the third store takes the slots the first freed"
+    );
+    assert_eq!(kept.load_u32(&survivor, 0).ok(), Some(0x2222_2222));
+    kept.store_u32(&mut survivor, 4, 0x4444_4444)
+        .expect("inside");
+    assert_eq!(made.load_u32(&third, 0).ok(), Some(0x3333_3333));
+    assert_eq!(
+        made.load_u32(&third, 4).ok(),
+        Some(0),
+        "each store reaches its own memory"
+    );
+    assert_eq!(kept.load_u32(&survivor, 4).ok(), Some(0x4444_4444));
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_bulk_copy_past_4_gib_where_multi_memory_is_off() {
+    let engine = engine_without_multi_memory();
+    assert!(engine.capabilities().contains(Capability::Memory64));
+    let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    // One page past 4 GiB. The browser reserves the pages and commits
+    // only those the test touches.
+    let wide = Memory::new(&mut store, MemoryType::new64(65_537, None))
+        .expect("the browser makes a memory of more than 4 GiB");
+    let far = 1 << 32;
+
+    // A scalar access reaches past 4 GiB through the accessor.
+    wide.store_u32(&mut store, far, 0x0403_0201)
+        .expect("inside");
+    assert_eq!(wide.load_u32(&store, far).ok(), Some(0x0403_0201));
+
+    // A bulk copy without `multi_memory` goes through a typed array, which
+    // addresses its buffer with 32-bit numbers.
+    let refused = |result: Result<(), Error>| match result {
+        Err(Error::Backend { message }) => assert!(message.contains("first 4 GiB"), "{message}"),
+        other => panic!("the copy is refused: {other:?}"),
+    };
+    refused(wide.write(&mut store, far, &PATTERN));
+    let mut read = [0; 4];
+    refused(wide.read(&store, far, &mut read));
+    refused(wide.with_bytes(&store, far, 4, |_| ()));
+    let small = Memory::new(&mut store, MemoryType::new(1, None)).expect("a memory");
+    refused(Memory::copy(&mut store, &wide, far, &small, 0, 4));
+    // Below 4 GiB the same memory copies in bulk.
+    wide.write(&mut store, 8, &PATTERN).expect("inside");
+    assert_eq!(
+        wide.with_bytes(&store, 8, 16, <[u8]>::to_vec)
+            .ok()
+            .as_deref(),
+        Some(&PATTERN[..])
+    );
 }
 
 /// Polls `future` once, as a host function, which cannot wait, does.
@@ -2500,14 +2698,10 @@ fn promise_hooks<R>(body: impl FnOnce() -> R) -> (R, u32) {
             )
         }
     });
-    Reflect::set(
-        &prototype,
-        &"then".into(),
-        &proxy(&then, "apply", apply.as_ref()),
-    )
-    .expect("the prototype is writable");
-    let result = body();
-    Reflect::set(&prototype, &"then".into(), &then).expect("the prototype is writable");
+    let result = {
+        let _spy = Setting::new(&prototype, "then", &proxy(&then, "apply", apply.as_ref()));
+        body()
+    };
     (result, count.get())
 }
 

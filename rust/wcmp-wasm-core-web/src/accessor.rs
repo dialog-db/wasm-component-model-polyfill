@@ -57,6 +57,9 @@ pub struct Accessor {
     slots: Vec<u32>,
     shared: bool,
     bulk: bool,
+    /// The calls through the dispatcher so far, which the tests count.
+    #[cfg(test)]
+    calls: core::cell::Cell<u32>,
 }
 
 /// The functions of an accessor, in the order of their slots.
@@ -146,6 +149,8 @@ impl Accessor {
             slots: Vec::new(),
             shared: guest.shared,
             bulk,
+            #[cfg(test)]
+            calls: core::cell::Cell::new(0),
         };
         // Each slot taken is in `accessor.slots`, so the accessor releases
         // it on drop, even where a later one fails.
@@ -233,6 +238,69 @@ impl Accessor {
         dispatcher::copy(self.slot(Op::Write), offset, address, bytes.len() as u64);
     }
 
+    /// Copies the bytes at `offset` into `buffer` through the scalar
+    /// loads, eight bytes in each call where it can, each byte atomically.
+    ///
+    /// This is the copy of a shared memory where the accessor has no
+    /// `read`: JavaScript's `TypedArray.set` is not atomic.
+    pub fn read_atomic(&self, offset: u64, buffer: &mut [u8]) {
+        let mut words = buffer.chunks_exact_mut(8);
+        let mut at = offset;
+        for word in &mut words {
+            word.copy_from_slice(&self.load64(at).to_le_bytes());
+            at += 8;
+        }
+        for byte in words.into_remainder() {
+            *byte = self.load8(at);
+            at += 1;
+        }
+    }
+
+    /// Copies `bytes` to `offset` through the scalar stores, eight bytes
+    /// in each call where it can, each byte atomically.
+    ///
+    /// This is the copy to a shared memory where the accessor has no
+    /// `write`.
+    pub fn write_atomic(&self, offset: u64, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        let mut at = offset;
+        for word in &mut words {
+            let mut value = [0; 8];
+            value.copy_from_slice(word);
+            self.store64(at, u64::from_le_bytes(value));
+            at += 8;
+        }
+        for byte in words.remainder() {
+            self.store8(at, *byte);
+            at += 1;
+        }
+    }
+
+    /// Copies the `len` bytes at `source` of this memory to `destination`
+    /// of the memory of `to`, through the scalar loads and stores, eight
+    /// bytes in each pair of calls where it can, each byte atomically.
+    ///
+    /// Two handles can name one memory, so the copy runs in the direction
+    /// that reads each byte before it is overwritten: upward where the
+    /// destination lies below the source, and downward otherwise. Each
+    /// word is loaded whole before it is stored, so a word whose ranges
+    /// overlap is copied as if through a buffer too.
+    pub fn copy_atomic(&self, to: &Accessor, destination: u64, source: u64, len: u64) {
+        let words = len / 8;
+        let word = |word: u64| {
+            let index = 8 * word;
+            to.store64(destination + index, self.load64(source + index));
+        };
+        let byte = |index: u64| to.store8(destination + index, self.load8(source + index));
+        if destination <= source {
+            (0..words).for_each(word);
+            (8 * words..len).for_each(byte);
+        } else {
+            (8 * words..len).rev().for_each(byte);
+            (0..words).rev().for_each(word);
+        }
+    }
+
     /// The slot of `op` in the table of the dispatcher.
     ///
     /// An accessor without `read` and `write` has no slot for them. The
@@ -240,6 +308,8 @@ impl Accessor {
     /// index past the table traps, so the index of a missing slot is the
     /// largest a table can have.
     fn slot(&self, op: Op) -> u32 {
+        #[cfg(test)]
+        self.calls.set(self.calls.get() + 1);
         self.slots.get(op as usize).copied().unwrap_or(u32::MAX)
     }
 }
@@ -445,6 +515,48 @@ mod tests {
         (memory, MemoryType::new(pages, None))
     }
 
+    /// A new shared memory of one page, and its type.
+    fn shared_memory() -> (WebAssembly::Memory, MemoryType) {
+        let descriptor = js::object(&[
+            ("initial", JsValue::from_f64(1.0)),
+            ("maximum", JsValue::from_f64(1.0)),
+            ("shared", JsValue::TRUE),
+        ])
+        .expect("the descriptor is an object");
+        let memory = WebAssembly::Memory::new(&descriptor).expect("the browser makes a memory");
+        (memory, MemoryType::shared(1, 1))
+    }
+
+    /// Sets the property `name` of `target` to `value`, and puts back what
+    /// it was when dropped.
+    ///
+    /// A panic aborts the page of the test, and the runner gives each
+    /// test a page of its own, so the property outlives no test.
+    struct Setting {
+        target: JsValue,
+        name: JsValue,
+        original: JsValue,
+    }
+
+    impl Setting {
+        fn new(target: &JsValue, name: &str, value: &JsValue) -> Self {
+            let name = JsValue::from_str(name);
+            let original = Reflect::get(target, &name).expect("the property reads");
+            Reflect::set(target, &name, value).expect("the property is writable");
+            Self {
+                target: target.clone(),
+                name,
+                original,
+            }
+        }
+    }
+
+    impl Drop for Setting {
+        fn drop(&mut self) {
+            let _ = Reflect::set(&self.target, &self.name, &self.original);
+        }
+    }
+
     /// The operators of each function body of the module `bytes`, by the
     /// name of its export.
     fn bodies(bytes: &[u8]) -> Vec<(String, Vec<String>)> {
@@ -523,8 +635,7 @@ mod tests {
         let (memory, ty) = memory(1);
         let accessor = std::rc::Rc::new(Accessor::new(&memory, &ty, false).expect("it loads"));
         let error_class = js::get(&js_sys::global(), "Error").expect("the page has `Error`");
-        js::set(&error_class, "stackTraceLimit", &JsValue::from_f64(100.0))
-            .expect("the limit is writable");
+        let _limit = Setting::new(&error_class, "stackTraceLimit", &JsValue::from_f64(100.0));
 
         // The trap unwinds the Rust frames of the closure, and stops at
         // `Reflect.apply`, which hands it back as an error.
@@ -637,6 +748,41 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    fn it_copies_a_shared_memory_eight_bytes_in_each_call_without_bulk_copies() {
+        let (memory, ty) = shared_memory();
+        let accessor = Accessor::new(&memory, &ty, false).expect("the accessor loads");
+        assert!(accessor.shared() && !accessor.bulk());
+        let bytes = (1..=35).collect::<Vec<u8>>();
+
+        let calls = accessor.calls.get();
+        accessor.write_atomic(101, &bytes);
+        let mut read = vec![0; bytes.len()];
+        accessor.read_atomic(101, &mut read);
+        assert_eq!(read, bytes);
+        // 35 bytes are four words and three bytes, in each direction.
+        assert_eq!(accessor.calls.get() - calls, 2 * (4 + 3));
+
+        // Overlapping copies within the memory, by fewer bytes than a
+        // word, upward and downward, keep the bytes as if through a
+        // buffer.
+        for (destination, source) in [(104, 101), (101, 104), (300, 303), (303, 300)] {
+            accessor.write_atomic(source, &bytes);
+            let calls = accessor.calls.get();
+            accessor.copy_atomic(&accessor, destination, source, bytes.len() as u64);
+            assert_eq!(accessor.calls.get() - calls, 2 * (4 + 3));
+            accessor.read_atomic(destination, &mut read);
+            assert_eq!(read, bytes, "from {source} to {destination}");
+        }
+
+        // A copy to another memory.
+        let (other, ty) = shared_memory();
+        let other = Accessor::new(&other, &ty, false).expect("the accessor loads");
+        accessor.copy_atomic(&other, 7, 303, bytes.len() as u64);
+        other.read_atomic(7, &mut read);
+        assert_eq!(read, bytes);
+    }
+
+    #[wcmp_macros::test]
     fn it_releases_its_slots_for_the_next_accessor() {
         let (memory, ty) = memory(1);
         let first = Accessor::new(&memory, &ty, false).expect("the accessor loads");
@@ -648,5 +794,41 @@ mod tests {
         again.sort_unstable();
         assert_eq!(slots, again, "the second accessor takes the released slots");
         assert_eq!(second.size(), 65_536);
+    }
+
+    #[wcmp_macros::test]
+    fn it_keeps_a_survivor_reading_while_a_third_accessor_takes_freed_slots() {
+        let (first_memory, ty) = memory(1);
+        let (survivor_memory, _) = memory(1);
+        let (third_memory, _) = memory(1);
+        let first = Accessor::new(&first_memory, &ty, false).expect("the accessor loads");
+        let survivor = Accessor::new(&survivor_memory, &ty, false).expect("the accessor loads");
+        first.store32(0, 0x0101_0101);
+        survivor.store32(0, 0x5555_5555);
+        let mut freed = first.slots.clone();
+        drop(first);
+
+        let third = Accessor::new(&third_memory, &ty, false).expect("the accessor loads");
+        let mut taken = third.slots.clone();
+        freed.sort_unstable();
+        taken.sort_unstable();
+        assert_eq!(freed, taken, "the third accessor takes the freed slots");
+        assert!(
+            survivor.slots.iter().all(|slot| !taken.contains(slot)),
+            "the survivor keeps its own"
+        );
+        third.store32(0, 0x3333_3333);
+        assert_eq!(
+            survivor.load32(0),
+            0x5555_5555,
+            "the survivor reads its memory"
+        );
+        survivor.store32(4, 0x6666_6666);
+        assert_eq!(
+            third.load32(4),
+            0,
+            "the third accessor reaches its own memory"
+        );
+        assert_eq!(third.load32(0), 0x3333_3333);
     }
 }

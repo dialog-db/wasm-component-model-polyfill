@@ -674,9 +674,7 @@ fn read(object: &MemoryObject, accessor: &Accessor, offset: u64, buffer: &mut [u
         // Without `multi_memory`, a shared memory gives each byte through
         // the accessor, atomically, and never through JavaScript, whose
         // `TypedArray.set` is not atomic.
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = accessor.load8(offset + index as u64);
-        }
+        accessor.read_atomic(offset, buffer);
     } else {
         view(object, offset, buffer.len() as u64)?.copy_to(buffer);
     }
@@ -895,9 +893,7 @@ impl BackendStore for WebStore {
             // Without `multi_memory`, a shared memory takes each byte
             // through the accessor, atomically, and never through
             // JavaScript, whose `TypedArray.set` is not atomic.
-            for (index, byte) in bytes.iter().enumerate() {
-                accessor.store8(offset + index as u64, *byte);
-            }
+            accessor.write_atomic(offset, bytes);
         } else {
             view(object, offset, bytes.len() as u64)?.copy_from(bytes);
         }
@@ -965,20 +961,8 @@ impl BackendStore for WebStore {
             };
             bridge.copy(destination_offset, source_offset, len);
         } else if from_accessor.shared() || to_accessor.shared() {
-            // Each byte through the accessors, atomically, in the direction
-            // that reads each byte before it is overwritten, since two
-            // handles can name one memory.
-            let byte = |index: u64| {
-                to_accessor.store8(
-                    destination_offset + index,
-                    from_accessor.load8(source_offset + index),
-                );
-            };
-            if destination_offset <= source_offset {
-                (0..len).for_each(byte);
-            } else {
-                (0..len).rev().for_each(byte);
-            }
+            // Each byte through the accessors, atomically.
+            from_accessor.copy_atomic(to_accessor, destination_offset, source_offset, len);
         } else {
             // `TypedArray.set` copies as if through a buffer where the two
             // views overlap, so no buffer of the host is needed.

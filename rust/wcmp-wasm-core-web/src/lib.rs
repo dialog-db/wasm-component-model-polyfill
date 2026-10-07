@@ -136,7 +136,10 @@
 //! it to the functions of the polyfill. So the polyfill holds one entry
 //! function for each signature of an accessor function, and the backend
 //! overwrites the table slot of each, once for each thread, with a
-//! trampoline of a generated dispatch module. The trampoline calls a
+//! trampoline of a generated dispatch module. The polyfill builds without
+//! the `atomics` target feature, so each worker runs an instance of its
+//! own, with a table and a dispatcher of its own; no test runs the
+//! polyfill in a worker. The trampoline calls a
 //! function of an accessor by its index in a table of the dispatch module,
 //! which grows. A store releases the indices of its accessors when it
 //! drops.
@@ -154,8 +157,16 @@
 //! lends the buffer. Another agent can write a shared memory at any time,
 //! so the backend reaches each byte of a shared memory atomically, in a
 //! scalar access and in a copy alike, and never through `TypedArray.set`,
-//! which is not atomic. A page makes a shared memory without cross-origin
-//! isolation, so the backend needs no special headers.
+//! which is not atomic. Without `multi_memory`, an atomic copy takes eight
+//! bytes in each call of an accessor where it can.
+//!
+//! The backend asks for no special headers, but no test shows a shared
+//! memory on a page without cross-origin isolation: the runner of the web
+//! lanes serves every page with the `Cross-Origin-Opener-Policy` and
+//! `Cross-Origin-Embedder-Policy` headers. Whether such a page can make a
+//! shared memory is the browser's rule. Where the browser refuses,
+//! `Memory::new` of a shared type, and the instantiation of a module that
+//! declares a shared memory, fail with the browser's error.
 //!
 //! Every memory method checks its range against the size of the memory,
 //! which the accessor reads, and a range outside the memory is
