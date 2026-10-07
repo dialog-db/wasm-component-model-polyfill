@@ -2073,8 +2073,8 @@
                   report="''${CARGO_TARGET_DIR:-target}/bench/web.json"
                   mkdir -p "$(dirname "$report")"
                   site=$(nix build --no-link --print-out-paths .#bench-web)
-                  ${pkgs.python3}/bin/python3 ${./rust/wcmp-bench/web/run.py} \
-                    "$site" "$report" "$@"
+                  WASM_BINDGEN_TEST_WEBDRIVER_JSON=${webdriverConfig} \
+                    ${benchWebDriver}/bin/wcmp-bench-web "$site" "$report" "$@"
                 '';
               };
             };
@@ -2519,18 +2519,29 @@
         # `tests smoke web` serves, loaded in the flake's Chromium through
         # chromedriver inside the build sandbox by `web/check.sh`, with its
         # report compared against the native smoke binary's. The script
-        # speaks WebDriver over HTTP with `curl` and `jq`, and serves the
-        # page with the same static-web-server a person is served by.
+        # speaks WebDriver over HTTP with `curl` and `jq`, through
+        # `nix/webdriver.sh`, and serves the page with the same
+        # static-web-server a person is served by.
         smokeWebCheckDriver = pkgs.writeShellApplication {
           name = "wcmp-smoke-web-check";
-          runtimeInputs = [
-            pkgs.coreutils
-            pkgs.curl
-            pkgs.jq
-            pkgs.chromedriver
-            pkgs.static-web-server
-          ];
-          text = builtins.readFile ./rust/wcmp-smoke/web/check.sh;
+          runtimeInputs = webdriverInputs;
+          text = builtins.readFile ./nix/webdriver.sh + builtins.readFile ./rust/wcmp-smoke/web/check.sh;
+        };
+        # What a script that drives a page through `nix/webdriver.sh`
+        # runs with: the smoke check and the benchmark runner.
+        webdriverInputs = [
+          pkgs.coreutils
+          pkgs.curl
+          pkgs.jq
+          pkgs.chromedriver
+          pkgs.static-web-server
+        ];
+        # The benchmark page driven headlessly by `bench web`, through the
+        # same `nix/webdriver.sh` the smoke check speaks WebDriver with.
+        benchWebDriver = pkgs.writeShellApplication {
+          name = "wcmp-bench-web";
+          runtimeInputs = webdriverInputs;
+          text = builtins.readFile ./nix/webdriver.sh + builtins.readFile ./rust/wcmp-bench/web/run.sh;
         };
         smokeWebCheck =
           pkgs.runCommand "wcmp-smoke-web-check"
@@ -2588,7 +2599,7 @@
               exit 1
             fi
             export XDG_RUNTIME_DIR=$runtime WAYLAND_DISPLAY=wcmp-smoke
-            export WCMP_SMOKE_WEBDRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
+            export WCMP_WEBDRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
             export WASM_BINDGEN_TEST_WEBDRIVER_JSON=${webkitDriverConfig}
             wcmp-smoke-web-check "$page" "$native" "$runtime/report.txt"
           '';
