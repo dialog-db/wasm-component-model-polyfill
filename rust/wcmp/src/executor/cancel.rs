@@ -41,9 +41,20 @@
 //! answers `BLOCKED`, and the caller waits for the subtask event. It
 //! gives way only to a callee the request woke, never on its own, as
 //! the reference's `canon_subtask_cancel` does since component-model
-//! #726, and as Wasmtime 49 does, which yields only on its wake paths.
+//! #723, and as Wasmtime 49 does, which yields only on its wake paths.
 //! A ready callee that the request did not wake therefore does not
-//! run inside the cancel. A synchronous cancel blocks until the callee
+//! run inside the cancel.
+//!
+//! Which callees a request wakes follows Wasmtime 49 over the
+//! reference. A callback task that returned the yield code, and one
+//! waiting in its loop on a set that already holds an event, are not
+//! woken: Wasmtime queues the first with no way for a cancel to reach
+//! it, and hands the event to the second as the event arrives. The
+//! reference marks both cancellable and resumes them inside the cancel
+//! (`canon_lift` and `Task.request_cancellation` in `definitions.py`
+//! at `a25fc0b`), so there the cancel can answer the callee's
+//! confirmation where the polyfill answers `BLOCKED`. One guest binary
+//! must get the same answer in the polyfill and in Wasmtime. A synchronous cancel blocks until the callee
 //! resolves, as every blocking built-in blocks, and a block that
 //! cannot progress fails with the cause the suspend seam names. The subtask is waited on
 //! synchronously for as long as the built-in runs, so the callee
@@ -373,7 +384,9 @@ fn request_cancellation<T: 'static>(
             // runs.
             // A callback whose set holds an event takes that event
             // first, as Wasmtime hands it to the waiting callback before
-            // any cancel can reach it.
+            // any cancel can reach it. The reference would resume it
+            // here; the module documentation says why the polyfill
+            // follows Wasmtime.
             let held = match store.internal().scheduler().held_callback_set(thread) {
                 Some(set) => !lock(&tables)?.tasks.set_has_pending_event(set)?,
                 None => false,

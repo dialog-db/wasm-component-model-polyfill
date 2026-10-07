@@ -32,9 +32,11 @@
 //!   synchronous one waits until the callee returns on its own.
 //! - A callback callee that yielded is ready, but the request does not
 //!   wake it. An asynchronous cancel answers `BLOCKED` without running
-//!   it, as the reference and Wasmtime do; the callee takes the
-//!   request when its yield ends, and the subtask event carries its
-//!   confirmation.
+//!   it, as Wasmtime 49 does; the callee takes the request when its
+//!   yield ends, and the subtask event carries its confirmation. The
+//!   reference would resume it inside the cancel instead, and answer
+//!   its confirmation: the polyfill follows Wasmtime here, as its
+//!   design states.
 //! - A request comes before an event the callee's set already holds
 //!   when the request arrives. The set keeps that event for the
 //!   callee's next wait.
@@ -641,7 +643,8 @@ const EVENT_QUEUED: &[u8] = component!(
 /// own code, which gives the callee's set the read's event with no
 /// turn in between, and cancels at once. Wasmtime hands the event to
 /// the waiting callback as it arrives, which takes the callback out of
-/// the cancel's reach, so the cancel answers `BLOCKED`. The callback
+/// the cancel's reach, so the cancel answers `BLOCKED`, where the
+/// reference would resume the callback inside the cancel. The callback
 /// then receives the task-cancelled event, before the read's event, and
 /// confirms at once. A cancel that woke the callback would have run it
 /// to that confirmation inside the cancel, and answered

@@ -18,9 +18,11 @@ The design follows the [Concurrency explainer][Concurrency], the
 [Explainer][Explainer – invariants], and the Python reference in
 [`definitions.py`] at the commit the conformance corpus of [PDD016] is vendored
 from. Where the reference leaves a choice to the host, the design makes the
-choice [Wasmtime] makes at `v49.0.0-rc.1`. In one place the design follows
-Wasmtime and wit-bindgen over the reference. There, one guest binary must behave
-the same in the polyfill and in Wasmtime. Each departure states its reason.
+choice [Wasmtime] makes at `v49.0.0-rc.1`. In two places the design follows
+Wasmtime over the reference: the `cancellable` immediate, which wit-bindgen
+still emits, and which callback a cancellation request wakes. There, one guest
+binary must behave the same in the polyfill and in Wasmtime. Each departure
+states its reason.
 
 Six terms recur:
 
@@ -272,17 +274,15 @@ An asynchronous `subtask.cancel` does not give way on its own. The callee runs
 inside the cancel only when the request wakes one of its threads, as Delivery to
 a Guest Callee states. If the callee has not resolved after that, the built-in
 returns `BLOCKED`. The caller then waits for the subtask event. So a ready
-callee that the request does not wake does not run inside the cancel. An example
-is a callback task that returned the yield code. The cancel answers `BLOCKED`,
-and the callee learns of the request when its yield ends.
+callee that the request does not wake does not run inside the cancel.
 
 This rule follows the reference at a later commit than the corpus. Before
 component-model #723 (commit `07afb81`, 2026-09-16), an asynchronous cancel gave
 way once whenever the callee had not resolved. #723 removed that give-way, and
 the reference still has none at `a25fc0b` ([`definitions.py`],
 `canon_subtask_cancel`). Wasmtime 49 also gives way only when it wakes a thread
-([Wasmtime subtask cancel]). The reference and Wasmtime agree, so the polyfill
-follows them.
+([Wasmtime subtask cancel]). On the give-way, the reference and Wasmtime agree.
+Which threads a request wakes is where they differ, as the next section states.
 
 A synchronous `subtask.cancel` blocks until the callee resolves. It blocks as
 every blocking built-in blocks: through the provider of [PDD022], or in a nested
@@ -319,12 +319,29 @@ callback task waiting in its loop, a thread in a cancellable
 first such thread it finds and gives way to it ([Wasmtime subtask cancel]). The
 polyfill does the same.
 
-A waiter whose set already holds an event is not a candidate. Wasmtime hands an
-event to the first thread that waits on its set when the event arrives, and from
-then on no cancel can wake that thread ([Wasmtime mark ready]). The polyfill
-reads the same condition from the set when the cancel runs, for a waiting thread
-and for a callback task waiting in its loop alike. The two differ in two cases,
-which the polyfill accepts as departures:
+A callback task that returned the yield code is not a candidate, and neither is
+a waiter whose set already holds an event. Wasmtime queues a yielding callback
+with no way for a cancel to wake it, and it hands an event to the first thread
+that waits on its set when the event arrives, after which no cancel can wake
+that thread ([Wasmtime mark ready]). An asynchronous cancel of such a callee
+answers `BLOCKED`, and the callee learns of the request when it next runs: after
+its yield, or before the set's event.
+
+The reference wakes both. Its callback loop marks the implicit thread
+cancellable for a yield and for a wait alike, and `request_cancellation` resumes
+a cancellable thread that is ready ([`definitions.py`] at `a25fc0b`,
+`canon_lift` and `Task.request_cancellation`). A yielding callback is ready as
+soon as its instance is free, and a waiting one as soon as its set holds an
+event or a request is pending. So the reference runs the callee inside the
+cancel, and the cancel answers `CANCELLED_BEFORE_RETURNED` when the callee
+confirms there. The polyfill follows Wasmtime 49 here, as it does for the
+`cancellable` immediate: one guest binary must get the same answer from a cancel
+in the polyfill and in Wasmtime. When Wasmtime wakes these callbacks, the
+polyfill follows.
+
+The polyfill reads Wasmtime's condition for a waiter from the set when the
+cancel runs, for a waiting thread and for a callback task waiting in its loop
+alike. The two differ in two cases, which the polyfill accepts as departures:
 
 - Two threads wait cancellably on one set, and an event arrives. Wasmtime hands
   the event to the first thread and can still wake the second. The polyfill
