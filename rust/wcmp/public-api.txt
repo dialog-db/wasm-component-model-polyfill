@@ -19,11 +19,26 @@ pub wcmp::AbiCause::SubstrateFailure(anyhow::Error)
 pub wcmp::AbiCause::Unimplemented
 pub wcmp::AbiCause::UnregisteredResourceType
 pub wcmp::AbiCause::UnsupportedDataModel
+impl core::error::Error for wcmp::AbiCause
+pub fn wcmp::AbiCause::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for wcmp::AbiCause
+pub fn wcmp::AbiCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::AbiCause
+pub fn wcmp::AbiCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::AbiPosition
 pub wcmp::AbiPosition::Argument(usize)
 pub wcmp::AbiPosition::Result
+impl core::clone::Clone for wcmp::AbiPosition
+pub fn wcmp::AbiPosition::clone(&self) -> wcmp::AbiPosition
+impl core::cmp::Eq for wcmp::AbiPosition
+impl core::cmp::PartialEq for wcmp::AbiPosition
+pub fn wcmp::AbiPosition::eq(&self, &wcmp::AbiPosition) -> bool
+impl core::fmt::Debug for wcmp::AbiPosition
+pub fn wcmp::AbiPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::AbiPosition
 pub fn wcmp::AbiPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for wcmp::AbiPosition
+impl core::marker::StructuralPartialEq for wcmp::AbiPosition
 #[non_exhaustive] pub enum wcmp::CopyCause
 pub wcmp::CopyCause::BufferNotAligned
 pub wcmp::CopyCause::BufferNotAligned::kind: wcmp::EndKind
@@ -58,6 +73,11 @@ pub wcmp::CopyCause::ProducerCompletedWithoutItems
 pub wcmp::CopyCause::ProducerPendingAfterItems
 pub wcmp::CopyCause::ReadAfterDropped
 pub wcmp::CopyCause::WriteAfterDropped
+impl core::error::Error for wcmp::CopyCause
+impl core::fmt::Debug for wcmp::CopyCause
+pub fn wcmp::CopyCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::CopyCause
+pub fn wcmp::CopyCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::CoreExternType
 pub wcmp::CoreExternType::Func
 pub wcmp::CoreExternType::Func::params: alloc::vec::Vec<wcmp::CoreValueType>
@@ -76,6 +96,16 @@ pub wcmp::CoreExternType::Table::maximum: core::option::Option<u64>
 pub wcmp::CoreExternType::Table::minimum: u64
 pub wcmp::CoreExternType::Tag
 pub wcmp::CoreExternType::Tag::params: alloc::vec::Vec<wcmp::CoreValueType>
+impl core::clone::Clone for wcmp::CoreExternType
+pub fn wcmp::CoreExternType::clone(&self) -> wcmp::CoreExternType
+impl core::cmp::Eq for wcmp::CoreExternType
+impl core::cmp::PartialEq for wcmp::CoreExternType
+pub fn wcmp::CoreExternType::eq(&self, &wcmp::CoreExternType) -> bool
+impl core::fmt::Debug for wcmp::CoreExternType
+pub fn wcmp::CoreExternType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::CoreExternType
+pub fn wcmp::CoreExternType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::CoreExternType
 pub enum wcmp::CoreValueType
 pub wcmp::CoreValueType::ExternRef
 pub wcmp::CoreValueType::F32
@@ -84,13 +114,35 @@ pub wcmp::CoreValueType::FuncRef
 pub wcmp::CoreValueType::I32
 pub wcmp::CoreValueType::I64
 pub wcmp::CoreValueType::V128
+impl core::clone::Clone for wcmp::CoreValueType
+pub fn wcmp::CoreValueType::clone(&self) -> wcmp::CoreValueType
+impl core::cmp::Eq for wcmp::CoreValueType
+impl core::cmp::PartialEq for wcmp::CoreValueType
+pub fn wcmp::CoreValueType::eq(&self, &wcmp::CoreValueType) -> bool
+impl core::fmt::Debug for wcmp::CoreValueType
+pub fn wcmp::CoreValueType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::CoreValueType
+pub fn wcmp::CoreValueType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::CoreValueType
+impl core::marker::StructuralPartialEq for wcmp::CoreValueType
 pub enum wcmp::EndKind
 pub wcmp::EndKind::FutureReadable
 pub wcmp::EndKind::FutureWritable
 pub wcmp::EndKind::StreamReadable
 pub wcmp::EndKind::StreamWritable
+impl core::clone::Clone for wcmp::EndKind
+pub fn wcmp::EndKind::clone(&self) -> wcmp::EndKind
+impl core::cmp::Eq for wcmp::EndKind
+impl core::cmp::PartialEq for wcmp::EndKind
+pub fn wcmp::EndKind::eq(&self, &wcmp::EndKind) -> bool
+impl core::fmt::Debug for wcmp::EndKind
+pub fn wcmp::EndKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::EndKind
 pub fn wcmp::EndKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::EndKind
+pub fn wcmp::EndKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::EndKind
+impl core::marker::StructuralPartialEq for wcmp::EndKind
 #[non_exhaustive] pub enum wcmp::Error
 pub wcmp::Error::Abi(alloc::boxed::Box<wcmp::AbiError>)
 pub wcmp::Error::BackendEngineConstruction(anyhow::Error)
@@ -129,11 +181,22 @@ impl core::convert::From<wcmp::LinkError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::LinkError) -> Self
 impl core::convert::From<wcmp::TypeMismatch> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::TypeMismatch) -> Self
+impl core::error::Error for wcmp::Error
+pub fn wcmp::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for wcmp::Error
+pub fn wcmp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::Error
+pub fn wcmp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::ErrorContextCause
 pub wcmp::ErrorContextCause::DebugMessagePointerOutOfBounds
 pub wcmp::ErrorContextCause::NotAnErrorContext
 pub wcmp::ErrorContextCause::NotAnErrorContext::index: u32
 pub wcmp::ErrorContextCause::ReferenceCountOverflow
+impl core::error::Error for wcmp::ErrorContextCause
+impl core::fmt::Debug for wcmp::ErrorContextCause
+pub fn wcmp::ErrorContextCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::ErrorContextCause
+pub fn wcmp::ErrorContextCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum wcmp::ExternType
 pub wcmp::ExternType::Component
 pub wcmp::ExternType::Function(wcmp::FunctionType)
@@ -142,13 +205,33 @@ pub wcmp::ExternType::Module(wcmp::ModuleType)
 pub wcmp::ExternType::Resource(wcmp::ResourceType)
 pub wcmp::ExternType::ResourceEquals(wcmp::ResourceType)
 pub wcmp::ExternType::Value(wcmp::ValueType)
+impl core::clone::Clone for wcmp::ExternType
+pub fn wcmp::ExternType::clone(&self) -> wcmp::ExternType
+impl core::cmp::Eq for wcmp::ExternType
+impl core::cmp::PartialEq for wcmp::ExternType
+pub fn wcmp::ExternType::eq(&self, &wcmp::ExternType) -> bool
+impl core::fmt::Debug for wcmp::ExternType
+pub fn wcmp::ExternType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ExternType
+pub fn wcmp::ExternType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ExternType
 pub enum wcmp::ExternalName
 pub wcmp::ExternalName::Interface(wcmp::InterfaceIdentifier)
 pub wcmp::ExternalName::Plain(alloc::string::String)
 impl wcmp::ExternalName
 pub fn wcmp::ExternalName::from_raw(&str) -> Self
+impl core::clone::Clone for wcmp::ExternalName
+pub fn wcmp::ExternalName::clone(&self) -> wcmp::ExternalName
+impl core::cmp::Eq for wcmp::ExternalName
+impl core::cmp::PartialEq for wcmp::ExternalName
+pub fn wcmp::ExternalName::eq(&self, &wcmp::ExternalName) -> bool
+impl core::fmt::Debug for wcmp::ExternalName
+pub fn wcmp::ExternalName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::ExternalName
 pub fn wcmp::ExternalName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ExternalName
+pub fn wcmp::ExternalName::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ExternalName
 impl wcmp::ExportLookup for wcmp::ExternalName
 pub fn wcmp::ExternalName::external_name(&self) -> wcmp::ExternalName
 #[non_exhaustive] pub enum wcmp::IdentifierParseError
@@ -158,6 +241,12 @@ pub wcmp::IdentifierParseError::InvalidVersion(semver::parse::Error)
 pub wcmp::IdentifierParseError::MissingInterfaceSegment
 pub wcmp::IdentifierParseError::MissingNamespace
 pub wcmp::IdentifierParseError::UnexpectedInterfaceSegment
+impl core::error::Error for wcmp::IdentifierParseError
+pub fn wcmp::IdentifierParseError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for wcmp::IdentifierParseError
+pub fn wcmp::IdentifierParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::IdentifierParseError
+pub fn wcmp::IdentifierParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::InstantiationError
 pub wcmp::InstantiationError::ImportCount
 pub wcmp::InstantiationError::ImportCount::expected: usize
@@ -169,6 +258,12 @@ pub wcmp::InstantiationError::UnsupportedSignature::reason: &'static str
 pub wcmp::InstantiationError::WrongStore
 impl core::convert::From<wcmp::InstantiationError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::InstantiationError) -> Self
+impl core::error::Error for wcmp::InstantiationError
+pub fn wcmp::InstantiationError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for wcmp::InstantiationError
+pub fn wcmp::InstantiationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::InstantiationError
+pub fn wcmp::InstantiationError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::LinkError
 pub wcmp::LinkError::AmbiguousImport
 pub wcmp::LinkError::AmbiguousImport::candidates: alloc::vec::Vec<wcmp::InterfaceIdentifier>
@@ -202,6 +297,11 @@ pub wcmp::LinkError::UnsupportedRegistration::import: wcmp::ExternalName
 pub wcmp::LinkError::UnsupportedRegistration::reason: &'static str
 impl core::convert::From<wcmp::LinkError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::LinkError) -> Self
+impl core::error::Error for wcmp::LinkError
+impl core::fmt::Debug for wcmp::LinkError
+pub fn wcmp::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::LinkError
+pub fn wcmp::LinkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum wcmp::PrimitiveType
 pub wcmp::PrimitiveType::Bool
 pub wcmp::PrimitiveType::Char
@@ -216,28 +316,80 @@ pub wcmp::PrimitiveType::U16
 pub wcmp::PrimitiveType::U32
 pub wcmp::PrimitiveType::U64
 pub wcmp::PrimitiveType::U8
+impl core::clone::Clone for wcmp::PrimitiveType
+pub fn wcmp::PrimitiveType::clone(&self) -> wcmp::PrimitiveType
+impl core::cmp::Eq for wcmp::PrimitiveType
+impl core::cmp::PartialEq for wcmp::PrimitiveType
+pub fn wcmp::PrimitiveType::eq(&self, &wcmp::PrimitiveType) -> bool
+impl core::fmt::Debug for wcmp::PrimitiveType
+pub fn wcmp::PrimitiveType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::PrimitiveType
+pub fn wcmp::PrimitiveType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::PrimitiveType
+impl core::marker::StructuralPartialEq for wcmp::PrimitiveType
 #[non_exhaustive] pub enum wcmp::ResourceTableError
 pub wcmp::ResourceTableError::Full
+impl core::error::Error for wcmp::ResourceTableError
+impl core::fmt::Debug for wcmp::ResourceTableError
+pub fn wcmp::ResourceTableError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::ResourceTableError
+pub fn wcmp::ResourceTableError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::ReturnMismatchKind
 pub wcmp::ReturnMismatchKind::Memory
 pub wcmp::ReturnMismatchKind::ResultType
 pub wcmp::ReturnMismatchKind::StringEncoding
+impl core::clone::Clone for wcmp::ReturnMismatchKind
+pub fn wcmp::ReturnMismatchKind::clone(&self) -> wcmp::ReturnMismatchKind
+impl core::cmp::Eq for wcmp::ReturnMismatchKind
+impl core::cmp::PartialEq for wcmp::ReturnMismatchKind
+pub fn wcmp::ReturnMismatchKind::eq(&self, &wcmp::ReturnMismatchKind) -> bool
+impl core::fmt::Debug for wcmp::ReturnMismatchKind
+pub fn wcmp::ReturnMismatchKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::ReturnMismatchKind
 pub fn wcmp::ReturnMismatchKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for wcmp::ReturnMismatchKind
+impl core::marker::StructuralPartialEq for wcmp::ReturnMismatchKind
 #[non_exhaustive] pub enum wcmp::SchedulerCause
 pub wcmp::SchedulerCause::CannotBlock
 pub wcmp::SchedulerCause::Deadlock
 pub wcmp::SchedulerCause::RecursiveDriver
 pub wcmp::SchedulerCause::StackSwitchNeeded
 pub wcmp::SchedulerCause::StoreNotInPoll
+impl core::error::Error for wcmp::SchedulerCause
+impl core::fmt::Debug for wcmp::SchedulerCause
+pub fn wcmp::SchedulerCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::SchedulerCause
+pub fn wcmp::SchedulerCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum wcmp::StreamResult
 pub wcmp::StreamResult::Cancelled
 pub wcmp::StreamResult::Completed
 pub wcmp::StreamResult::Dropped
+impl core::clone::Clone for wcmp::StreamResult
+pub fn wcmp::StreamResult::clone(&self) -> wcmp::StreamResult
+impl core::cmp::Eq for wcmp::StreamResult
+impl core::cmp::PartialEq for wcmp::StreamResult
+pub fn wcmp::StreamResult::eq(&self, &wcmp::StreamResult) -> bool
+impl core::fmt::Debug for wcmp::StreamResult
+pub fn wcmp::StreamResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::StreamResult
+pub fn wcmp::StreamResult::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::StreamResult
+impl core::marker::StructuralPartialEq for wcmp::StreamResult
 #[non_exhaustive] pub enum wcmp::SuspendProviderKind
 pub wcmp::SuspendProviderKind::HostSuspension
 pub wcmp::SuspendProviderKind::None
 pub wcmp::SuspendProviderKind::StackSwitching
+impl core::clone::Clone for wcmp::SuspendProviderKind
+pub fn wcmp::SuspendProviderKind::clone(&self) -> wcmp::SuspendProviderKind
+impl core::cmp::Eq for wcmp::SuspendProviderKind
+impl core::cmp::PartialEq for wcmp::SuspendProviderKind
+pub fn wcmp::SuspendProviderKind::eq(&self, &wcmp::SuspendProviderKind) -> bool
+impl core::fmt::Debug for wcmp::SuspendProviderKind
+pub fn wcmp::SuspendProviderKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::SuspendProviderKind
+pub fn wcmp::SuspendProviderKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::SuspendProviderKind
+impl core::marker::StructuralPartialEq for wcmp::SuspendProviderKind
 #[non_exhaustive] pub enum wcmp::TaskCause
 pub wcmp::TaskCause::BackpressureOverflow
 pub wcmp::TaskCause::CancelNotDelivered
@@ -249,6 +401,11 @@ pub wcmp::TaskCause::ReturnMismatch
 pub wcmp::TaskCause::ReturnMismatch::kind: wcmp::ReturnMismatchKind
 pub wcmp::TaskCause::ReturnedTwice
 pub wcmp::TaskCause::UnsupportedCallbackCode
+impl core::error::Error for wcmp::TaskCause
+impl core::fmt::Debug for wcmp::TaskCause
+pub fn wcmp::TaskCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::TaskCause
+pub fn wcmp::TaskCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::ThreadCause
 pub wcmp::ThreadCause::NotSuspended
 pub wcmp::ThreadCause::StartFunctionOutOfBounds
@@ -256,6 +413,11 @@ pub wcmp::ThreadCause::StartFunctionType
 pub wcmp::ThreadCause::StartFunctionUninitialized
 pub wcmp::ThreadCause::UnknownThread
 pub wcmp::ThreadCause::UnknownThread::index: u32
+impl core::error::Error for wcmp::ThreadCause
+impl core::fmt::Debug for wcmp::ThreadCause
+pub fn wcmp::ThreadCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::ThreadCause
+pub fn wcmp::ThreadCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum wcmp::TypeMismatchPosition
 pub wcmp::TypeMismatchPosition::HostFunctionRegistration
 pub wcmp::TypeMismatchPosition::HostFunctionRegistration::interface: wcmp::InterfaceIdentifier
@@ -269,14 +431,30 @@ pub wcmp::TypeMismatchPosition::TypedExportCall::export: alloc::string::String
 pub wcmp::TypeMismatchPosition::TypedExportSlot
 pub wcmp::TypeMismatchPosition::TypedExportSlot::export: alloc::string::String
 pub wcmp::TypeMismatchPosition::TypedExportSlot::slot: wcmp::AbiPosition
+impl core::clone::Clone for wcmp::TypeMismatchPosition
+pub fn wcmp::TypeMismatchPosition::clone(&self) -> wcmp::TypeMismatchPosition
+impl core::cmp::Eq for wcmp::TypeMismatchPosition
+impl core::cmp::PartialEq for wcmp::TypeMismatchPosition
+pub fn wcmp::TypeMismatchPosition::eq(&self, &wcmp::TypeMismatchPosition) -> bool
+impl core::fmt::Debug for wcmp::TypeMismatchPosition
+pub fn wcmp::TypeMismatchPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::TypeMismatchPosition
 pub fn wcmp::TypeMismatchPosition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::TypeMismatchPosition
 #[non_exhaustive] pub enum wcmp::TypeRendering
 pub wcmp::TypeRendering::Arity(usize)
 pub wcmp::TypeRendering::Function(wcmp::FunctionType)
 pub wcmp::TypeRendering::Value(wcmp::ValueType)
+impl core::clone::Clone for wcmp::TypeRendering
+pub fn wcmp::TypeRendering::clone(&self) -> wcmp::TypeRendering
+impl core::cmp::Eq for wcmp::TypeRendering
+impl core::cmp::PartialEq for wcmp::TypeRendering
+pub fn wcmp::TypeRendering::eq(&self, &wcmp::TypeRendering) -> bool
+impl core::fmt::Debug for wcmp::TypeRendering
+pub fn wcmp::TypeRendering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::TypeRendering
 pub fn wcmp::TypeRendering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::TypeRendering
 #[non_exhaustive] pub enum wcmp::Val
 pub wcmp::Val::Bool(bool)
 pub wcmp::Val::Borrow(wcmp::ResourceHandle)
@@ -308,6 +486,13 @@ pub wcmp::Val::U8(u8)
 pub wcmp::Val::Variant
 pub wcmp::Val::Variant::discriminant: alloc::string::String
 pub wcmp::Val::Variant::payload: core::option::Option<alloc::boxed::Box<wcmp::Val>>
+impl core::clone::Clone for wcmp::Val
+pub fn wcmp::Val::clone(&self) -> wcmp::Val
+impl core::cmp::PartialEq for wcmp::Val
+pub fn wcmp::Val::eq(&self, &wcmp::Val) -> bool
+impl core::fmt::Debug for wcmp::Val
+pub fn wcmp::Val::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::Val
 pub enum wcmp::ValueType
 pub wcmp::ValueType::Borrow(wcmp::ResourceType)
 pub wcmp::ValueType::Enum(wcmp::EnumType)
@@ -325,6 +510,16 @@ pub wcmp::ValueType::Result(wcmp::ResultType)
 pub wcmp::ValueType::Stream(wcmp::StreamType)
 pub wcmp::ValueType::Tuple(wcmp::TupleType)
 pub wcmp::ValueType::Variant(wcmp::VariantType)
+impl core::clone::Clone for wcmp::ValueType
+pub fn wcmp::ValueType::clone(&self) -> wcmp::ValueType
+impl core::cmp::Eq for wcmp::ValueType
+impl core::cmp::PartialEq for wcmp::ValueType
+pub fn wcmp::ValueType::eq(&self, &wcmp::ValueType) -> bool
+impl core::fmt::Debug for wcmp::ValueType
+pub fn wcmp::ValueType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ValueType
+pub fn wcmp::ValueType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ValueType
 #[non_exhaustive] pub enum wcmp::WaitableCause
 pub wcmp::WaitableCause::SetHasWaitables
 pub wcmp::WaitableCause::SetHasWaiters
@@ -332,12 +527,23 @@ pub wcmp::WaitableCause::SubtaskCancelAfterTerminal
 pub wcmp::WaitableCause::SubtaskCancelledTwice
 pub wcmp::WaitableCause::SubtaskNotResolved
 pub wcmp::WaitableCause::SyncAndAsync
+impl core::error::Error for wcmp::WaitableCause
+impl core::fmt::Debug for wcmp::WaitableCause
+pub fn wcmp::WaitableCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::WaitableCause
+pub fn wcmp::WaitableCause::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::AbiError
 pub wcmp::AbiError::cause: wcmp::AbiCause
 pub wcmp::AbiError::position: wcmp::AbiPosition
 pub wcmp::AbiError::valtype: core::option::Option<wcmp::ValueType>
 impl core::convert::From<wcmp::AbiError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::AbiError) -> Self
+impl core::error::Error for wcmp::AbiError
+pub fn wcmp::AbiError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for wcmp::AbiError
+pub fn wcmp::AbiError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::AbiError
+pub fn wcmp::AbiError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::Accessor<T: 'static>
 impl<T: 'static> wcmp::Accessor<T>
 pub fn wcmp::Accessor<T>::with<R>(&self, impl core::ops::function::FnOnce(&mut wcmp::StoreContext<'_, T>) -> R) -> wcmp::Result<R>
@@ -348,17 +554,41 @@ pub wcmp::Component::exports: alloc::boxed::Box<[wcmp::ComponentExport]>
 pub wcmp::Component::imports: alloc::boxed::Box<[wcmp::ComponentImport]>
 impl wcmp::Component
 pub async fn wcmp::Component::new(&wcmp::Engine, &[u8]) -> wcmp::Result<Self>
+impl core::clone::Clone for wcmp::Component
+pub fn wcmp::Component::clone(&self) -> wcmp::Component
 impl core::fmt::Debug for wcmp::Component
 pub fn wcmp::Component::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ComponentExport
 pub wcmp::ComponentExport::name: wcmp::ExternalName
 pub wcmp::ComponentExport::ty: wcmp::ExternType
+impl core::clone::Clone for wcmp::ComponentExport
+pub fn wcmp::ComponentExport::clone(&self) -> wcmp::ComponentExport
+impl core::cmp::Eq for wcmp::ComponentExport
+impl core::cmp::PartialEq for wcmp::ComponentExport
+pub fn wcmp::ComponentExport::eq(&self, &wcmp::ComponentExport) -> bool
+impl core::fmt::Debug for wcmp::ComponentExport
+pub fn wcmp::ComponentExport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ComponentExport
+pub fn wcmp::ComponentExport::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ComponentExport
 pub struct wcmp::ComponentImport
 pub wcmp::ComponentImport::name: wcmp::ExternalName
 pub wcmp::ComponentImport::ty: wcmp::ExternType
+impl core::clone::Clone for wcmp::ComponentImport
+pub fn wcmp::ComponentImport::clone(&self) -> wcmp::ComponentImport
+impl core::cmp::Eq for wcmp::ComponentImport
+impl core::cmp::PartialEq for wcmp::ComponentImport
+pub fn wcmp::ComponentImport::eq(&self, &wcmp::ComponentImport) -> bool
+impl core::fmt::Debug for wcmp::ComponentImport
+pub fn wcmp::ComponentImport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ComponentImport
+pub fn wcmp::ComponentImport::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ComponentImport
 pub struct wcmp::CoreExtern
 impl wcmp::CoreExtern
 pub fn wcmp::CoreExtern::ty<T: 'static>(&self, &wcmp::Store<T>) -> wcmp::CoreExternType
+impl core::clone::Clone for wcmp::CoreExtern
+pub fn wcmp::CoreExtern::clone(&self) -> wcmp::CoreExtern
 impl core::fmt::Debug for wcmp::CoreExtern
 pub fn wcmp::CoreExtern::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::CoreInstance
@@ -378,6 +608,8 @@ pub fn wcmp::Engine::config(&self) -> &wcmp::EngineConfig
 pub fn wcmp::Engine::suspend_provider(&self) -> wcmp::SuspendProviderKind
 pub fn wcmp::Engine::with_backend(impl wcmp_wasm_core::contract::backend::Backend) -> wcmp::Result<Self>
 pub fn wcmp::Engine::with_config(self, &wcmp::EngineConfig) -> wcmp::Result<Self>
+impl core::clone::Clone for wcmp::Engine
+pub fn wcmp::Engine::clone(&self) -> wcmp::Engine
 pub struct wcmp::EngineConfig
 impl wcmp::EngineConfig
 pub fn wcmp::EngineConfig::new() -> Self
@@ -391,18 +623,42 @@ pub fn wcmp::EngineConfig::wasm_component_model_map(&mut self, bool) -> &mut Sel
 pub fn wcmp::EngineConfig::wasm_component_model_memory64(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_more_async_builtins(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_threading(&mut self, bool) -> &mut Self
+impl core::clone::Clone for wcmp::EngineConfig
+pub fn wcmp::EngineConfig::clone(&self) -> wcmp::EngineConfig
 impl core::default::Default for wcmp::EngineConfig
 pub fn wcmp::EngineConfig::default() -> Self
+impl core::fmt::Debug for wcmp::EngineConfig
+pub fn wcmp::EngineConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::EnumType
 impl wcmp::EnumType
 pub fn wcmp::EnumType::cases(&self) -> &[alloc::string::String]
 pub fn wcmp::EnumType::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+impl core::clone::Clone for wcmp::EnumType
+pub fn wcmp::EnumType::clone(&self) -> wcmp::EnumType
+impl core::cmp::Eq for wcmp::EnumType
+impl core::cmp::PartialEq for wcmp::EnumType
+pub fn wcmp::EnumType::eq(&self, &wcmp::EnumType) -> bool
+impl core::fmt::Debug for wcmp::EnumType
+pub fn wcmp::EnumType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::EnumType
+pub fn wcmp::EnumType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::EnumType
 pub struct wcmp::ErrorContext
+impl core::fmt::Debug for wcmp::ErrorContext
+pub fn wcmp::ErrorContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl wcmp::ComponentValue for wcmp::ErrorContext
 pub fn wcmp::ErrorContext::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ErrorContext::to_val(self) -> wcmp::Val
 pub fn wcmp::ErrorContext::value_type() -> wcmp::ValueType
 pub struct wcmp::ErrorContextAny
+impl core::clone::Clone for wcmp::ErrorContextAny
+pub fn wcmp::ErrorContextAny::clone(&self) -> wcmp::ErrorContextAny
+impl core::cmp::Eq for wcmp::ErrorContextAny
+impl core::cmp::PartialEq for wcmp::ErrorContextAny
+pub fn wcmp::ErrorContextAny::eq(&self, &wcmp::ErrorContextAny) -> bool
+impl core::fmt::Debug for wcmp::ErrorContextAny
+pub fn wcmp::ErrorContextAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::ErrorContextAny
 pub struct wcmp::ExportInstance<'a>
 impl<'a> wcmp::ExportInstance<'a>
 pub fn wcmp::ExportInstance<'a>::func(&self, &str) -> core::option::Option<wcmp::Func>
@@ -414,12 +670,30 @@ impl wcmp::FixedLengthListType
 pub fn wcmp::FixedLengthListType::element(&self) -> &wcmp::ValueType
 pub fn wcmp::FixedLengthListType::length(&self) -> u32
 pub fn wcmp::FixedLengthListType::new(wcmp::ValueType, u32) -> Self
+impl core::clone::Clone for wcmp::FixedLengthListType
+pub fn wcmp::FixedLengthListType::clone(&self) -> wcmp::FixedLengthListType
+impl core::cmp::Eq for wcmp::FixedLengthListType
+impl core::cmp::PartialEq for wcmp::FixedLengthListType
+pub fn wcmp::FixedLengthListType::eq(&self, &wcmp::FixedLengthListType) -> bool
 impl core::fmt::Debug for wcmp::FixedLengthListType
 pub fn wcmp::FixedLengthListType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::FixedLengthListType
+pub fn wcmp::FixedLengthListType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::FixedLengthListType
 pub struct wcmp::FlagsType
 impl wcmp::FlagsType
 pub fn wcmp::FlagsType::names(&self) -> &[alloc::string::String]
 pub fn wcmp::FlagsType::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+impl core::clone::Clone for wcmp::FlagsType
+pub fn wcmp::FlagsType::clone(&self) -> wcmp::FlagsType
+impl core::cmp::Eq for wcmp::FlagsType
+impl core::cmp::PartialEq for wcmp::FlagsType
+pub fn wcmp::FlagsType::eq(&self, &wcmp::FlagsType) -> bool
+impl core::fmt::Debug for wcmp::FlagsType
+pub fn wcmp::FlagsType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::FlagsType
+pub fn wcmp::FlagsType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::FlagsType
 pub struct wcmp::Func
 impl wcmp::Func
 pub async fn wcmp::Func::call<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
@@ -430,15 +704,43 @@ pub fn wcmp::Func::typed<P, R>(self) -> wcmp::Result<wcmp::TypedFunc<P, R>> wher
 pub struct wcmp::FunctionParameter
 pub wcmp::FunctionParameter::name: alloc::string::String
 pub wcmp::FunctionParameter::ty: wcmp::ValueType
+impl core::clone::Clone for wcmp::FunctionParameter
+pub fn wcmp::FunctionParameter::clone(&self) -> wcmp::FunctionParameter
+impl core::cmp::Eq for wcmp::FunctionParameter
+impl core::cmp::PartialEq for wcmp::FunctionParameter
+pub fn wcmp::FunctionParameter::eq(&self, &wcmp::FunctionParameter) -> bool
+impl core::fmt::Debug for wcmp::FunctionParameter
+pub fn wcmp::FunctionParameter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::FunctionParameter
+pub fn wcmp::FunctionParameter::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::FunctionParameter
 pub struct wcmp::FunctionType
 pub wcmp::FunctionType::async_: bool
 pub wcmp::FunctionType::parameters: alloc::vec::Vec<wcmp::FunctionParameter>
 pub wcmp::FunctionType::result: core::option::Option<wcmp::ValueType>
+impl core::clone::Clone for wcmp::FunctionType
+pub fn wcmp::FunctionType::clone(&self) -> wcmp::FunctionType
+impl core::cmp::Eq for wcmp::FunctionType
+impl core::cmp::PartialEq for wcmp::FunctionType
+pub fn wcmp::FunctionType::eq(&self, &wcmp::FunctionType) -> bool
+impl core::fmt::Debug for wcmp::FunctionType
+pub fn wcmp::FunctionType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::FunctionType
+pub fn wcmp::FunctionType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::FunctionType
 pub struct wcmp::FutureAny
 impl wcmp::FutureAny
 pub fn wcmp::FutureAny::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
 pub fn wcmp::FutureAny::try_from_future_reader<T, D: 'static>(&mut wcmp::StoreContext<'_, D>, wcmp::FutureReader<T>) -> wcmp::Result<Self>
 pub fn wcmp::FutureAny::try_into_future_reader<T: wcmp::ComponentValue>(self) -> wcmp::Result<wcmp::FutureReader<T>>
+impl core::clone::Clone for wcmp::FutureAny
+pub fn wcmp::FutureAny::clone(&self) -> wcmp::FutureAny
+impl core::cmp::Eq for wcmp::FutureAny
+impl core::cmp::PartialEq for wcmp::FutureAny
+pub fn wcmp::FutureAny::eq(&self, &wcmp::FutureAny) -> bool
+impl core::fmt::Debug for wcmp::FutureAny
+pub fn wcmp::FutureAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::FutureAny
 pub struct wcmp::FutureReader<T>
 impl<T: wcmp::ComponentValue> wcmp::FutureReader<T>
 pub fn wcmp::FutureReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::FutureProducer<D, Item = T>) -> wcmp::Result<Self>
@@ -459,6 +761,16 @@ pub struct wcmp::FutureType
 impl wcmp::FutureType
 pub fn wcmp::FutureType::new(core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::FutureType::payload(&self) -> core::option::Option<&wcmp::ValueType>
+impl core::clone::Clone for wcmp::FutureType
+pub fn wcmp::FutureType::clone(&self) -> wcmp::FutureType
+impl core::cmp::Eq for wcmp::FutureType
+impl core::cmp::PartialEq for wcmp::FutureType
+pub fn wcmp::FutureType::eq(&self, &wcmp::FutureType) -> bool
+impl core::fmt::Debug for wcmp::FutureType
+pub fn wcmp::FutureType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::FutureType
+pub fn wcmp::FutureType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::FutureType
 pub struct wcmp::GuardedFutureReader<T, D: 'static>
 impl<T, D: 'static> wcmp::GuardedFutureReader<T, D>
 pub fn wcmp::GuardedFutureReader<T, D>::into_future(self) -> wcmp::FutureReader<T>
@@ -500,15 +812,45 @@ pub fn wcmp::InstanceExports<'a>::module(&self, &str) -> core::option::Option<wc
 pub struct wcmp::InstanceItem
 pub wcmp::InstanceItem::name: alloc::string::String
 pub wcmp::InstanceItem::ty: wcmp::ExternType
+impl core::clone::Clone for wcmp::InstanceItem
+pub fn wcmp::InstanceItem::clone(&self) -> wcmp::InstanceItem
+impl core::cmp::Eq for wcmp::InstanceItem
+impl core::cmp::PartialEq for wcmp::InstanceItem
+pub fn wcmp::InstanceItem::eq(&self, &wcmp::InstanceItem) -> bool
+impl core::fmt::Debug for wcmp::InstanceItem
+pub fn wcmp::InstanceItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::InstanceItem
+pub fn wcmp::InstanceItem::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::InstanceItem
 pub struct wcmp::InstanceType
 pub wcmp::InstanceType::items: alloc::vec::Vec<wcmp::InstanceItem>
+impl core::clone::Clone for wcmp::InstanceType
+pub fn wcmp::InstanceType::clone(&self) -> wcmp::InstanceType
+impl core::cmp::Eq for wcmp::InstanceType
+impl core::cmp::PartialEq for wcmp::InstanceType
+pub fn wcmp::InstanceType::eq(&self, &wcmp::InstanceType) -> bool
+impl core::fmt::Debug for wcmp::InstanceType
+pub fn wcmp::InstanceType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::InstanceType
+pub fn wcmp::InstanceType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::InstanceType
 pub struct wcmp::InterfaceIdentifier
 impl wcmp::InterfaceIdentifier
 pub fn wcmp::InterfaceIdentifier::name(&self) -> &str
 pub fn wcmp::InterfaceIdentifier::new(wcmp::PackageName, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn wcmp::InterfaceIdentifier::package(&self) -> &wcmp::PackageName
+impl core::clone::Clone for wcmp::InterfaceIdentifier
+pub fn wcmp::InterfaceIdentifier::clone(&self) -> wcmp::InterfaceIdentifier
+impl core::cmp::Eq for wcmp::InterfaceIdentifier
+impl core::cmp::PartialEq for wcmp::InterfaceIdentifier
+pub fn wcmp::InterfaceIdentifier::eq(&self, &wcmp::InterfaceIdentifier) -> bool
+impl core::fmt::Debug for wcmp::InterfaceIdentifier
+pub fn wcmp::InterfaceIdentifier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::InterfaceIdentifier
 pub fn wcmp::InterfaceIdentifier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::InterfaceIdentifier
+pub fn wcmp::InterfaceIdentifier::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::InterfaceIdentifier
 impl core::str::traits::FromStr for wcmp::InterfaceIdentifier
 pub type wcmp::InterfaceIdentifier::Err = wcmp::IdentifierParseError
 pub fn wcmp::InterfaceIdentifier::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -535,36 +877,96 @@ pub struct wcmp::ListType
 impl wcmp::ListType
 pub fn wcmp::ListType::element(&self) -> &wcmp::ValueType
 pub fn wcmp::ListType::new(wcmp::ValueType) -> Self
+impl core::clone::Clone for wcmp::ListType
+pub fn wcmp::ListType::clone(&self) -> wcmp::ListType
+impl core::cmp::Eq for wcmp::ListType
+impl core::cmp::PartialEq for wcmp::ListType
+pub fn wcmp::ListType::eq(&self, &wcmp::ListType) -> bool
+impl core::fmt::Debug for wcmp::ListType
+pub fn wcmp::ListType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ListType
+pub fn wcmp::ListType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ListType
 pub struct wcmp::MapType
 impl wcmp::MapType
 pub fn wcmp::MapType::entry(&self) -> wcmp::ValueType
 pub fn wcmp::MapType::key(&self) -> &wcmp::ValueType
 pub fn wcmp::MapType::new(wcmp::ValueType, wcmp::ValueType) -> Self
 pub fn wcmp::MapType::value(&self) -> &wcmp::ValueType
+impl core::clone::Clone for wcmp::MapType
+pub fn wcmp::MapType::clone(&self) -> wcmp::MapType
+impl core::cmp::Eq for wcmp::MapType
+impl core::cmp::PartialEq for wcmp::MapType
+pub fn wcmp::MapType::eq(&self, &wcmp::MapType) -> bool
+impl core::fmt::Debug for wcmp::MapType
+pub fn wcmp::MapType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::MapType
+pub fn wcmp::MapType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::MapType
 pub struct wcmp::Module
 impl wcmp::Module
 pub fn wcmp::Module::exports(&self) -> &[wcmp::ModuleExport]
 pub fn wcmp::Module::imports(&self) -> &[wcmp::ModuleImport]
 pub async fn wcmp::Module::instantiate<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::CoreExtern]) -> wcmp::Result<wcmp::CoreInstance>
 pub async fn wcmp::Module::new(&wcmp::Engine, &[u8]) -> wcmp::Result<Self>
+impl core::clone::Clone for wcmp::Module
+pub fn wcmp::Module::clone(&self) -> wcmp::Module
 impl core::fmt::Debug for wcmp::Module
 pub fn wcmp::Module::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ModuleExport
 pub wcmp::ModuleExport::name: alloc::string::String
 pub wcmp::ModuleExport::ty: wcmp::CoreExternType
+impl core::clone::Clone for wcmp::ModuleExport
+pub fn wcmp::ModuleExport::clone(&self) -> wcmp::ModuleExport
+impl core::cmp::Eq for wcmp::ModuleExport
+impl core::cmp::PartialEq for wcmp::ModuleExport
+pub fn wcmp::ModuleExport::eq(&self, &wcmp::ModuleExport) -> bool
+impl core::fmt::Debug for wcmp::ModuleExport
+pub fn wcmp::ModuleExport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ModuleExport
+pub fn wcmp::ModuleExport::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ModuleExport
 pub struct wcmp::ModuleImport
 pub wcmp::ModuleImport::module: alloc::string::String
 pub wcmp::ModuleImport::name: alloc::string::String
 pub wcmp::ModuleImport::ty: wcmp::CoreExternType
+impl core::clone::Clone for wcmp::ModuleImport
+pub fn wcmp::ModuleImport::clone(&self) -> wcmp::ModuleImport
+impl core::cmp::Eq for wcmp::ModuleImport
+impl core::cmp::PartialEq for wcmp::ModuleImport
+pub fn wcmp::ModuleImport::eq(&self, &wcmp::ModuleImport) -> bool
+impl core::fmt::Debug for wcmp::ModuleImport
+pub fn wcmp::ModuleImport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ModuleImport
+pub fn wcmp::ModuleImport::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ModuleImport
 pub struct wcmp::ModuleType
 pub wcmp::ModuleType::exports: alloc::vec::Vec<wcmp::ModuleExport>
 pub wcmp::ModuleType::imports: alloc::vec::Vec<wcmp::ModuleImport>
+impl core::clone::Clone for wcmp::ModuleType
+pub fn wcmp::ModuleType::clone(&self) -> wcmp::ModuleType
+impl core::cmp::Eq for wcmp::ModuleType
+impl core::cmp::PartialEq for wcmp::ModuleType
+pub fn wcmp::ModuleType::eq(&self, &wcmp::ModuleType) -> bool
+impl core::fmt::Debug for wcmp::ModuleType
+pub fn wcmp::ModuleType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ModuleType
+pub fn wcmp::ModuleType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ModuleType
 pub struct wcmp::OptionType
 impl wcmp::OptionType
 pub fn wcmp::OptionType::new(wcmp::ValueType) -> Self
 pub fn wcmp::OptionType::payload(&self) -> &wcmp::ValueType
+impl core::clone::Clone for wcmp::OptionType
+pub fn wcmp::OptionType::clone(&self) -> wcmp::OptionType
+impl core::cmp::Eq for wcmp::OptionType
+impl core::cmp::PartialEq for wcmp::OptionType
+pub fn wcmp::OptionType::eq(&self, &wcmp::OptionType) -> bool
 impl core::fmt::Debug for wcmp::OptionType
 pub fn wcmp::OptionType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::OptionType
+pub fn wcmp::OptionType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::OptionType
 pub struct wcmp::PackageName
 impl wcmp::PackageName
 pub fn wcmp::PackageName::name(&self) -> &str
@@ -572,8 +974,18 @@ pub fn wcmp::PackageName::namespace(&self) -> &str
 pub fn wcmp::PackageName::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<semver::Version>) -> Self
 pub fn wcmp::PackageName::set_version(&mut self, core::option::Option<semver::Version>)
 pub fn wcmp::PackageName::version(&self) -> core::option::Option<&semver::Version>
+impl core::clone::Clone for wcmp::PackageName
+pub fn wcmp::PackageName::clone(&self) -> wcmp::PackageName
+impl core::cmp::Eq for wcmp::PackageName
+impl core::cmp::PartialEq for wcmp::PackageName
+pub fn wcmp::PackageName::eq(&self, &wcmp::PackageName) -> bool
+impl core::fmt::Debug for wcmp::PackageName
+pub fn wcmp::PackageName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::PackageName
 pub fn wcmp::PackageName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::PackageName
+pub fn wcmp::PackageName::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::PackageName
 impl core::str::traits::FromStr for wcmp::PackageName
 pub type wcmp::PackageName::Err = wcmp::IdentifierParseError
 pub fn wcmp::PackageName::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -582,36 +994,87 @@ impl wcmp::RecordField
 pub fn wcmp::RecordField::name(&self) -> &str
 pub fn wcmp::RecordField::new(impl core::convert::Into<alloc::string::String>, wcmp::ValueType) -> Self
 pub fn wcmp::RecordField::ty(&self) -> &wcmp::ValueType
+impl core::clone::Clone for wcmp::RecordField
+pub fn wcmp::RecordField::clone(&self) -> wcmp::RecordField
+impl core::cmp::Eq for wcmp::RecordField
+impl core::cmp::PartialEq for wcmp::RecordField
+pub fn wcmp::RecordField::eq(&self, &wcmp::RecordField) -> bool
+impl core::fmt::Debug for wcmp::RecordField
+pub fn wcmp::RecordField::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::RecordField
+pub fn wcmp::RecordField::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::RecordField
 pub struct wcmp::RecordType
 impl wcmp::RecordType
 pub fn wcmp::RecordType::fields(&self) -> &[wcmp::RecordField]
 pub fn wcmp::RecordType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::RecordField>) -> Self
+impl core::clone::Clone for wcmp::RecordType
+pub fn wcmp::RecordType::clone(&self) -> wcmp::RecordType
+impl core::cmp::Eq for wcmp::RecordType
+impl core::cmp::PartialEq for wcmp::RecordType
+pub fn wcmp::RecordType::eq(&self, &wcmp::RecordType) -> bool
 impl core::fmt::Debug for wcmp::RecordType
 pub fn wcmp::RecordType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::RecordType
+pub fn wcmp::RecordType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::RecordType
 pub struct wcmp::ResourceHandle
 impl wcmp::ResourceHandle
 pub fn wcmp::ResourceHandle::index(&self) -> u32
 pub fn wcmp::ResourceHandle::rep(&self) -> u32
 pub fn wcmp::ResourceHandle::type_id(&self) -> wcmp::ResourceTypeId
+impl core::clone::Clone for wcmp::ResourceHandle
+pub fn wcmp::ResourceHandle::clone(&self) -> wcmp::ResourceHandle
+impl core::cmp::Eq for wcmp::ResourceHandle
+impl core::cmp::PartialEq for wcmp::ResourceHandle
+pub fn wcmp::ResourceHandle::eq(&self, &wcmp::ResourceHandle) -> bool
+impl core::fmt::Debug for wcmp::ResourceHandle
+pub fn wcmp::ResourceHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ResourceHandle
+pub fn wcmp::ResourceHandle::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::ResourceHandle
+impl core::marker::StructuralPartialEq for wcmp::ResourceHandle
 pub struct wcmp::ResourceType
 impl wcmp::ResourceType
 pub fn wcmp::ResourceType::index(&self) -> core::option::Option<usize>
-pub fn wcmp::ResourceType::indexed(impl core::convert::Into<alloc::string::String>, usize) -> Self
 pub fn wcmp::ResourceType::label(&self) -> &str
 pub fn wcmp::ResourceType::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::clone::Clone for wcmp::ResourceType
+pub fn wcmp::ResourceType::clone(&self) -> wcmp::ResourceType
 impl core::cmp::Eq for wcmp::ResourceType
 impl core::cmp::PartialEq for wcmp::ResourceType
 pub fn wcmp::ResourceType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for wcmp::ResourceType
+pub fn wcmp::ResourceType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for wcmp::ResourceType
 pub fn wcmp::ResourceType::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct wcmp::ResourceTypeId(_)
+impl core::clone::Clone for wcmp::ResourceTypeId
+pub fn wcmp::ResourceTypeId::clone(&self) -> wcmp::ResourceTypeId
+impl core::cmp::Eq for wcmp::ResourceTypeId
+impl core::cmp::PartialEq for wcmp::ResourceTypeId
+pub fn wcmp::ResourceTypeId::eq(&self, &wcmp::ResourceTypeId) -> bool
+impl core::fmt::Debug for wcmp::ResourceTypeId
+pub fn wcmp::ResourceTypeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ResourceTypeId
+pub fn wcmp::ResourceTypeId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::ResourceTypeId
+impl core::marker::StructuralPartialEq for wcmp::ResourceTypeId
 pub struct wcmp::ResultType
 impl wcmp::ResultType
 pub fn wcmp::ResultType::err(&self) -> core::option::Option<&wcmp::ValueType>
 pub fn wcmp::ResultType::new(core::option::Option<wcmp::ValueType>, core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::ResultType::ok(&self) -> core::option::Option<&wcmp::ValueType>
+impl core::clone::Clone for wcmp::ResultType
+pub fn wcmp::ResultType::clone(&self) -> wcmp::ResultType
+impl core::cmp::Eq for wcmp::ResultType
+impl core::cmp::PartialEq for wcmp::ResultType
+pub fn wcmp::ResultType::eq(&self, &wcmp::ResultType) -> bool
 impl core::fmt::Debug for wcmp::ResultType
 pub fn wcmp::ResultType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ResultType
+pub fn wcmp::ResultType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::ResultType
 pub struct wcmp::Source<'a, T>
 impl<T> wcmp::Source<'_, T>
 pub fn wcmp::Source<'_, T>::read<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>, &mut alloc::vec::Vec<T>, usize) -> wcmp::Result<()> where T: wcmp::ComponentValue
@@ -643,6 +1106,14 @@ impl wcmp::StreamAny
 pub fn wcmp::StreamAny::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
 pub fn wcmp::StreamAny::try_from_stream_reader<T, D: 'static>(&mut wcmp::StoreContext<'_, D>, wcmp::StreamReader<T>) -> wcmp::Result<Self>
 pub fn wcmp::StreamAny::try_into_stream_reader<T: wcmp::ComponentValue>(self) -> wcmp::Result<wcmp::StreamReader<T>>
+impl core::clone::Clone for wcmp::StreamAny
+pub fn wcmp::StreamAny::clone(&self) -> wcmp::StreamAny
+impl core::cmp::Eq for wcmp::StreamAny
+impl core::cmp::PartialEq for wcmp::StreamAny
+pub fn wcmp::StreamAny::eq(&self, &wcmp::StreamAny) -> bool
+impl core::fmt::Debug for wcmp::StreamAny
+pub fn wcmp::StreamAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::StreamAny
 pub struct wcmp::StreamReader<T>
 impl<T: wcmp::ComponentValue> wcmp::StreamReader<T>
 pub fn wcmp::StreamReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::StreamProducer<D, Item = T>) -> wcmp::Result<Self>
@@ -663,18 +1134,41 @@ pub struct wcmp::StreamType
 impl wcmp::StreamType
 pub fn wcmp::StreamType::new(core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::StreamType::payload(&self) -> core::option::Option<&wcmp::ValueType>
+impl core::clone::Clone for wcmp::StreamType
+pub fn wcmp::StreamType::clone(&self) -> wcmp::StreamType
+impl core::cmp::Eq for wcmp::StreamType
+impl core::cmp::PartialEq for wcmp::StreamType
+pub fn wcmp::StreamType::eq(&self, &wcmp::StreamType) -> bool
+impl core::fmt::Debug for wcmp::StreamType
+pub fn wcmp::StreamType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::StreamType
+pub fn wcmp::StreamType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::StreamType
 pub struct wcmp::TupleType
 impl wcmp::TupleType
 pub fn wcmp::TupleType::elements(&self) -> &[wcmp::ValueType]
 pub fn wcmp::TupleType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::ValueType>) -> Self
+impl core::clone::Clone for wcmp::TupleType
+pub fn wcmp::TupleType::clone(&self) -> wcmp::TupleType
+impl core::cmp::Eq for wcmp::TupleType
+impl core::cmp::PartialEq for wcmp::TupleType
+pub fn wcmp::TupleType::eq(&self, &wcmp::TupleType) -> bool
 impl core::fmt::Debug for wcmp::TupleType
 pub fn wcmp::TupleType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::TupleType
+pub fn wcmp::TupleType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::TupleType
 pub struct wcmp::TypeMismatch
 pub wcmp::TypeMismatch::actual: wcmp::TypeRendering
 pub wcmp::TypeMismatch::expected: wcmp::TypeRendering
 pub wcmp::TypeMismatch::position: wcmp::TypeMismatchPosition
 impl core::convert::From<wcmp::TypeMismatch> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::TypeMismatch) -> Self
+impl core::error::Error for wcmp::TypeMismatch
+impl core::fmt::Debug for wcmp::TypeMismatch
+pub fn wcmp::TypeMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for wcmp::TypeMismatch
+pub fn wcmp::TypeMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::TypedFunc<P, R>
 impl<P, R> wcmp::TypedFunc<P, R> where P: wcmp::ComponentParameters, R: wcmp::ComponentResult
 pub async fn wcmp::TypedFunc<P, R>::call<T: 'static>(&self, &mut wcmp::Store<T>, P) -> wcmp::Result<R>
@@ -684,17 +1178,42 @@ pub fn wcmp::TypedFunc<P, R>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 pub struct wcmp::ValField
 pub wcmp::ValField::name: alloc::string::String
 pub wcmp::ValField::value: wcmp::Val
+impl core::clone::Clone for wcmp::ValField
+pub fn wcmp::ValField::clone(&self) -> wcmp::ValField
+impl core::cmp::PartialEq for wcmp::ValField
+pub fn wcmp::ValField::eq(&self, &wcmp::ValField) -> bool
+impl core::fmt::Debug for wcmp::ValField
+pub fn wcmp::ValField::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for wcmp::ValField
 pub struct wcmp::VariantCase
 impl wcmp::VariantCase
 pub fn wcmp::VariantCase::name(&self) -> &str
 pub fn wcmp::VariantCase::new(impl core::convert::Into<alloc::string::String>, core::option::Option<wcmp::ValueType>) -> Self
 pub fn wcmp::VariantCase::payload(&self) -> core::option::Option<&wcmp::ValueType>
+impl core::clone::Clone for wcmp::VariantCase
+pub fn wcmp::VariantCase::clone(&self) -> wcmp::VariantCase
+impl core::cmp::Eq for wcmp::VariantCase
+impl core::cmp::PartialEq for wcmp::VariantCase
+pub fn wcmp::VariantCase::eq(&self, &wcmp::VariantCase) -> bool
+impl core::fmt::Debug for wcmp::VariantCase
+pub fn wcmp::VariantCase::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::VariantCase
+pub fn wcmp::VariantCase::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::VariantCase
 pub struct wcmp::VariantType
 impl wcmp::VariantType
 pub fn wcmp::VariantType::cases(&self) -> &[wcmp::VariantCase]
 pub fn wcmp::VariantType::new(impl core::iter::traits::collect::IntoIterator<Item = wcmp::VariantCase>) -> Self
+impl core::clone::Clone for wcmp::VariantType
+pub fn wcmp::VariantType::clone(&self) -> wcmp::VariantType
+impl core::cmp::Eq for wcmp::VariantType
+impl core::cmp::PartialEq for wcmp::VariantType
+pub fn wcmp::VariantType::eq(&self, &wcmp::VariantType) -> bool
 impl core::fmt::Debug for wcmp::VariantType
 pub fn wcmp::VariantType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::VariantType
+pub fn wcmp::VariantType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for wcmp::VariantType
 pub trait wcmp::ComponentParameters: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
 pub fn wcmp::ComponentParameters::from_vals(&[wcmp::Val]) -> wcmp::Result<Self>
 pub fn wcmp::ComponentParameters::into_vals(self) -> alloc::vec::Vec<wcmp::Val>

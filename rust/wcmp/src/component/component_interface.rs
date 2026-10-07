@@ -40,12 +40,10 @@ const CORE_MODULE_PREAMBLE: [u8; 8] = [b'\0', b'a', b's', b'm', 0x01, 0x00, 0x00
 /// The declared imports and exports are the introspectable part and
 /// stay public. The plan is not: it is the compiled, ordered
 /// sequence instantiation executes, every part of it reached by the
-/// executor alone, and a component whose declared interface belongs
-/// to one binary and whose plan belongs to another is a component
-/// that instantiates to something its own interface does not
-/// describe. The plan is therefore fixed at parse time by
+/// executor alone. The plan is fixed at parse time by
 /// [`Component::new`], which is the only thing that sets it, so a
-/// struct literal pairing the two halves is not expressible:
+/// struct literal that pairs one binary's interface with another
+/// binary's plan is not expressible, as the block below proves.
 ///
 /// ```compile_fail
 /// # use wcmp::{Component, ComponentExport, ComponentImport};
@@ -80,6 +78,16 @@ const CORE_MODULE_PREAMBLE: [u8; 8] = [b'\0', b'a', b's', b'm', 0x01, 0x00, 0x00
 /// # }
 /// ```
 ///
+/// That is all the private field proves. The `imports` and `exports`
+/// fields are public, so a caller that owns a `Component` can still
+/// assign another interface to them, and the plan then disagrees with
+/// what the fields say. The damage is bounded: instantiation resolves
+/// imports from the plan's own bindings, zipped with the declared
+/// imports, and bounds-checks every registration it looks up, so a
+/// mismatch fails with [`Error::Internal`] or links the wrong item.
+/// It never panics and never reads past a table.
+///
+/// [`Error::Internal`]: crate::Error::Internal
 /// [`Error::InvalidComponentBinary`]: crate::Error::InvalidComponentBinary
 /// [`Error::Unsupported`]: crate::Error::Unsupported
 /// [`Error::NotAComponent`]: crate::Error::NotAComponent

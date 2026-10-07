@@ -50,6 +50,15 @@ use crate::runtime_layer::{
 use crate::store::{StoreContext, StoreId};
 use crate::types::ValueType;
 
+/// The crate-internal face of [`ResourceType`](crate::ResourceType).
+pub trait ResourceTypeInternal {
+    /// A resource type identity from a label and the index of the
+    /// resource table it lives in within its component. The index is a
+    /// position in one component's resource tables, which only the
+    /// translation of that component knows, so no host makes one.
+    fn indexed(label: impl Into<String>, index: usize) -> Self;
+}
+
 /// The crate-internal face of [`Component`](crate::Component).
 pub trait ComponentInternal {
     /// The executor's plan for this component.

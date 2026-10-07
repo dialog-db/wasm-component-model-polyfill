@@ -14,6 +14,8 @@
 //! reader of a component's imports and exports sees; the index is
 //! what the canonical ABI uses to find the handle table.
 
+use crate::internal::ResourceTypeInternal;
+
 /// The identity of a resource type referenced by a handle.
 ///
 /// Two resource types compare equal when their labels match. The
@@ -38,15 +40,6 @@ impl ResourceType {
         }
     }
 
-    /// Construct a resource type identity from a label and the index
-    /// of the resource table it lives in within its component.
-    pub fn indexed(label: impl Into<String>, index: usize) -> Self {
-        Self {
-            label: label.into(),
-            index: Some(index),
-        }
-    }
-
     /// The resource type's label.
     pub fn label(&self) -> &str {
         &self.label
@@ -56,6 +49,15 @@ impl ResourceType {
     /// component, when a concrete instance holds it.
     pub fn index(&self) -> Option<usize> {
         self.index
+    }
+}
+
+impl ResourceTypeInternal for ResourceType {
+    fn indexed(label: impl Into<String>, index: usize) -> Self {
+        Self {
+            label: label.into(),
+            index: Some(index),
+        }
     }
 }
 

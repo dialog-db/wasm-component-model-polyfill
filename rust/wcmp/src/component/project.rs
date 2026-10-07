@@ -37,7 +37,7 @@ use super::function_type::{FunctionParameter, FunctionType};
 use super::instance_type::{InstanceItem, InstanceType};
 use super::module_type::ModuleType;
 use crate::error::{Error, Result};
-use crate::internal::{CoreValueTypeInternal, ErrorInternal};
+use crate::internal::{CoreValueTypeInternal, ErrorInternal, ResourceTypeInternal};
 use crate::module::{CoreExternType, CoreValueType, ModuleExport, ModuleImport};
 use crate::types::{
     EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,

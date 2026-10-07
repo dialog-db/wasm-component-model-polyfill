@@ -1091,6 +1091,15 @@
         # same rust-overlay the stable toolchain comes from, at a date fixed
         # here; `rust-toolchain.toml` stays on stable and nothing else in the
         # flake sees the nightly.
+        #
+        # The nightly's date and `pkgs.cargo-public-api` move together.
+        # rustdoc's JSON carries a `format_version`, and each release of
+        # cargo-public-api reads a range of them. When a `flake.lock` bump
+        # moves one without the other, the listing fails with an error that
+        # names the format version rustdoc wrote and the one cargo-public-api
+        # expects, whatever the change under review was: bump the nightly's
+        # date here to one whose rustdoc writes the version the new
+        # cargo-public-api reads.
         publicApiToolchain =
           (pkgs.extend (import katsuobushi.inputs.rust-overlay)).rust-bin.nightly."2026-06-22".minimal;
 
@@ -1098,9 +1107,11 @@
           (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain
             (_: publicApiToolchain);
 
-        # The snapshot's own source filter. `Cargo.lock` pins what the
-        # rustdoc run compiles, and `rust/` carries both the crates and the
-        # checked-in snapshot the build phase diffs against.
+        # The listing's own source filter. `Cargo.lock` pins what the
+        # rustdoc run compiles, and `rust/` carries the crates. The
+        # checked-in snapshot is left out: the listing never reads it, and
+        # the check below compares the two, so an `api update` leaves the
+        # listing cached.
         publicApiSource = katsuobushi.inputs.nix-filter.lib {
           root = ./.;
           include = [
@@ -1108,6 +1119,7 @@
             "Cargo.toml"
             "rust"
           ];
+          exclude = [ "rust/wcmp/public-api.txt" ];
         };
 
         publicApiArguments = {
@@ -1120,17 +1132,18 @@
         };
 
         # The public API of the polyfill crate, as the nightly rustdoc sees
-        # it. `--simplified` three times drops the blanket, auto-trait, and
-        # derived impls, which are noise every type carries and not a
-        # decision anyone makes; what is left is the surface this workspace
-        # chose to publish.
+        # it. `--simplified` twice drops the blanket and auto-trait impls,
+        # which every type carries whether anyone chose them or not. A
+        # derived impl stays in the listing: a `#[derive(Clone)]` is a
+        # promise to callers, and removing one is a breaking change the
+        # snapshot has to show.
         publicApiListing = publicApiCrane.mkCargoDerivation (
           publicApiArguments
           // {
             cargoArtifacts = publicApiCrane.buildDepsOnly publicApiArguments;
             nativeBuildInputs = commonBuildInputs ++ [ pkgs.cargo-public-api ];
             buildPhaseCargoCommand = ''
-              cargo public-api --package wcmp -sss \
+              cargo public-api --package wcmp -ss \
                 --color never > public-api.txt
             '';
             installPhaseCommand = ''
