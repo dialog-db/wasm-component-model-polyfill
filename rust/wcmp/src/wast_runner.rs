@@ -16,10 +16,13 @@
 //! internal API.
 //!
 //! This module bridges the two, and only for the harness. It is
-//! compiled only under the `wast-runner` feature, which the crate
-//! turns on for its own tests alone, by a dev-dependency on itself.
-//! A build without the feature has no item from here, so the public
-//! API of the crate carries nothing that changes the cap.
+//! compiled only under the `wcmp_wast_runner` cfg, which the build
+//! script sets where the environment of the build names
+//! `WCMP_WAST_RUNNER`, as the flake's test and lint builds do. No
+//! Cargo feature turns it on, so no crate that depends on this one can
+//! turn it on for another by feature unification. A build without the
+//! cfg has no item from here, so the public API of the crate carries
+//! nothing that changes the cap.
 
 use crate::error::Result;
 use crate::store::{StoreContext, StoreContextInternalExt};

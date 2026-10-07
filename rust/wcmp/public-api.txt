@@ -105,6 +105,7 @@ pub wcmp::Error::InvalidComponentBinary::message: alloc::string::String
 pub wcmp::Error::InvalidComponentBinary::offset: u64
 pub wcmp::Error::Link(alloc::boxed::Box<wcmp::LinkError>)
 pub wcmp::Error::NotAComponent
+pub wcmp::Error::ResourceTable(wcmp::ResourceTableError)
 pub wcmp::Error::Scheduler(wcmp::SchedulerCause)
 pub wcmp::Error::StoreRefused
 pub wcmp::Error::Task(wcmp::TaskCause)
@@ -215,6 +216,8 @@ pub wcmp::PrimitiveType::U16
 pub wcmp::PrimitiveType::U32
 pub wcmp::PrimitiveType::U64
 pub wcmp::PrimitiveType::U8
+#[non_exhaustive] pub enum wcmp::ResourceTableError
+pub wcmp::ResourceTableError::Full
 #[non_exhaustive] pub enum wcmp::ReturnMismatchKind
 pub wcmp::ReturnMismatchKind::Memory
 pub wcmp::ReturnMismatchKind::ResultType
@@ -227,7 +230,6 @@ pub wcmp::SchedulerCause::Deadlock
 pub wcmp::SchedulerCause::RecursiveDriver
 pub wcmp::SchedulerCause::StackSwitchNeeded
 pub wcmp::SchedulerCause::StoreNotInPoll
-pub wcmp::SchedulerCause::TableFull
 pub enum wcmp::StreamResult
 pub wcmp::StreamResult::Cancelled
 pub wcmp::StreamResult::Completed

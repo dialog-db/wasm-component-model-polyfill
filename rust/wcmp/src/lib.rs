@@ -274,7 +274,7 @@ mod store;
 mod suspend_provider_kind;
 mod types;
 mod value;
-#[cfg(feature = "wast-runner")]
+#[cfg(wcmp_wast_runner)]
 mod wast_runner;
 
 pub use crate::component::{
@@ -290,8 +290,8 @@ pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
     AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, InstantiationError,
-    LinkError, Result, ReturnMismatchKind, SchedulerCause, TaskCause, ThreadCause, TypeMismatch,
-    TypeMismatchPosition, TypeRendering, WaitableCause,
+    LinkError, ResourceTableError, Result, ReturnMismatchKind, SchedulerCause, TaskCause,
+    ThreadCause, TypeMismatch, TypeMismatchPosition, TypeRendering, WaitableCause,
 };
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{
@@ -317,9 +317,12 @@ pub use crate::value::{Val, ValField};
 // The crate's own conformance harness registers the item Wasmtime's
 // wast runner lowers the store's record cap through. The harness is
 // an integration test and reaches the crate only through what is
-// exported here, so the one entry it needs is exported under a
-// feature only the crate's own tests turn on.
-#[cfg(feature = "wast-runner")]
+// exported here, so the one entry it needs is exported under the
+// `wcmp_wast_runner` cfg, which the build script sets only where the
+// build's environment names `WCMP_WAST_RUNNER`: the flake's test and
+// lint builds. A Cargo feature would not do, because any crate in a
+// dependency graph could turn it on for every other.
+#[cfg(wcmp_wast_runner)]
 #[doc(hidden)]
 pub use crate::wast_runner::set_max_table_capacity;
 

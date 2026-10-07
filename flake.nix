@@ -871,9 +871,15 @@
         # (`rust/wcmp-wasm-core-fidelity`) embeds every script of the
         # pinned specification test suite at compile time, from the tree
         # `WCMP_SPEC_TESTSUITE` names, and generates one test for each.
+        #
+        # `WCMP_WAST_RUNNER` sets the polyfill's `wcmp_wast_runner` cfg
+        # (see `rust/wcmp/build.rs`), which exports the entry the
+        # conformance harness lowers a store's record cap through. No
+        # other build sets it, so the published crate has no such entry.
         withTestInputs =
           derivation:
           derivation.overrideAttrs {
+            WCMP_WAST_RUNNER = "1";
             WCMP_ZENA_SCENARIOS = "${zenaTestScenarios}/scenarios.bundle";
             WCMP_ZENA_RECORD_CHECK = "${zenaRecordCheck}/scenarios.bundle";
             WCMP_ZENA_SOURCES = "${zenaToolchainBundle}/zena-sources.bundle";

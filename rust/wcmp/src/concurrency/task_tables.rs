@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi::signature::Signature;
 use crate::error::{
-    CopyCause, Error, ErrorContextCause, Result, SchedulerCause, ThreadCause, WaitableCause,
+    CopyCause, Error, ErrorContextCause, ResourceTableError, Result, SchedulerCause, ThreadCause,
+    WaitableCause,
 };
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
@@ -160,7 +161,7 @@ impl TaskTables {
     /// Set the most records the store holds live before a new one
     /// fails. A cap below the records live now removes none of them.
     /// The store's internal entry for the cap is its one caller.
-    #[cfg(any(test, feature = "wast-runner"))]
+    #[cfg(any(test, wcmp_wast_runner))]
     pub fn set_max_records(&mut self, max: usize) {
         self.max_records = max;
     }
@@ -182,7 +183,7 @@ impl TaskTables {
     /// tables as they were.
     pub fn admit_records(&self, count: usize) -> Result<()> {
         if self.record_count().saturating_add(count) > self.max_records() {
-            return Err(Error::Scheduler(SchedulerCause::TableFull));
+            return Err(Error::ResourceTable(ResourceTableError::Full));
         }
         Ok(())
     }

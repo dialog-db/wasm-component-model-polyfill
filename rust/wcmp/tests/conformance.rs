@@ -1684,6 +1684,32 @@ mod tests {
         lines
     }
 
+    #[wcmp_macros::test]
+    async fn it_lowers_the_record_cap_through_the_runners_wasmtime_instance() {
+        // The first set fits. Once `lower` sets the cap to nothing, the
+        // next call's own task does not.
+        let text = r#"(component
+  (import "wasmtime" (instance $wasmtime
+    (export "set-max-table-capacity" (func (param "max" u32)))))
+  (core func $set (canon lower (func $wasmtime "set-max-table-capacity")))
+  (core func $new (canon waitable-set.new))
+  (core module $m
+    (import "" "set" (func $set (param i32)))
+    (import "" "new" (func $new (result i32)))
+    (func (export "new-set") (result i32) (call $new))
+    (func (export "lower") (call $set (i32.const 0))))
+  (core instance $i (instantiate $m (with "" (instance
+    (export "set" (func $set))
+    (export "new" (func $new))))))
+  (func (export "new-set") (result u32) (canon lift (core func $i "new-set")))
+  (func (export "lower") (canon lift (core func $i "lower"))))
+(assert_return (invoke "new-set") (u32.const 1))
+(invoke "lower")
+(assert_trap (invoke "new-set") "resource table has no free keys")
+"#;
+        assert_eq!(outcomes(text).await, vec![None; 4]);
+    }
+
     /// A core module whose function leaves two values on the stack
     /// where its result type declares one: text that encodes and that
     /// no conforming implementation accepts.

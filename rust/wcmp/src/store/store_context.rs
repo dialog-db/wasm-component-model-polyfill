@@ -9,6 +9,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::abi::boundary_call::BoundaryCall;
@@ -699,10 +700,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
         let waker = self.active_waker();
+        let reserved = self.reserve_host_call(subtask)?;
         // The body reaches the host data through the accessor this
         // poll hands it and through nothing else, for the length of
         // a closure it runs with it.
         let outcome = task.poll(self, &waker);
+        drop(reserved);
 
         match outcome {
             // The call never returned, so the subtask's resolution
@@ -737,13 +740,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             Poll::Pending => {
                 let index = {
                     let mut guard = self.lock_tables()?;
-                    // The host task joins the store's records here,
-                    // so a call past the cap on them fails as one
-                    // whose body failed would.
-                    if let Err(error) = guard.tasks.admit_records(1) {
-                        guard.abandon_subtask(subtask);
-                        return Err(error);
-                    }
                     // The subtask starts before its entry is made,
                     // because the status word this call returns is
                     // what tells the caller it started. A subtask
@@ -768,6 +764,29 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(CallStatus::started(index))
             }
         }
+    }
+
+    /// Admit the host task of the call `subtask` records against the
+    /// store's cap on its live records, and count it there for as long
+    /// as the reservation lives: its body's first poll.
+    ///
+    /// Wasmtime pushes the `HostTask` of a call into its store's table
+    /// before it calls the host function
+    /// (`crates/wasmtime/src/runtime/component/concurrent.rs`, `:1962` at
+    /// `v49.0.0-rc.1`). So a call past the cap fails here, before its
+    /// body runs, as one whose body failed would, and what the body
+    /// creates in its first poll counts after the call's own record. A
+    /// task that stays pending joins the store's host tasks, which count
+    /// it from then on.
+    fn reserve_host_call(&mut self, subtask: SubtaskId) -> Result<HostCallReservation> {
+        let count = self.scheduler().shared_host_call_count();
+        let mut guard = self.lock_tables()?;
+        if let Err(error) = guard.tasks.admit_records(1) {
+            guard.abandon_subtask(subtask);
+            return Err(error);
+        }
+        count.fetch_add(1, Ordering::AcqRel);
+        Ok(HostCallReservation(count))
     }
 
     /// The first part of a synchronous lower of a host `async`
@@ -797,7 +816,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
         let waker = self.active_waker();
-        match task.poll(self, &waker) {
+        let reserved = self.reserve_host_call(subtask)?;
+        let outcome = task.poll(self, &waker);
+        drop(reserved);
+        match outcome {
             // The failure is a trap of the guest task that made the
             // call, which poisons the store.
             Poll::Ready(Err(error)) => {
@@ -816,15 +838,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(None)
             }
             Poll::Pending => {
-                // The host task joins the store's records here, so a
-                // call past the cap on them fails as one whose body
-                // failed would.
-                let mut guard = self.lock_tables()?;
-                if let Err(error) = guard.tasks.admit_records(1) {
-                    guard.abandon_subtask(subtask);
-                    return Err(error);
-                }
-                drop(guard);
                 self.scheduler_mut().park_call(task);
                 Ok(Some(subtask))
             }
@@ -3317,6 +3330,16 @@ fn poll_lent<T: 'static, F: Future>(
 ) -> Poll<F::Output> {
     let _poll = PollScope::enter(store, context.waker());
     future.poll(context)
+}
+
+/// The record a host call holds against its store's cap while its body
+/// first runs, given back when the poll ends, however it ends.
+struct HostCallReservation(Arc<AtomicUsize>);
+
+impl Drop for HostCallReservation {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[cfg(test)]

@@ -274,8 +274,10 @@ nothing, because the polyfill's substrate collects its own garbage.
 the runner sets the capacity of the store's concurrent table. The cap
 is set only through the store's internal API, which an integration
 test cannot see, so the crate exports the one entry the item calls
-under its `wast-runner` feature, and only the crate's own tests turn
-the feature on, through a dev-dependency on the crate itself.
+under its `wcmp_wast_runner` cfg. The crate's build script sets the cfg
+only where the build's environment names `WCMP_WAST_RUNNER`, which the
+flake's test and lint builds do. It is not a Cargo feature, so no crate
+that depends on the polyfill can turn it on.
 
 An `assert_trap` passes when the trap's message contains the expected
 text, as in Wasmtime's runner. In a file of `cm/` it also passes when

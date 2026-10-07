@@ -108,7 +108,7 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// the cap: this entry is the only way to it, and only the
     /// crate's tests and the conformance harness's entry call it, so
     /// it is compiled for them alone.
-    #[cfg(any(test, feature = "wast-runner"))]
+    #[cfg(any(test, wcmp_wast_runner))]
     pub fn set_max_records(self, max: usize) -> Result<()> {
         self.context.lock_tables()?.tasks.set_max_records(max);
         Ok(())

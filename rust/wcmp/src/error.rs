@@ -151,7 +151,7 @@ pub enum Error {
     Abi(#[source] Box<AbiError>),
 
     /// The concurrency scheduler could not carry a driver through a
-    /// turn. The carried [`SchedulerCause`] names which of the six
+    /// turn. The carried [`SchedulerCause`] names which of the five
     /// ways this can happen occurred.
     ///
     /// A cause a guest's block fails with reaches the host as this
@@ -161,10 +161,18 @@ pub enum Error {
     /// them as Wasmtime renders a trap, `wasm trap: <cause>`
     /// (`Trap`'s `Display` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`): the deadlock, cannot-block, and
-    /// stack-switch causes. The other three are not traps, and render
+    /// stack-switch causes. The other two are not traps, and render
     /// as `scheduler error: <cause>`.
     #[error("{}{}", .0.prefix(), .0)]
     Scheduler(#[source] SchedulerCause),
+
+    /// The store's table of records refused a new record. The carried
+    /// [`ResourceTableError`] names why. The name and the message are
+    /// those of Wasmtime's `ResourceTableError`, which its store's table
+    /// raises when a task, a thread, or another record is created, with
+    /// no turn involved.
+    #[error(transparent)]
+    ResourceTable(ResourceTableError),
 
     /// A guest broke one of the rules that govern waitables and
     /// waitable sets. The carried [`WaitableCause`] names which rule.
@@ -1014,18 +1022,29 @@ pub enum SchedulerCause {
     /// [`SchedulerCause::RecursiveDriver`] instead.
     #[error("an accessor reached its store outside a poll of that store")]
     StoreNotInPoll,
+}
 
+/// The structured reason the store's table of records refused a new
+/// record.
+///
+/// Carried by [`Error::ResourceTable`]. The name is Wasmtime's, for the
+/// error of the table its store keeps its tasks, threads, and other
+/// records in.
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum ResourceTableError {
     /// A new record would have taken the store past the cap on its
     /// live records. The records that count are tasks, subtasks,
-    /// threads, host tasks, waitable sets, and the shared records of
-    /// streams and futures. The cap is 1,000,000 records unless it
-    /// was lowered, and a cap lowered below the records already live
-    /// removes none of them: only the records created after it fail.
-    /// The message is that of Wasmtime's `ResourceTableError::Full`,
-    /// in `src/runtime/component/resource_table.rs`, so the
-    /// conformance corpus can match it by substring.
+    /// threads, host tasks, waitable sets, error contexts, and the
+    /// shared records of streams and futures. The cap is 1,000,000
+    /// records unless it was lowered, and a cap lowered below the
+    /// records already live removes none of them: only the records
+    /// created after it fail. The message is that of Wasmtime's
+    /// `ResourceTableError::Full`, in
+    /// `src/runtime/component/resource_table.rs`, so the conformance
+    /// corpus can match it by substring.
     #[error("resource table has no free keys")]
-    TableFull,
+    Full,
 }
 
 impl SchedulerCause {
@@ -1037,9 +1056,7 @@ impl SchedulerCause {
             SchedulerCause::Deadlock
             | SchedulerCause::CannotBlock
             | SchedulerCause::StackSwitchNeeded => "wasm trap: ",
-            SchedulerCause::RecursiveDriver
-            | SchedulerCause::StoreNotInPoll
-            | SchedulerCause::TableFull => "scheduler error: ",
+            SchedulerCause::RecursiveDriver | SchedulerCause::StoreNotInPoll => "scheduler error: ",
         }
     }
 }
