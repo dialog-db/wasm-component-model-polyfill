@@ -89,6 +89,7 @@ async fn drive<T: 'static, C, R>(mut store: StoreContext<'_, T>, mut condition: 
 where
     C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>>,
 {
+    store.internal().reachable()?;
     if store.internal().turn_in_flight() {
         return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));
     }
@@ -116,6 +117,11 @@ where
     C: FnMut(&mut StoreContext<'_, T>, &Waker) -> Option<Result<R>>,
 {
     let waker = context.waker();
+
+    // A driver polled where the store refuses itself reaches nothing.
+    if let Err(error) = store.internal().reachable() {
+        return Poll::Ready(Step::Done(Err(error)));
+    }
 
     // A turn that ended in a yield returns control to the host
     // executor before the item that yielded runs. Natively that

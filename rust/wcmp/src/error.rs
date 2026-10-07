@@ -197,6 +197,25 @@ pub enum Error {
     #[error("error-context error: {0}")]
     ErrorContext(#[source] ErrorContextCause),
 
+    /// The store refused this use, because a host function reached it
+    /// past the context it was handed.
+    ///
+    /// The browser runs the resumed stack of a guest call on a
+    /// microtask. A host that forgets the future of that call lets go of
+    /// the store while the call may still run, and a host function the
+    /// call reaches then holds the store through the context it was
+    /// handed, until it returns. If that host function reaches the store
+    /// another way, through a global or a value it captured, the store
+    /// refuses every operation there that can fail, with this error. The
+    /// host data, which cannot fail, panics instead. Wasmtime has no such
+    /// state: its stores cannot be reached past the context a host
+    /// function is handed.
+    #[error(
+        "the store refused this use: a host function that a guest call running on its own \
+         called is running, and holds the store through its context until it returns"
+    )]
+    StoreRefused,
+
     /// The component uses a Component Model feature the polyfill
     /// does not implement yet, or a Wasm feature the backend does not
     /// declare. The feature is named so a caller can tell "not built

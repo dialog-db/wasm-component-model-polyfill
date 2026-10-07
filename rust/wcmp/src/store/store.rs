@@ -13,7 +13,7 @@ use crate::concurrency::{
     Accessor, HostSuspensionProvider, Outcome, Scheduler, StackSwitchingProvider, StoreProvider,
 };
 use crate::engine::Engine;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::internal::EngineInternal;
 use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
 use crate::runtime_layer::{AsContextMut, MaybeSend, Store as RuntimeStore, substrate_failure};
@@ -181,6 +181,9 @@ pub mod internal;
 /// [`StoreInternalExt`]: super::StoreInternalExt
 pub struct Store<T: 'static> {
     inner: crate::runtime_layer::Store<StoreData<T>>,
+    /// The store's identity, kept beside the core store so that a check
+    /// of a handle never reaches a store that refuses itself.
+    id: StoreId,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -238,7 +241,8 @@ impl<T: 'static> Store<T> {
     {
         let inner =
             RuntimeStore::new(engine.inner(), StoreData::new(data)).map_err(substrate_failure)?;
-        let mut store = Self { inner };
+        let id = inner.data().id();
+        let mut store = Self { inner, id };
         // The provider the engine selected is instantiated in the
         // store once, here, and stays in it for the store's life.
         let provider = match engine.suspend_provider() {
@@ -261,11 +265,30 @@ impl<T: 'static> Store<T> {
     }
 
     /// Borrow the host data carried by this store.
+    ///
+    /// # Panics
+    ///
+    /// Where the store refuses itself, because a host function reached
+    /// it past the context it was handed: in the browser, inside a host
+    /// function that a guest call running on its own called, after the
+    /// host forgot the future that waited for that call. Every method
+    /// of the store that returns a [`Result`] fails with
+    /// [`Error::StoreRefused`] there instead, and only this method,
+    /// [`data_mut`](Store::data_mut), [`hostcall_fuel`](Store::hostcall_fuel)
+    /// and [`set_hostcall_fuel`](Store::set_hostcall_fuel), which cannot
+    /// fail, panic. The context a host function is handed is never
+    /// refused.
+    ///
+    /// [`Error::StoreRefused`]: crate::Error::StoreRefused
     pub fn data(&self) -> &T {
         self.inner.data().host()
     }
 
     /// Mutably borrow the host data carried by this store.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
     pub fn data_mut(&mut self) -> &mut T {
         self.inner.data_mut().host_mut()
     }
@@ -274,6 +297,10 @@ impl<T: 'static> Store<T> {
     /// bytes: the default of 128 MiB, or the last amount passed to
     /// [`Store::set_hostcall_fuel`]. Wasmtime calls this budget the
     /// store's hostcall fuel, and names the method the same.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
     pub fn hostcall_fuel(&self) -> usize {
         self.store_data().hostcall_fuel()
     }
@@ -303,6 +330,10 @@ impl<T: 'static> Store<T> {
     ///
     /// The default is 128 MiB, as in Wasmtime, whose
     /// `Store::set_hostcall_fuel` this mirrors.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
     ///
     /// [`AbiCause::CopyBudgetSpent`]: crate::AbiCause::CopyBudgetSpent
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
@@ -344,7 +375,20 @@ impl<T: 'static> Store<T> {
 
     /// The store's process-unique identity. Workspace-internal.
     fn id(&self) -> StoreId {
-        self.store_data().id()
+        self.id
+    }
+
+    /// Refuse a use of a store that the runtime layer refuses, with
+    /// [`Error::StoreRefused`]. Every fallible entry of the store's own
+    /// asks this before it reaches anything the store carries.
+    /// Workspace-internal.
+    ///
+    /// [`Error::StoreRefused`]: crate::Error::StoreRefused
+    fn reachable(&self) -> Result<()> {
+        match self.inner.try_data() {
+            Some(_) => Ok(()),
+            None => Err(Error::StoreRefused),
+        }
     }
 
     /// The store's handle tables. Workspace-internal.
@@ -361,6 +405,7 @@ impl<T: 'static> Store<T> {
     /// Lock the store's handle tables and record state.
     /// Workspace-internal.
     fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
+        self.reachable()?;
         self.store_data().lock_tables()
     }
 
@@ -388,6 +433,7 @@ impl<T: 'static> Store<T> {
     ///
     /// [`Val::Own`]: crate::Val::Own
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+        self.reachable()?;
         self.store_data().resource_new(type_id, rep)
     }
 
@@ -442,6 +488,7 @@ impl<T: 'static> Store<T> {
     /// Dropping the store instead runs no destructor: a handle the
     /// host never released is leaked, as in Wasmtime.
     pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
+        self.reachable()?;
         let mut context = self.context();
         context.internal().resource_drop(handle)
     }
@@ -521,6 +568,7 @@ impl<T: 'static> Store<T> {
     where
         F: AsyncFnOnce(&Accessor<T>) -> R,
     {
+        self.reachable()?;
         let mut context = self.context();
         context.internal().run_concurrent(body).await
     }

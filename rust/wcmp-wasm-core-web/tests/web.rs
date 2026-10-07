@@ -2118,6 +2118,9 @@ unsafe impl<V> Sync for Shared<V> {}
 /// reaches the store past its caller and tries each operation on them.
 struct Objects {
     module: Module,
+    /// A module that imports one function, so that an instantiation
+    /// checks the store of an import.
+    importing: Module,
     instance: Instance,
     func: Func,
     memory: Memory,
@@ -2141,6 +2144,9 @@ async fn objects(engine: &Engine, store: &mut Store<u32>) -> Shared<Objects> {
         .expect("the instance belongs to the store")
         .and_then(Extern::into_tag)
         .expect("the instance exports `oops`");
+    let importing = Module::compile(engine, wasm!(r#"(module (import "host" "f" (func)))"#))
+        .await
+        .expect("the module compiles");
     Shared(Objects {
         func: Func::new(&mut *store, FuncType::new([], []), |_, _, _| Ok(()))
             .expect("the store makes a host function"),
@@ -2161,6 +2167,7 @@ async fn objects(engine: &Engine, store: &mut Store<u32>) -> Shared<Objects> {
         any_ref: AnyRef::from_i31(&mut *store, I31::new_i32(5).expect("5 fits"))
             .expect("the store makes an `i31ref`"),
         module,
+        importing,
         instance,
         tag,
     })
@@ -2197,9 +2204,14 @@ fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
         "the store names its engine"
     );
     assert!(format!("{store:?}").starts_with("Store"));
+    assert!(
+        store.try_data().is_none() && store.try_data_mut().is_none(),
+        "the store answers that it refuses its data"
+    );
 
     let Objects {
         module,
+        importing,
         instance,
         func,
         memory,
@@ -2210,6 +2222,10 @@ fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
         any_ref,
     } = objects;
     let i32_type = GlobalType::new(ValType::I32, Mutability::Var);
+    let funcref_global = GlobalType::new(ValType::FUNCREF, Mutability::Var);
+    // A value that carries a handle, which the store checks before it
+    // reaches the backend.
+    let handle = Val::FuncRef(Some(*func));
     let funcref_type = TableType::new(RefType::FUNCREF, 1, None);
     let five = I31::new_i32(5).expect("5 fits");
     let mut buffer = [0; 4];
@@ -2217,6 +2233,14 @@ fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
         (
             "Instance::instantiate",
             ready(Instance::instantiate(&mut *store, module, &[])),
+        ),
+        (
+            "Instance::instantiate with an import",
+            ready(Instance::instantiate(
+                &mut *store,
+                importing,
+                &[Extern::Func(*func)],
+            )),
         ),
         (
             "Instance::get_export",
@@ -2284,12 +2308,20 @@ fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
             "Global::new",
             done(Global::new(&mut *store, i32_type, Val::I32(1))),
         ),
+        (
+            "Global::new with a handle",
+            done(Global::new(&mut *store, funcref_global, handle)),
+        ),
         ("Global::ty", done(global.ty(&*store))),
         ("Global::get", done(global.get(&mut *store))),
         ("Global::set", done(global.set(&mut *store, Val::I32(1)))),
         (
             "Table::new",
             done(Table::new(&mut *store, funcref_type, Val::FuncRef(None))),
+        ),
+        (
+            "Table::new with a handle",
+            done(Table::new(&mut *store, funcref_type, handle)),
         ),
         ("Table::ty", done(table.ty(&*store))),
         ("Table::size", done(table.size(&*store))),
@@ -2301,6 +2333,14 @@ fn sweep(store: &mut Store<u32>, objects: &Objects) -> Reached {
         (
             "Table::grow",
             done(table.grow(&mut *store, 1, Val::FuncRef(None))),
+        ),
+        (
+            "Table::set with a handle",
+            done(table.set(&mut *store, 0, handle)),
+        ),
+        (
+            "Table::grow with a handle",
+            done(table.grow(&mut *store, 1, handle)),
         ),
         ("Tag::ty", done(tag.ty(&*store))),
         ("ExternRef::new", done(ExternRef::new(&mut *store, ()))),

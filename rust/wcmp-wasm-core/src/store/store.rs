@@ -72,6 +72,16 @@ impl<T: 'static> Store<T> {
         self.inner.data_mut().user_mut::<T>()
     }
 
+    /// The host's data in the store, or `None` where
+    /// [`data`](Store::data) would panic: inside a host function that a
+    /// guest call running on its own called, after the host forgot the
+    /// future that waited for that call. A caller that must not panic,
+    /// such as a wrapper that checks the store before it reaches the
+    /// data, reaches it through this.
+    pub fn try_data(&self) -> Option<&T> {
+        self.inner.try_data().map(|data| data.user::<T>())
+    }
+
     /// The host's data in the store, mutably, or `None` where
     /// [`data_mut`](Store::data_mut) would panic: inside a host function
     /// that a guest call running on its own called, after the host forgot

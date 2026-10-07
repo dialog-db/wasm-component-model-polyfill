@@ -225,6 +225,7 @@ impl<T: 'static> Linker<T> {
         component: &Component,
     ) -> Result<Instance> {
         let mut store = store.internal().context();
+        store.internal().reachable()?;
         let resolution = resolve_imports(component, self)?;
         if store.internal().turn_in_flight() {
             return Err(Error::Scheduler(SchedulerCause::RecursiveDriver));

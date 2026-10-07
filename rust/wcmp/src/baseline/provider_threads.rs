@@ -2055,6 +2055,215 @@ async fn it_frees_a_store_a_host_function_drops_while_the_thread_that_called_it_
     );
 }
 
+/// A stackful export that waits on `hold`, then calls the host's
+/// `reach-store`, notes `1`, and returns 7.
+#[cfg(target_arch = "wasm32")]
+const REACHES_THE_STORE_AFTER_A_BLOCK: &[u8] = component!(
+    r#"
+    (component
+      (import "note" (func $note (param "step" u32)))
+      (import "hold" (func $hold async))
+      (import "reach-store" (func $reach-store))
+      (core func $note (canon lower (func $note)))
+      (core func $hold (canon lower (func $hold)))
+      (core func $reach-store (canon lower (func $reach-store)))
+      (core func $task-return (canon task.return (result u32)))
+      (core module $m
+        (import "" "note" (func $note (param i32)))
+        (import "" "hold" (func $hold))
+        (import "" "reach-store" (func $reach-store))
+        (import "" "task.return" (func $task-return (param i32)))
+        (func (export "reach-store-after-hold")
+          (call $hold)
+          (call $reach-store)
+          (call $note (i32.const 1))
+          (call $task-return (i32.const 7))))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "note" (func $note))
+        (export "hold" (func $hold))
+        (export "reach-store" (func $reach-store))
+        (export "task.return" (func $task-return))))))
+      (func (export "reach-store-after-hold") async (result u32)
+        (canon lift (core func $i "reach-store-after-hold") async)))
+    "#
+);
+
+/// What the host function `reach-store` tries its store with, past the
+/// context it was handed.
+#[cfg(target_arch = "wasm32")]
+struct Sweep {
+    linker: Linker<NotesItsDrop>,
+    component: Component,
+    module: crate::Module,
+    func: Func,
+    typed: crate::TypedFunc<(), u32>,
+    resource: crate::ResourceTypeId,
+    handle: crate::ResourceHandle,
+}
+
+/// What each operation `reach-store` tried answered, by its name.
+#[cfg(target_arch = "wasm32")]
+type Swept = Vec<(&'static str, Result<(), Error>)>;
+
+/// The store a test keeps for `reach-store`, what the host function
+/// tries it with, and what it found.
+#[cfg(target_arch = "wasm32")]
+type Reached = (Option<Store<NotesItsDrop>>, Option<Sweep>, Option<Swept>);
+
+#[cfg(target_arch = "wasm32")]
+std::thread_local! {
+    /// The store, and what `reach-store` tries it with, of the test of a
+    /// store reached past the context a host function was handed.
+    static REACHED: core::cell::RefCell<Reached> =
+        const { core::cell::RefCell::new((None, None, None)) };
+}
+
+/// Tries every fallible operation of the polyfill on `store`, which a
+/// host function reached past the context it was handed.
+#[cfg(target_arch = "wasm32")]
+fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &Sweep) -> Swept {
+    /// What `future` answers on its first poll. A future that is not
+    /// ready answers `Ok`, which no refusal is.
+    fn first_poll<T>(future: impl Future<Output = Result<T, Error>>) -> Result<(), Error> {
+        match poll_once(&mut Box::pin(future)) {
+            Poll::Ready(outcome) => outcome.map(drop),
+            Poll::Pending => Ok(()),
+        }
+    }
+    let mut swept: Swept = vec![
+        (
+            "Store::resource_new",
+            store.resource_new(sweep.resource, 2).map(drop),
+        ),
+        ("Store::resource_drop", store.resource_drop(sweep.handle)),
+        ("Func::call", first_poll(sweep.func.call(store, &[]))),
+        ("TypedFunc::call", first_poll(sweep.typed.call(store, ()))),
+        (
+            "Linker::instantiate",
+            first_poll(sweep.linker.instantiate(store, &sweep.component)),
+        ),
+        (
+            "Module::instantiate",
+            first_poll(sweep.module.instantiate(store, &[])),
+        ),
+        (
+            "Store::run_concurrent",
+            first_poll(store.run_concurrent(async |_: &Accessor<NotesItsDrop>| ())),
+        ),
+    ];
+    let mut context = store.as_context_mut();
+    swept.push((
+        "StoreContext::resource_new",
+        context.resource_new(sweep.resource, 3).map(drop),
+    ));
+    swept.push((
+        "StreamReader::new",
+        crate::StreamReader::<u32>::new(&mut context, Vec::new()).map(drop),
+    ));
+    swept.push((
+        "FutureReader::new",
+        crate::FutureReader::<u32>::new(&mut context, async { Ok::<u32, Error>(5) }).map(drop),
+    ));
+    swept
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wcmp_macros::test]
+async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_past_its_context() {
+    // The host forgets the call's future once its first poll has resumed
+    // the export's thread, and keeps the store where the host function
+    // `reach-store` reaches it, past the context it was handed. The
+    // runtime layer refuses the store there, and every operation of the
+    // polyfill that can fail answers the refusal as a structured error,
+    // with no panic, and changes nothing.
+    let engine = engine(true);
+    assert_eq!(
+        engine.suspend_provider(),
+        SuspendProviderKind::HostSuspension
+    );
+    let notes: Notes = Arc::default();
+    let mut linker = noting::<NotesItsDrop>(&engine, &notes);
+    linker
+        .root()
+        .func_wrap_concurrent("hold", |_accessor: &Accessor<NotesItsDrop>, (): ()| {
+            PendingOnce { polled: false }
+        })
+        .expect("the registration of `hold`");
+    linker
+        .root()
+        .func_wrap(
+            "reach-store",
+            |_: HostCall<'_, NotesItsDrop>, (): ()| -> Result<(), Error> {
+                REACHED.with(|reached| {
+                    let mut reached = reached.borrow_mut();
+                    let (store, sweep, swept) = &mut *reached;
+                    let store = store.as_mut().expect("the test kept the store");
+                    let sweep = sweep.as_ref().expect("the test kept the sweep");
+                    *swept = Some(sweep_the_store(store, sweep));
+                });
+                Ok(())
+            },
+        )
+        .expect("the registration of `reach-store`");
+    let resource = linker
+        .root()
+        .resource("thing", |_: &mut NotesItsDrop, _| Ok(()))
+        .expect("the registration of `thing`");
+    let component = Component::new(&engine, REACHES_THE_STORE_AFTER_A_BLOCK)
+        .await
+        .expect("component parses");
+    let module = crate::Module::new(&engine, wcmp_macros::wasm!("(module)"))
+        .await
+        .expect("the module compiles");
+    let mut store = Store::new(&engine, NotesItsDrop(notes.clone())).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiate");
+    let handle = store.resource_new(resource, 1).expect("a host handle");
+    {
+        let export = func(&instance, "reach-store-after-hold");
+        let mut call = Box::pin(export.call(&mut store, &[]));
+        assert!(
+            poll_once(&mut call).is_pending(),
+            "the resumed thread runs on a microtask"
+        );
+        core::mem::forget(call);
+    }
+    let sweep = Sweep {
+        linker,
+        component,
+        module,
+        func: func(&instance, "reach-store-after-hold"),
+        typed: func(&instance, "reach-store-after-hold")
+            .typed()
+            .expect("the export takes nothing and returns a `u32`"),
+        resource,
+        handle,
+    };
+    REACHED.with(|reached| *reached.borrow_mut() = (Some(store), Some(sweep), None));
+    run_microtasks_until(&notes, 1).await;
+
+    let (store, _, swept) = REACHED.with(|reached| core::mem::take(&mut *reached.borrow_mut()));
+    let swept = swept.expect("`reach-store` ran");
+    assert_eq!(swept.len(), 10, "every operation was tried");
+    for (operation, outcome) in swept {
+        assert!(
+            matches!(outcome, Err(Error::StoreRefused)),
+            "`{operation}` fails with the refusal: {outcome:?}"
+        );
+    }
+    let mut store = store.expect("the store is back");
+    assert_eq!(
+        notes.lock().expect("notes").clone(),
+        vec![1],
+        "the thread ran on past `reach-store`"
+    );
+    store
+        .resource_drop(handle)
+        .expect("the refused drop left the handle live");
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wcmp_macros::test]
 async fn it_traps_a_thread_of_a_dropped_store_past_a_guest_handler_that_catches_every_exception() {

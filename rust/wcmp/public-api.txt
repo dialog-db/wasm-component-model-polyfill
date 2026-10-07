@@ -106,6 +106,7 @@ pub wcmp::Error::InvalidComponentBinary::offset: u64
 pub wcmp::Error::Link(alloc::boxed::Box<wcmp::LinkError>)
 pub wcmp::Error::NotAComponent
 pub wcmp::Error::Scheduler(wcmp::SchedulerCause)
+pub wcmp::Error::StoreRefused
 pub wcmp::Error::Task(wcmp::TaskCause)
 pub wcmp::Error::Thread(wcmp::ThreadCause)
 pub wcmp::Error::Trap(anyhow::Error)

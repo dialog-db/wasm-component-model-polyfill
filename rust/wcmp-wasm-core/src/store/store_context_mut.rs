@@ -31,6 +31,12 @@ impl<T: 'static> StoreContextMut<'_, T> {
         self.store.data().user::<T>()
     }
 
+    /// The host's data in the store, or `None` where
+    /// [`data`](StoreContextMut::data) would panic.
+    pub fn try_data(&self) -> Option<&T> {
+        self.store.try_data().map(|data| data.user::<T>())
+    }
+
     /// The host's data in the store, mutably.
     ///
     /// # Panics

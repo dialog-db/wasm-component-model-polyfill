@@ -220,6 +220,7 @@ impl Func {
         values: C,
     ) -> Result<C::Output> {
         let mut store = store.internal().context();
+        store.internal().reachable()?;
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
@@ -459,6 +460,7 @@ impl Func {
         store: &mut StoreContext<'_, T>,
         values: C,
     ) -> Result<Delivery<C::Output>> {
+        store.internal().reachable()?;
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }

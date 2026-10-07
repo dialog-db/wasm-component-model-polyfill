@@ -139,11 +139,21 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     }
 
     /// The store's host data.
+    ///
+    /// # Panics
+    ///
+    /// Where [`Store::data`](super::Store::data) does, for a context made
+    /// from a store that refuses itself. The context a host function is
+    /// handed is never refused.
     pub fn data(&self) -> &T {
         self.store_data().host()
     }
 
     /// The store's host data, mutably.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](StoreContext::data) does.
     pub fn data_mut(&mut self) -> &mut T {
         self.store_data_mut().host_mut()
     }
@@ -159,11 +169,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// [`Store::resource_new`]: super::Store::resource_new
     /// [`Accessor::with`]: crate::Accessor::with
     pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+        self.reachable()?;
         self.store_data().resource_new(type_id, rep)
     }
 
     /// The copy budget each crossing of the store starts with. See
     /// [`Store::hostcall_fuel`].
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](StoreContext::data) does.
     ///
     /// [`Store::hostcall_fuel`]: super::Store::hostcall_fuel
     pub fn hostcall_fuel(&self) -> usize {
@@ -173,6 +188,10 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Set the copy budget each later crossing of the store starts
     /// with. See [`Store::set_hostcall_fuel`].
     ///
+    /// # Panics
+    ///
+    /// Where [`data`](StoreContext::data) does.
+    ///
     /// [`Store::set_hostcall_fuel`]: super::Store::set_hostcall_fuel
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.store_data_mut().set_hostcall_fuel(fuel);
@@ -181,6 +200,22 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The store's process-unique identity. Workspace-internal.
     fn id(&self) -> StoreId {
         self.store_data().id()
+    }
+
+    /// Refuse a use of a store that the runtime layer refuses, with
+    /// [`Error::StoreRefused`]: a context made from a [`Store`] that a
+    /// host function reached past the context it was handed. Every
+    /// fallible entry of the polyfill asks this before it reaches
+    /// anything the store carries, so that only the infallible reads of
+    /// the host data and the copy budget panic there.
+    /// Workspace-internal.
+    ///
+    /// [`Store`]: super::Store
+    fn reachable(&self) -> Result<()> {
+        match self.runtime.try_data() {
+            Some(_) => Ok(()),
+            None => Err(Error::StoreRefused),
+        }
     }
 
     /// The store's handle tables. Workspace-internal.
@@ -197,6 +232,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Lock the store's handle tables and record state.
     /// Workspace-internal.
     fn lock_tables(&self) -> Result<MutexGuard<'_, HandleTables>> {
+        self.reachable()?;
         self.store_data().lock_tables()
     }
 
@@ -1579,6 +1615,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// with the cannot-enter cause. Every entry that would run guest
     /// code asks this before it changes anything. Workspace-internal.
     fn enter_guest(&self) -> Result<()> {
+        self.reachable()?;
         if self.poisoned() {
             return Err(Error::Task(TaskCause::CannotEnter));
         }

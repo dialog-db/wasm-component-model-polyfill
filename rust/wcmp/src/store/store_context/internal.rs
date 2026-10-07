@@ -82,6 +82,11 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.id()
     }
 
+    /// Refuse a use of a store that the runtime layer refuses.
+    pub fn reachable(self) -> Result<()> {
+        self.context.reachable()
+    }
+
     /// The store's handle tables.
     pub fn tables(self) -> &'b Arc<Mutex<HandleTables>> {
         self.context.tables()

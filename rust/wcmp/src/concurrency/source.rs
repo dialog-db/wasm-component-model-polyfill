@@ -115,7 +115,10 @@ impl<T> Source<'_, T> {
                 buffer.extend(items.drain(..count));
                 Ok(())
             }
-            Inner::Guest { write, taken } => lift_items(store, write, taken, buffer, count),
+            Inner::Guest { write, taken } => {
+                store.internal().reachable()?;
+                lift_items(store, write, taken, buffer, count)
+            }
         }
     }
 

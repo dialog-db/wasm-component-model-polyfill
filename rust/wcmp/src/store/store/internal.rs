@@ -116,6 +116,7 @@ impl<'a, T: 'static> StoreInternal<'a, T> {
     /// Refuse a host entry into a guest of a poisoned store, with the
     /// cannot-enter cause.
     pub fn enter_guest(self) -> Result<()> {
+        self.store.reachable()?;
         if self.store.store_data().poisoned() {
             return Err(Error::Task(TaskCause::CannotEnter));
         }

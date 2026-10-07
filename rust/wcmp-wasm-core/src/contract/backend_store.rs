@@ -58,6 +58,16 @@ pub trait BackendStore: MaybeSend {
     /// [`data`](BackendStore::data) does.
     fn data_mut(&mut self) -> &mut StoreData;
 
+    /// The data the store was made with, or `None` where
+    /// [`data`](BackendStore::data) would panic, for a caller that must
+    /// not.
+    ///
+    /// The default answers [`data`](BackendStore::data), for a backend
+    /// that never refuses the store.
+    fn try_data(&self) -> Option<&StoreData> {
+        Some(self.data())
+    }
+
     /// The data the store was made with, mutably, or `None` where
     /// [`data_mut`](BackendStore::data_mut) would panic, for a caller that
     /// must not, such as the `Drop` of a store.
