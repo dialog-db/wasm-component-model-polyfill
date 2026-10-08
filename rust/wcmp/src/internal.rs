@@ -162,16 +162,22 @@ pub trait StreamAnyInternal {
 
 /// The crate-internal face of [`ErrorContextAny`](crate::ErrorContextAny).
 pub trait ErrorContextAnyInternal {
-    /// The untyped value of the error context `context`.
-    fn new(context: ErrorContextId) -> Self;
+    /// The untyped value of the error context `context` of the store
+    /// `store`.
+    fn new(store: StoreId, context: ErrorContextId) -> Self;
+    /// The store the value belongs to.
+    fn store_id(&self) -> StoreId;
     /// The error context the value names.
     fn context(&self) -> ErrorContextId;
 }
 
 /// The crate-internal face of [`ErrorContext`](crate::ErrorContext).
 pub trait ErrorContextInternal {
-    /// The typed value of the error context `context`.
-    fn new(context: ErrorContextId) -> Self;
+    /// The typed value of the error context `context` of the store
+    /// `store`.
+    fn new(store: StoreId, context: ErrorContextId) -> Self;
+    /// The store the value belongs to.
+    fn store_id(&self) -> StoreId;
     /// The error context the value names.
     fn context(&self) -> ErrorContextId;
 }

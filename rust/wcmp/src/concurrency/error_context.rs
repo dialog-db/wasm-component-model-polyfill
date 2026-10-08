@@ -8,6 +8,8 @@
 
 use crate::internal::ErrorContextInternal;
 
+use crate::store::StoreId;
+
 use super::error_context_id::ErrorContextId;
 
 /// An error context (`error-context`), as a typed host function or a
@@ -16,19 +18,29 @@ use super::error_context_id::ErrorContextId;
 /// It is the typed face of [`ErrorContextAny`](crate::ErrorContextAny)
 /// and follows the same rules: it has no operation, a lift to the host
 /// marks its record host-held so the record stays until the store
-/// drops, and a lower into a guest gives the guest a handle of its
-/// own. It implements [`ComponentValue`](crate::ComponentValue), which
+/// drops, and a lower into a guest gives the guest a handle of its own.
+/// Passed to a call into another store, it fails with the wrong-store
+/// cause before the call changes anything, as
+/// [`ErrorContextAny`](crate::ErrorContextAny) states. Held in a
+/// `ComponentValue` type of the host's own, it is not checked before the
+/// call; its lower inside the call fails the call, which poisons the
+/// store. It implements [`ComponentValue`](crate::ComponentValue), which
 /// converts it to and from a
 /// [`Val::ErrorContext`](crate::Val::ErrorContext) and lifts and
 /// lowers it as a typed value.
 #[derive(Debug)]
 pub struct ErrorContext {
+    store: StoreId,
     context: ErrorContextId,
 }
 
 impl ErrorContextInternal for ErrorContext {
-    fn new(context: ErrorContextId) -> Self {
-        Self { context }
+    fn new(store: StoreId, context: ErrorContextId) -> Self {
+        Self { store, context }
+    }
+
+    fn store_id(&self) -> StoreId {
+        self.store
     }
 
     fn context(&self) -> ErrorContextId {

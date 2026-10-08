@@ -51,14 +51,15 @@ use crate::concurrency::{
     ErrorContext, ErrorContextAny, FutureAny, FutureReader, StreamAny, StreamReader,
 };
 use crate::error::{
-    AbiCause, AbiError, AbiPosition, Error, Result, TypeMismatch, TypeMismatchPosition,
-    TypeRendering,
+    AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, TypeMismatch,
+    TypeMismatchPosition, TypeRendering,
 };
 use crate::internal::{
     ErrorContextAnyInternal, ErrorContextInternal, FutureAnyInternal, FutureReaderInternal,
     StreamAnyInternal, StreamReaderInternal,
 };
 use crate::runtime_layer::Val as RuntimeVal;
+use crate::store::StoreId;
 use crate::types::{
     FixedLengthListType, FutureType, ListType, MapType, OptionType, PrimitiveType, StreamType,
     ValueType,
@@ -73,6 +74,18 @@ pub trait ComponentValue: Sized + Send + Sync + 'static {
     fn from_val(val: &Val) -> Result<Self>;
     /// Encode this Rust value as a [`Val`].
     fn to_val(self) -> Val;
+
+    /// Refuse this value, with the wrong-store cause, when it holds a
+    /// host value of a store other than `store`, before a call into
+    /// that store creates anything. The default holds none; the
+    /// crate's containers check each value they hold. A host's own type
+    /// cannot override it, so an error context inside one is checked
+    /// only when it lowers, inside the call.
+    #[doc(hidden)]
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        let _ = store;
+        Ok(())
+    }
 
     /// Lower this value, declared `ty`, into the flat core slots it
     /// occupies, appending them to `out`. The default lowers
@@ -153,6 +166,15 @@ pub trait ComponentParameters: Sized + Send + Sync + 'static {
     /// ABI lower path consumes. The order matches
     /// [`Self::parameter_types`].
     fn into_vals(self) -> Vec<Val>;
+
+    /// Refuse this tuple, with the wrong-store cause, when one of its
+    /// values holds a host value of a store other than `store`, as
+    /// [`ComponentValue`] checks one value. The default holds none.
+    #[doc(hidden)]
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        let _ = store;
+        Ok(())
+    }
 
     /// Lower this tuple as the parameters of `signature` and answer
     /// the core arguments of the call: flat slots, or the address of
@@ -328,6 +350,9 @@ impl<T: ComponentValue> ComponentValue for Vec<T> {
     fn to_val(self) -> Val {
         Val::List(self.into_iter().map(T::to_val).collect())
     }
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        self.iter().try_for_each(|item| item.check_store(store))
+    }
 
     fn lower_flat<Data: 'static>(
         self,
@@ -477,6 +502,9 @@ impl<T: ComponentValue, const N: usize> ComponentValue for [T; N] {
     fn to_val(self) -> Val {
         Val::FixedLengthList(self.into_iter().map(T::to_val).collect())
     }
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        self.iter().try_for_each(|item| item.check_store(store))
+    }
 }
 
 /// A `map<K, V>` as a Rust hash map, as Wasmtime maps it. Entries
@@ -502,6 +530,12 @@ impl<K: ComponentValue + Eq + Hash, V: ComponentValue> ComponentValue for HashMa
                 .collect(),
         )
     }
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        self.iter().try_for_each(|(key, value)| {
+            key.check_store(store)?;
+            value.check_store(store)
+        })
+    }
 }
 
 impl<T: ComponentValue> ComponentValue for Option<T> {
@@ -517,6 +551,10 @@ impl<T: ComponentValue> ComponentValue for Option<T> {
     }
     fn to_val(self) -> Val {
         Val::Option(self.map(|inner| Box::new(inner.to_val())))
+    }
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        self.as_ref()
+            .map_or(Ok(()), |inner| inner.check_store(store))
     }
 }
 
@@ -621,12 +659,21 @@ impl ComponentValue for ErrorContext {
     }
     fn from_val(val: &Val) -> Result<Self> {
         match val {
-            Val::ErrorContext(context) => Ok(ErrorContext::new(context.context())),
+            Val::ErrorContext(context) => {
+                Ok(ErrorContext::new(context.store_id(), context.context()))
+            }
             _ => Err(value_mismatch(val)),
         }
     }
     fn to_val(self) -> Val {
-        Val::ErrorContext(ErrorContextAny::new(self.context()))
+        Val::ErrorContext(ErrorContextAny::new(self.store_id(), self.context()))
+    }
+    fn check_store(&self, store: StoreId) -> Result<()> {
+        if self.store_id() == store {
+            Ok(())
+        } else {
+            Err(Error::from(InstantiationError::WrongStore))
+        }
     }
     fn lift_flat<D: 'static>(
         cx: &mut BoundaryContext<'_, D>,
@@ -694,6 +741,10 @@ macro_rules! impl_component_parameters {
             }
             fn into_vals(self) -> Vec<Val> {
                 vec![ $( self.$index.to_val(), )+ ]
+            }
+            fn check_store(&self, store: StoreId) -> Result<()> {
+                $( self.$index.check_store(store)?; )+
+                Ok(())
             }
             fn lower_arguments<Data: 'static>(
                 self,

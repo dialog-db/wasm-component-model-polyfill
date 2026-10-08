@@ -564,10 +564,12 @@ pub enum InstantiationError {
     },
 
     /// A function handle was called with a [`Store`] other than the
-    /// one its [`Instance`] was created in, or a core item from one
-    /// store was supplied as an import into another. An instance's
-    /// core state lives in exactly one store; the runtime substrate
-    /// cannot address it through another.
+    /// one its [`Instance`] was created in, a core item from one
+    /// store was supplied as an import into another, or an error
+    /// context lifted in one store was lowered into another. An
+    /// instance's core state lives in exactly one store; the runtime
+    /// substrate cannot address it through another, and an error
+    /// context names a record of its own store only.
     ///
     /// [`Store`]: crate::Store
     /// [`Instance`]: crate::Instance

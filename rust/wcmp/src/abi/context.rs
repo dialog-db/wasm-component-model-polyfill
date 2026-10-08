@@ -51,7 +51,7 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::{CanonOptions, StringEncoding};
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::{StoreContextMut, Val as RuntimeVal, into_anyhow};
-use crate::store::StoreData;
+use crate::store::{StoreData, StoreId};
 use crate::types::ValueType;
 
 /// The context of one canonical-ABI crossing.
@@ -110,6 +110,9 @@ pub struct BoundaryContext<'a, T: 'static> {
     /// anywhere else goes to the host, and its lift marks the record
     /// host-held.
     between_guests: bool,
+    /// The identity of the store the crossing runs in, which a host
+    /// value that belongs to one store is checked against.
+    store_id: StoreId,
 }
 
 /// A range of guest bytes the crossing holds on the host side: the
@@ -148,6 +151,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
     ) -> Self {
         let strategy = AbiStrategy::select(&options);
         let budget_left = store.data().hostcall_fuel();
+        let store_id = store.data().id();
         Self {
             store,
             options,
@@ -160,6 +164,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
             accesses: 0,
             budget_left,
             between_guests: false,
+            store_id,
         }
     }
 
@@ -177,6 +182,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
         let strategy = AbiStrategy::select(&destination);
         let source_strategy = AbiStrategy::select(&source);
         let budget_left = store.data().hostcall_fuel();
+        let store_id = store.data().id();
         Self {
             store,
             options: destination,
@@ -189,6 +195,7 @@ impl<'a, T: 'static> BoundaryContext<'a, StoreData<T>> {
             accesses: 0,
             budget_left,
             between_guests: false,
+            store_id,
         }
     }
 }
@@ -211,6 +218,11 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// The task or subtask the crossing counts against.
     pub fn scope(&self) -> Option<Scope> {
         self.scope
+    }
+
+    /// The identity of the store the crossing runs in.
+    pub fn store_id(&self) -> StoreId {
+        self.store_id
     }
 
     /// Mark the crossing as one side of a move of values from one

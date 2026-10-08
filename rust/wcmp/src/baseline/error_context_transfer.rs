@@ -29,13 +29,22 @@
 
 #![cfg(test)]
 
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use std::sync::{Arc, Mutex};
+
+use crate::abi::context::BoundaryContext;
+use crate::abi::instance::BoundaryInstance;
 use crate::concurrency::ErrorContextId;
-use crate::internal::FuncInternal;
+use crate::internal::{ErrorContextAnyInternal, FuncInternal};
 use crate::resource::TableId;
+use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Component, ComponentValue, Engine, EngineConfig, Error, ErrorContext, Func, Instance, Linker,
-    Store, Val,
+    AbiCause, AbiPosition, Component, ComponentValue, Engine, EngineConfig, Error, ErrorContext,
+    ErrorContextAny, Func, FunctionParameter, FunctionType, FutureReader, HostCall, Instance,
+    InstantiationError, Linker, PrimitiveType, Source, Store, StoreContext, StreamConsumer,
+    StreamReader, StreamResult, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -70,8 +79,9 @@ const TABLE_FULL: &str = "resource table has no free keys";
 /// `give-records` pass a readable end. `write` and `write-records`
 /// are the asynchronous copy built-ins, and `poke` writes a word of
 /// the sender's memory. `new-set` hands out a handle of another kind,
-/// and `leak` returns the index it is given to the host as an error
-/// context.
+/// `leak` returns the index it is given to the host as an error
+/// context, and `hand-out` the readable end at the index it is given
+/// as a stream of them.
 const COMPOSED: &[u8] = component!(
     r#"
     (component
@@ -268,6 +278,8 @@ const COMPOSED: &[u8] = component!(
           (canon lift (core func $i "give-records")))
         (func (export "leak") (param "h" u32) (result error-context)
           (canon lift (core func $i "leak")))
+        (func (export "hand-out") (param "e" u32) (result $s)
+          (canon lift (core func $i "leak")))
         (func (export "poke") (param "p" u32) (param "v" u32) (canon lift (core func $i "poke")))
         (func (export "poke8") (param "p" u32) (param "v" u32)
           (canon lift (core func $i "poke8"))))
@@ -281,6 +293,8 @@ const COMPOSED: &[u8] = component!(
         (with "take-stream" (func $r "take-stream"))
         (with "take-records" (func $r "take-records"))))
       (export "take-one" (func $r "take-one"))
+      (export "take-list" (func $r "take-list"))
+      (export "take-stream" (func $r "take-stream"))
       (export "message" (func $r "message"))
       (export "drop" (func $r "drop"))
       (export "read" (func $r "read"))
@@ -300,24 +314,114 @@ const COMPOSED: &[u8] = component!(
       (export "give-stream" (func $s "give-stream"))
       (export "give-records" (func $s "give-records"))
       (export "leak" (func $s "leak"))
+      (export "hand-out" (func $s "hand-out"))
       (export "poke" (func $s "poke"))
       (export "poke8" (func $s "poke8")))
+    "#
+);
+
+/// A component that hands an error context to the host and takes one
+/// back, through its import `relay`, and reads a future of error
+/// contexts the host writes.
+///
+/// `new`, `poke8`, `message`, and `drop` are the sender's and the
+/// receiver's functions of [`COMPOSED`] under the same names. `relay`
+/// passes the error context at the index it is given to the import
+/// and answers the index of the one the import returned.
+/// `take-future` answers the index the readable end it is given took,
+/// `future-read` is the asynchronous read built-in, and `peek` reads
+/// the component's memory.
+const RELAY: &[u8] = component!(
+    r#"
+    (component
+      (type $f (future error-context))
+      (import "relay" (func $relay (param "e" error-context) (result error-context)))
+      (core module $libc
+        (memory (export "memory") 1)
+        (global $bump (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $ptr i32)
+          (local.set $ptr
+            (i32.and
+              (i32.add (global.get $bump) (i32.sub (local.get 2) (i32.const 1)))
+              (i32.sub (i32.const 0) (local.get 2))))
+          (global.set $bump (i32.add (local.get $ptr) (local.get 3)))
+          (local.get $ptr)))
+      (core instance $libc (instantiate $libc))
+      (core func $new (canon error-context.new (memory (core memory $libc "memory"))))
+      (core func $debug-message
+        (canon error-context.debug-message (memory (core memory $libc "memory"))
+          (realloc (core func $libc "realloc"))))
+      (core func $drop (canon error-context.drop))
+      (core func $future-read
+        (canon future.read $f async (memory (core memory $libc "memory"))))
+      (core func $relay (canon lower (func $relay)))
+      (core module $m
+        (import "libc" "memory" (memory 1))
+        (import "" "new" (func $new (param i32 i32) (result i32)))
+        (import "" "debug-message" (func $debug-message (param i32 i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (import "" "future-read" (func $future-read (param i32 i32) (result i32)))
+        (import "" "relay" (func $relay (param i32) (result i32)))
+        (func (export "new") (param i32 i32) (result i32)
+          (call $new (local.get 0) (local.get 1)))
+        (func (export "relay") (param i32) (result i32) (call $relay (local.get 0)))
+        (func (export "message") (param i32) (result i32)
+          (call $debug-message (local.get 0) (i32.const 16))
+          (i32.const 16))
+        (func (export "drop") (param i32) (call $drop (local.get 0)))
+        (func (export "take") (param i32) (result i32) (local.get 0))
+        (func (export "future-read") (param i32 i32) (result i32)
+          (call $future-read (local.get 0) (local.get 1)))
+        (func (export "peek") (param i32) (result i32) (i32.load (local.get 0)))
+        (func (export "poke8") (param i32 i32) (i32.store8 (local.get 0) (local.get 1))))
+      (core instance $i (instantiate $m
+        (with "libc" (instance $libc))
+        (with "" (instance
+          (export "new" (func $new))
+          (export "debug-message" (func $debug-message))
+          (export "drop" (func $drop))
+          (export "future-read" (func $future-read))
+          (export "relay" (func $relay))))))
+      (func (export "new") (param "p" u32) (param "n" u32) (result u32)
+        (canon lift (core func $i "new")))
+      (func (export "relay") (param "h" u32) (result u32) (canon lift (core func $i "relay")))
+      (func (export "message") (param "h" u32) (result string)
+        (canon lift (core func $i "message") (memory (core memory $libc "memory"))))
+      (func (export "drop") (param "h" u32) (canon lift (core func $i "drop")))
+      (func (export "take-future") (param "f" $f) (result u32) (canon lift (core func $i "take")))
+      (func (export "future-read") (param "e" u32) (param "p" u32) (result u32)
+        (canon lift (core func $i "future-read")))
+      (func (export "peek") (param "p" u32) (result u32) (canon lift (core func $i "peek")))
+      (func (export "poke8") (param "p" u32) (param "v" u32)
+        (canon lift (core func $i "poke8"))))
     "#
 );
 
 /// Instantiate `COMPOSED` in a fresh store of an engine whose
 /// error-context gate is open, with nothing registered.
 async fn instantiate() -> (Store<()>, Instance) {
+    instantiate_with(COMPOSED, |_| {}).await
+}
+
+/// Instantiate `bytes` in a fresh store of an engine whose
+/// error-context gate is open, with what `register` puts in the
+/// linker.
+async fn instantiate_with(
+    bytes: &[u8],
+    register: impl FnOnce(&mut Linker<()>),
+) -> (Store<()>, Instance) {
     let mut config = EngineConfig::new();
     config.wasm_component_model_error_context(true);
     let engine = Engine::with_backend(crate::runtime_layer::test_backend())
         .and_then(|engine| engine.with_config(&config))
         .expect("engine");
-    let component = Component::new(&engine, COMPOSED)
+    let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let linker: Linker<()> = Linker::new(&engine);
+    let mut linker: Linker<()> = Linker::new(&engine);
+    register(&mut linker);
     let instance = linker
         .instantiate(&mut store, &component)
         .await
@@ -783,4 +887,528 @@ async fn it_passes_an_error_context_through_the_host_as_a_typed_error_context() 
 
     call(&mut store, &instance, "drop", &[received]).await;
     assert_eq!(error_context_count(&mut store), 1);
+}
+
+/// The error context the sender's `leak` hands the host for the
+/// sender's handle `handle`.
+async fn leak(store: &mut Store<()>, instance: &Instance, handle: u32) -> Val {
+    match call(store, instance, "leak", &[handle]).await {
+        Some(held @ Val::ErrorContext(_)) => held,
+        other => panic!("leak answered {other:?}"),
+    }
+}
+
+/// Whether `error` is the wrong-store cause.
+fn wrong_store(error: &Error) -> bool {
+    matches!(error, Error::Instantiation(inner) if matches!(**inner, InstantiationError::WrongStore))
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_usable() {
+    let (mut first, first_instance) = instantiate().await;
+    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
+    let foreign_context = context_at(
+        &mut first,
+        handle_table(&first_instance, "new"),
+        first_handle,
+    );
+    let foreign = leak(&mut first, &first_instance, first_handle).await;
+
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "local").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    assert_eq!(
+        context, foreign_context,
+        "this store's record has the identity the other store's value names"
+    );
+    let own = leak(&mut store, &instance, handle).await;
+
+    // Untyped, alone and after a value of this store in a list.
+    for (name, args) in [
+        ("take-one", vec![foreign.clone()]),
+        (
+            "take-list",
+            vec![Val::List(vec![own.clone(), foreign.clone()].into())],
+        ),
+    ] {
+        let error = func(&instance, name)
+            .call(&mut store, &args)
+            .await
+            .expect_err("a value of another store does not cross");
+        assert!(wrong_store(&error), "{name}: {}", chain(&error));
+    }
+    // Typed, alone and after a value of this store in a list.
+    let foreign_typed = || ErrorContext::from_val(&foreign).expect("an error context");
+    let own_typed = || ErrorContext::from_val(&own).expect("an error context");
+    let error = func(&instance, "take-one")
+        .typed::<(ErrorContext,), u32>()
+        .expect("take-one is typed")
+        .call(&mut store, (foreign_typed(),))
+        .await
+        .expect_err("a value of another store does not cross");
+    assert!(wrong_store(&error), "{}", chain(&error));
+    let error = func(&instance, "take-list")
+        .typed::<(Vec<ErrorContext>,), u32>()
+        .expect("take-list is typed")
+        .call(&mut store, (vec![own_typed(), foreign_typed()],))
+        .await
+        .expect_err("a value of another store does not cross");
+    assert!(wrong_store(&error), "{}", chain(&error));
+
+    // Through `call_concurrent`, untyped and typed.
+    let take_one = func(&instance, "take-one");
+    let take_typed = func(&instance, "take-one")
+        .typed::<(ErrorContext,), u32>()
+        .expect("take-one is typed");
+    let (untyped, typed) = store
+        .run_concurrent(async |accessor| {
+            let untyped = take_one
+                .call_concurrent(accessor, std::slice::from_ref(&foreign))
+                .await
+                .map(drop);
+            let typed = take_typed
+                .call_concurrent(accessor, (foreign_typed(),))
+                .await
+                .map(drop);
+            (untyped, typed)
+        })
+        .await
+        .expect("run the closure");
+    for (form, refused) in [("untyped", untyped), ("typed", typed)] {
+        let error = refused.expect_err("a value of another store does not cross");
+        assert!(wrong_store(&error), "{form}: {}", chain(&error));
+    }
+
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "no refused call lowered this store's value either"
+    );
+    assert_eq!(error_context_count(&mut store), 1);
+    // The store is not poisoned: its guest still runs, and its own
+    // value still crosses.
+    let received = match func(&instance, "take-one")
+        .call(&mut store, &[own])
+        .await
+        .map_err(|error| chain(&error))
+        .expect("take-one")
+        .first()
+    {
+        Some(Val::U32(index)) => *index,
+        other => panic!("take-one answered {other:?}"),
+    };
+    assert_eq!(message(&mut store, &instance, received).await, "local");
+    assert_eq!(handle_count(&mut store, context), Some(2));
+    // The other store's record is untouched as well, and its value
+    // still crosses there.
+    assert_eq!(handle_count(&mut first, foreign_context), Some(1));
+    let received = func(&first_instance, "take-one")
+        .typed::<(ErrorContext,), u32>()
+        .expect("take-one is typed")
+        .call(&mut first, (foreign_typed(),))
+        .await
+        .expect("the value crosses in its own store");
+    assert_eq!(
+        message(&mut first, &first_instance, received).await,
+        "disk full"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lowers_one_held_error_context_many_times_each_as_a_handle_of_its_own() {
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "disk full").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let held = leak(&mut store, &instance, handle).await;
+    call(&mut store, &instance, "release", &[handle]).await;
+    assert_eq!(handle_count(&mut store, context), Some(0));
+
+    let mut received = Vec::new();
+    for count in 1..=3 {
+        match func(&instance, "take-one")
+            .call(&mut store, std::slice::from_ref(&held))
+            .await
+            .map_err(|error| chain(&error))
+            .expect("take-one")
+            .first()
+        {
+            Some(Val::U32(index)) => received.push(*index),
+            other => panic!("take-one answered {other:?}"),
+        }
+        assert_eq!(handle_count(&mut store, context), Some(count));
+    }
+    let mut distinct = received.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 3, "three handles: {received:?}");
+    for index in &received {
+        assert_eq!(message(&mut store, &instance, *index).await, "disk full");
+        call(&mut store, &instance, "drop", &[*index]).await;
+    }
+    assert_eq!(handle_count(&mut store, context), Some(0));
+    assert_eq!(
+        error_context_count(&mut store),
+        1,
+        "the host still holds the value, so its record stays"
+    );
+}
+
+/// The type of [`RELAY`]'s import: an error context in and one out.
+fn relay_type() -> FunctionType {
+    FunctionType {
+        parameters: vec![FunctionParameter {
+            name: "e".to_owned(),
+            ty: ValueType::ErrorContext,
+        }],
+        result: Some(ValueType::ErrorContext),
+        async_: false,
+    }
+}
+
+/// Relay an error context through the host's `relay` and check what
+/// crossed both ways: the guest's own handle stays, the host's value
+/// comes back as a new handle naming the same record, and the record
+/// stays after both handles drop, because the host held it.
+async fn assert_relays(mut store: Store<()>, instance: Instance, seen: Arc<Mutex<Vec<Val>>>) {
+    let handle = new_context(&mut store, &instance, "disk full").await;
+    let table = handle_table(&instance, "new");
+    let context = context_at(&mut store, table, handle);
+
+    let returned = call_u32(&mut store, &instance, "relay", &[handle]).await;
+    assert_ne!(returned, handle, "the guest's own handle stays");
+    assert_eq!(context_at(&mut store, table, returned), context);
+    assert_eq!(handle_count(&mut store, context), Some(2));
+    assert_eq!(message(&mut store, &instance, returned).await, "disk full");
+    assert!(
+        matches!(
+            seen.lock().expect("seen").as_slice(),
+            [Val::ErrorContext(_)]
+        ),
+        "the host received one error context"
+    );
+
+    call(&mut store, &instance, "drop", &[handle]).await;
+    call(&mut store, &instance, "drop", &[returned]).await;
+    assert_eq!(handle_count(&mut store, context), Some(0));
+    assert_eq!(error_context_count(&mut store), 1);
+}
+
+#[wcmp_macros::test]
+async fn it_passes_an_error_context_to_an_untyped_host_function_and_takes_one_back() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let (store, instance) = instantiate_with(RELAY, move |linker| {
+        linker
+            .root()
+            .func_new("relay", relay_type(), move |_call, args, results| {
+                log.lock().expect("seen").push(args[0].clone());
+                results[0] = args[0].clone();
+                Ok(())
+            })
+            .expect("relay registers");
+    })
+    .await;
+    assert_relays(store, instance, seen).await;
+}
+
+#[wcmp_macros::test]
+async fn it_passes_an_error_context_to_a_typed_host_function_and_takes_one_back() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let (store, instance) = instantiate_with(RELAY, move |linker| {
+        linker
+            .root()
+            .func_wrap(
+                "relay",
+                move |_call: HostCall<'_, ()>, (context,): (ErrorContext,)| {
+                    let val = context.to_val();
+                    log.lock().expect("seen").push(val.clone());
+                    ErrorContext::from_val(&val)
+                },
+            )
+            .expect("relay registers");
+    })
+    .await;
+    assert_relays(store, instance, seen).await;
+}
+
+#[wcmp_macros::test]
+async fn it_writes_held_error_contexts_into_a_guests_stream_and_future() {
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "disk full").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let held = ErrorContext::from_val(&leak_now(&mut store, context)).expect("an error context");
+    let items = vec![
+        held,
+        ErrorContext::from_val(&leak_now(&mut store, context)).unwrap(),
+    ];
+    let reader = StreamReader::new(&mut store.as_context_mut(), items).expect("a stream");
+    let readable = func(&instance, "take-stream")
+        .typed::<(StreamReader<ErrorContext>,), u32>()
+        .expect("take-stream is typed")
+        .call(&mut store, (reader,))
+        .await
+        .expect("the reader crosses");
+    let result = call_u32(&mut store, &instance, "read", &[readable, 100, 2]).await;
+    assert_eq!(result >> 4, 2, "the read took both: {result:#x}");
+    for address in [100, 104] {
+        let index = call_u32(&mut store, &instance, "peek", &[address]).await;
+        assert_eq!(message(&mut store, &instance, index).await, "disk full");
+    }
+    assert_eq!(handle_count(&mut store, context), Some(3));
+
+    // A future of RELAY's, in a store of its own.
+    let (mut store, instance) = instantiate_with(RELAY, |linker| {
+        linker
+            .root()
+            .func_new("relay", relay_type(), |_call, _args, _results| Ok(()))
+            .expect("relay registers");
+    })
+    .await;
+    let handle = new_context(&mut store, &instance, "timeout").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let value = ErrorContext::from_val(&leak_now(&mut store, context)).expect("an error context");
+    let reader = FutureReader::new(
+        &mut store.as_context_mut(),
+        async move { Ok::<_, Error>(value) },
+    )
+    .expect("a future");
+    let readable = func(&instance, "take-future")
+        .typed::<(FutureReader<ErrorContext>,), u32>()
+        .expect("take-future is typed")
+        .call(&mut store, (reader,))
+        .await
+        .expect("the reader crosses");
+    assert_eq!(
+        call_u32(&mut store, &instance, "future-read", &[readable, 100]).await,
+        0,
+        "the read completed at once"
+    );
+    let index = call_u32(&mut store, &instance, "peek", &[100]).await;
+    assert_eq!(message(&mut store, &instance, index).await, "timeout");
+    assert_eq!(handle_count(&mut store, context), Some(2));
+}
+
+/// The host's value of the error context `context` of `store`, as a
+/// lift to the host would hand it, marking the record host-held.
+fn leak_now(store: &mut Store<()>, context: ErrorContextId) -> Val {
+    store
+        .internal()
+        .tables()
+        .lock()
+        .expect("handle tables")
+        .tasks
+        .hold_error_context(context)
+        .expect("the record is live");
+    Val::ErrorContext(ErrorContextAny::new(store.internal().id(), context))
+}
+
+/// A consumer that keeps every error context a guest writes.
+struct Contexts(Arc<Mutex<Vec<ErrorContext>>>);
+
+impl StreamConsumer<()> for Contexts {
+    type Item = ErrorContext;
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, ()>,
+        mut source: Source<'_, ErrorContext>,
+        _finish: bool,
+    ) -> Poll<crate::Result<StreamResult>> {
+        let mut items = Vec::new();
+        let count = source.remaining();
+        source.read(store, &mut items, count)?;
+        self.0.lock().expect("the contexts").extend(items);
+        Poll::Ready(Ok(StreamResult::Completed))
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_hands_the_host_each_error_context_a_guest_writes_to_its_stream() {
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "disk full").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let ends = match call(&mut store, &instance, "stream-new", &[]).await {
+        Some(Val::U64(packed)) => packed,
+        other => panic!("stream-new answered {other:?}"),
+    };
+    let (readable, writable) = (ends as u32, (ends >> 32) as u32);
+    let reader = func(&instance, "hand-out")
+        .typed::<(u32,), StreamReader<ErrorContext>>()
+        .expect("hand-out is typed")
+        .call(&mut store, (readable,))
+        .await
+        .expect("the readable end crosses to the host");
+    let contexts = Arc::new(Mutex::new(Vec::new()));
+    reader
+        .pipe(&mut store.as_context_mut(), Contexts(Arc::clone(&contexts)))
+        .expect("the host pipes the reader");
+
+    call(&mut store, &instance, "poke", &[200, handle]).await;
+    call(&mut store, &instance, "poke", &[204, handle]).await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "write", &[writable, 200, 2]).await,
+        packed(0, 2)
+    );
+    let held: Vec<ErrorContext> = std::mem::take(&mut *contexts.lock().expect("the contexts"));
+    assert_eq!(held.len(), 2, "the consumer took both");
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "the lift to the host added no handle"
+    );
+
+    // The host holds the record now: the sender's drop leaves it, and
+    // each value lowers into the receiver.
+    call(&mut store, &instance, "release", &[handle]).await;
+    let take = func(&instance, "take-one")
+        .typed::<(ErrorContext,), u32>()
+        .expect("take-one is typed");
+    for value in held {
+        let index = take.call(&mut store, (value,)).await.expect("take-one");
+        assert_eq!(message(&mut store, &instance, index).await, "disk full");
+    }
+    assert_eq!(handle_count(&mut store, context), Some(2));
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_an_error_context_declared_as_another_type_by_that_type() {
+    let (mut store, instance) = instantiate().await;
+    let sender = handle_table(&instance, "new");
+    let kept = new_context(&mut store, &instance, "disk full").await;
+    let held = leak(&mut store, &instance, kept).await;
+    let fresh = new_context(&mut store, &instance, "timeout").await;
+    let fresh_context = context_at(&mut store, sender, fresh);
+    assert_eq!(error_context_count(&mut store), 2);
+
+    // A typed value lowered, and a handle of the sender's table lifted,
+    // against a declared `u32`, in a crossing of the sender's.
+    let declared = ValueType::Primitive(PrimitiveType::U32);
+    let (options, boundary) = {
+        let export = func(&instance, "new");
+        let tables = store.internal().tables_handle();
+        BoundaryInstance::resolve(
+            &Arc::new(export.options().clone()),
+            export.abi_state(),
+            &tables,
+        )
+        .expect("the export's options resolve")
+    };
+    let mut ctx = BoundaryContext::new(
+        store.internal().inner_mut().as_context_mut(),
+        options,
+        boundary,
+        None,
+    );
+    // The declared type in the failure is what only the check of the
+    // declared type gives: a decode that went ahead and then failed to
+    // convert would name no type.
+    let mismatch = |result: &crate::Result<()>, declared: &ValueType| match result {
+        Err(Error::Abi(abi)) => {
+            matches!(abi.cause, AbiCause::HostValueMismatch)
+                && abi.valtype.as_ref() == Some(declared)
+        }
+        _ => false,
+    };
+    let typed = ErrorContext::from_val(&held).expect("an error context");
+    let lowered = typed.lower_flat(
+        &mut ctx,
+        &declared,
+        &mut Vec::new(),
+        AbiPosition::Argument(0),
+    );
+    assert!(mismatch(&lowered, &declared), "{lowered:?}");
+    let slots = [RuntimeVal::I32(fresh as i32)];
+    let flat = <ErrorContext as ComponentValue>::lift_flat(
+        &mut ctx,
+        &slots,
+        &mut 0,
+        &declared,
+        AbiPosition::Result,
+    )
+    .map(drop);
+    assert!(mismatch(&flat, &declared), "{flat:?}");
+    let loaded =
+        <ErrorContext as ComponentValue>::load(&mut ctx, 0, &declared, AbiPosition::Result)
+            .map(drop);
+    assert!(mismatch(&loaded, &declared), "{loaded:?}");
+    drop(ctx);
+    assert_eq!(handle_count(&mut store, fresh_context), Some(1));
+    // The record was not marked host-held, so it leaves with its one
+    // handle.
+    call(&mut store, &instance, "release", &[fresh]).await;
+    assert_eq!(error_context_count(&mut store), 1);
+
+    // An untyped value passed where the export takes a `u32`.
+    let error = func(&instance, "message")
+        .call(&mut store, &[held])
+        .await
+        .expect_err("an error context is not a u32");
+    assert!(
+        matches!(&error, Error::Abi(abi) if matches!(abi.cause, AbiCause::HostValueMismatch)),
+        "{}",
+        chain(&error)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_guests_call_when_a_host_function_returns_another_stores_error_context() {
+    let (mut first, first_instance) = instantiate().await;
+    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
+    let foreign = Arc::new(Mutex::new(
+        leak(&mut first, &first_instance, first_handle).await,
+    ));
+    let give = Arc::clone(&foreign);
+    let (mut store, instance) = instantiate_with(RELAY, move |linker| {
+        linker
+            .root()
+            .func_new("relay", relay_type(), move |_call, _args, results| {
+                results[0] = give.lock().expect("the value").clone();
+                Ok(())
+            })
+            .expect("relay registers");
+    })
+    .await;
+    // This store's first record has the identity the other store's value
+    // names, so only the store identity tells them apart.
+    let handle = new_context(&mut store, &instance, "local").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+
+    let message = call_trap(&mut store, &instance, "relay", &[handle]).await;
+    assert!(
+        message.contains(&InstantiationError::WrongStore.to_string()),
+        "{message}"
+    );
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "the guest received no handle to this store's record"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_guests_read_when_a_host_stream_writes_another_stores_error_context() {
+    let (mut first, first_instance) = instantiate().await;
+    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
+    let foreign = ErrorContext::from_val(&leak(&mut first, &first_instance, first_handle).await)
+        .expect("an error context");
+
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "local").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let reader = StreamReader::new(&mut store.as_context_mut(), vec![foreign]).expect("a stream");
+    let readable = func(&instance, "take-stream")
+        .typed::<(StreamReader<ErrorContext>,), u32>()
+        .expect("take-stream is typed")
+        .call(&mut store, (reader,))
+        .await
+        .expect("the reader crosses");
+
+    let message = call_trap(&mut store, &instance, "read", &[readable, 100, 1]).await;
+    assert!(
+        message.contains(&InstantiationError::WrongStore.to_string()),
+        "{message}"
+    );
+    assert_eq!(handle_count(&mut store, context), Some(1));
 }

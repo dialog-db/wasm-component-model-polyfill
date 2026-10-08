@@ -45,6 +45,9 @@ pub struct Signature {
     result_spills: bool,
     /// The number of core result slots a synchronous lift returns.
     core_result_arity: usize,
+    /// Whether a parameter's type holds an `error-context` at any
+    /// depth, so a host value of another store can reach the call.
+    params_hold_error_context: bool,
 }
 
 impl Signature {
@@ -60,6 +63,7 @@ impl Signature {
         };
         Self {
             flat_param_count: flat_param_count(&ty),
+            params_hold_error_context: types.iter().any(holds_error_context),
             ty,
             parameter_layout,
             result_spills,
@@ -85,6 +89,13 @@ impl Signature {
         !matches!(self.flat_param_count, Some(n) if n <= MAX_FLAT_ASYNC_PARAMS)
     }
 
+    /// Whether a parameter's type holds an `error-context` at any
+    /// depth. A call checks the store of its arguments' error contexts
+    /// only then.
+    pub fn params_hold_error_context(&self) -> bool {
+        self.params_hold_error_context
+    }
+
     /// The layout of the parameter tuple when it spills to memory.
     pub fn parameter_layout(&self) -> &SpillLayout {
         &self.parameter_layout
@@ -100,6 +111,33 @@ impl Signature {
     /// spilled result, and the flat slots otherwise.
     pub fn core_result_arity(&self) -> usize {
         self.core_result_arity
+    }
+}
+
+/// Whether a value of type `ty` can hold an error context. A stream's or
+/// a future's payload does not count: the value is a readable end, which
+/// carries no error context of its own.
+fn holds_error_context(ty: &ValueType) -> bool {
+    match ty {
+        ValueType::ErrorContext => true,
+        ValueType::Record(record) => record
+            .fields()
+            .iter()
+            .any(|field| holds_error_context(field.ty())),
+        ValueType::Variant(variant) => variant
+            .cases()
+            .iter()
+            .any(|case| case.payload().is_some_and(holds_error_context)),
+        ValueType::List(list) => holds_error_context(list.element()),
+        ValueType::Map(map) => holds_error_context(map.key()) || holds_error_context(map.value()),
+        ValueType::FixedLengthList(list) => holds_error_context(list.element()),
+        ValueType::Option(option) => holds_error_context(option.payload()),
+        ValueType::Result(result) => {
+            result.ok().is_some_and(holds_error_context)
+                || result.err().is_some_and(holds_error_context)
+        }
+        ValueType::Tuple(tuple) => tuple.elements().iter().any(holds_error_context),
+        _ => false,
     }
 }
 
@@ -147,5 +185,38 @@ mod tests {
         let spilled = Signature::new(function(0, Some(string)));
         assert!(spilled.result_spills());
         assert_eq!(spilled.core_result_arity(), 1);
+    }
+
+    #[wcmp_macros::test]
+    fn it_marks_parameters_that_hold_an_error_context_at_any_depth() {
+        use crate::types::{ListType, OptionType, RecordField, RecordType, StreamType};
+        let with = |ty: ValueType| {
+            Signature::new(FunctionType {
+                parameters: vec![FunctionParameter {
+                    name: "p".to_owned(),
+                    ty,
+                }],
+                result: None,
+                async_: false,
+            })
+            .params_hold_error_context()
+        };
+        assert!(!Signature::new(function(3, None)).params_hold_error_context());
+        assert!(with(ValueType::ErrorContext));
+        assert!(with(ValueType::List(ListType::new(ValueType::Option(
+            OptionType::new(ValueType::ErrorContext)
+        )))));
+        assert!(with(ValueType::Record(RecordType::new([
+            RecordField::new("e", ValueType::ErrorContext)
+        ]))));
+        assert!(
+            !with(ValueType::Stream(StreamType::new(Some(
+                ValueType::ErrorContext
+            )))),
+            "a readable end carries no error context of its own"
+        );
+        assert!(!with(ValueType::List(ListType::new(ValueType::Primitive(
+            PrimitiveType::U8
+        )))));
     }
 }

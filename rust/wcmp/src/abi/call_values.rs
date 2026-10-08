@@ -22,10 +22,44 @@ use super::layout::{alignment_of, result_spills, size_of};
 use super::signature::Signature;
 use super::{lift, lower};
 use crate::component::FunctionType;
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result};
+use crate::internal::ErrorContextAnyInternal;
 use crate::runtime_layer::Val as RuntimeVal;
+use crate::store::StoreId;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
+
+/// Refuse `args` with the wrong-store cause when one of them holds,
+/// at any depth, an error context lifted in a store other than
+/// `store`. An error context is the one host value that carries its
+/// store's identity.
+pub fn check_store(args: &[Val], store: StoreId) -> Result<()> {
+    fn walk(val: &Val, store: StoreId) -> Result<()> {
+        match val {
+            Val::ErrorContext(context) if context.store_id() != store => {
+                Err(Error::from(InstantiationError::WrongStore))
+            }
+            Val::List(items) | Val::FixedLengthList(items) | Val::Tuple(items) => {
+                items.iter().try_for_each(|item| walk(item, store))
+            }
+            Val::Map(entries) => entries.iter().try_for_each(|(key, value)| {
+                walk(key, store)?;
+                walk(value, store)
+            }),
+            Val::Record(fields) => fields
+                .iter()
+                .try_for_each(|field| walk(&field.value, store)),
+            Val::Variant {
+                payload: Some(inner),
+                ..
+            }
+            | Val::Option(Some(inner))
+            | Val::Result(Ok(Some(inner)) | Err(Some(inner))) => walk(inner, store),
+            _ => Ok(()),
+        }
+    }
+    args.iter().try_for_each(|arg| walk(arg, store))
+}
 
 /// Lower `args` as the parameter tuple of `signature` and answer the
 /// core arguments the export's core function takes.

@@ -304,7 +304,10 @@ pub fn lift_error_context<T: 'static>(
     if !ctx.crosses_between_guests() {
         guard.tasks.hold_error_context(context)?;
     }
-    Ok(Val::ErrorContext(ErrorContextAny::new(context)))
+    Ok(Val::ErrorContext(ErrorContextAny::new(
+        ctx.store_id(),
+        context,
+    )))
 }
 
 /// Lift the readable end at `index` of `table` for a crossing of

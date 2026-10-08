@@ -8,6 +8,8 @@
 
 use crate::internal::ErrorContextAnyInternal;
 
+use crate::store::StoreId;
+
 use super::error_context_id::ErrorContextId;
 
 /// An error context, as [`Val::ErrorContext`](crate::Val::ErrorContext)
@@ -31,16 +33,27 @@ use super::error_context_id::ErrorContextId;
 ///
 /// The value names its record by an index and a generation, and
 /// cloning it copies the name, not the record. It belongs to the store
-/// it was lifted in, and is lowered only in that store, as with a
-/// [`ResourceHandle`](crate::ResourceHandle).
+/// it was lifted in, and carries that store's identity. A call into
+/// another store that passes it fails with
+/// [`InstantiationError::WrongStore`](crate::InstantiationError::WrongStore)
+/// before the call changes anything, so that store stays usable. A
+/// host function or a host stream that hands it to a guest of another
+/// store fails the guest's call or built-in with the same cause, as
+/// any failure of the host's there does. Wasmtime checks neither, and
+/// hands the guest whatever record of that store has the same index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ErrorContextAny {
+    store: StoreId,
     context: ErrorContextId,
 }
 
 impl ErrorContextAnyInternal for ErrorContextAny {
-    fn new(context: ErrorContextId) -> Self {
-        Self { context }
+    fn new(store: StoreId, context: ErrorContextId) -> Self {
+        Self { store, context }
+    }
+
+    fn store_id(&self) -> StoreId {
+        self.store
     }
 
     fn context(&self) -> ErrorContextId {

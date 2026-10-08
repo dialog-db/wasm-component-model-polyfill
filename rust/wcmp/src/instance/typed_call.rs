@@ -14,6 +14,7 @@ use crate::component::FunctionType;
 use crate::error::Result;
 use crate::linker::{ComponentParameters, ComponentResult};
 use crate::runtime_layer::Val as RuntimeVal;
+use crate::store::StoreId;
 use crate::value::Val;
 
 use super::call_values::CallValues;
@@ -47,6 +48,13 @@ impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> 
     /// the parameter count with it.
     fn check_arity(&self, _signature: &FunctionType) -> Result<()> {
         Ok(())
+    }
+
+    fn check_store(&self, signature: &Signature, store: StoreId) -> Result<()> {
+        if !signature.params_hold_error_context() {
+            return Ok(());
+        }
+        self.arguments.check_store(store)
     }
 
     fn lower<T: 'static>(

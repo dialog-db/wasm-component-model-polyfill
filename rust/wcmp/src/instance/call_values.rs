@@ -16,12 +16,13 @@
 //! back a Rust value, and never holds a `Val` for either unless the
 //! export resolves through `task.return`.
 
-use crate::abi::call_values::{lift_result_value, lower_arguments};
+use crate::abi::call_values::{check_store, lift_result_value, lower_arguments};
 use crate::abi::context::BoundaryContext;
 use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::runtime_layer::Val as RuntimeVal;
+use crate::store::StoreId;
 use crate::value::Val;
 
 /// The arguments of one export call and the shape its result comes
@@ -36,6 +37,14 @@ pub trait CallValues: Send + 'static {
     /// Refuse arguments that are not the export's parameter count,
     /// before the call creates anything in the store.
     fn check_arity(&self, signature: &FunctionType) -> Result<()>;
+
+    /// Refuse arguments that hold a host value of a store other than
+    /// `store`, with the wrong-store cause, before the call creates
+    /// anything in the store. Only an argument whose type in
+    /// `signature` holds an error context can. A lower would refuse the
+    /// value too, but only once the call's task runs, where a failure is
+    /// a trap that poisons the store.
+    fn check_store(&self, signature: &Signature, store: StoreId) -> Result<()>;
 
     /// Lower the arguments as the parameters of `signature` and answer
     /// the core arguments of the call. The signature carries the
@@ -86,6 +95,13 @@ impl CallValues for Vec<Val> {
                 ),
             },
         }))
+    }
+
+    fn check_store(&self, signature: &Signature, store: StoreId) -> Result<()> {
+        if !signature.params_hold_error_context() {
+            return Ok(());
+        }
+        check_store(self, store)
     }
 
     fn lower<T: 'static>(

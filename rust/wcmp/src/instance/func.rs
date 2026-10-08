@@ -226,6 +226,7 @@ impl Func {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         values.check_arity(self.ty())?;
+        values.check_store(&self.export.signature, self.store_id)?;
 
         // A driver entered while another driver of the same store is
         // inside a turn fails before it has created a task or queued
@@ -466,6 +467,7 @@ impl Func {
             return Err(Error::from(InstantiationError::WrongStore));
         }
         values.check_arity(self.ty())?;
+        values.check_store(&self.export.signature, self.store_id)?;
         store.internal().enter_guest()?;
 
         let (options, instance) = BoundaryInstance::resolve(
