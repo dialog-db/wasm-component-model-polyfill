@@ -1328,21 +1328,27 @@
         };
 
         # What keeps a crate from building as a crates.io consumer would,
-        # given the text of its manifest, of its `.cargo/config.toml` (or
-        # null), and of its lock file (or null): one line for each. Cargo
-        # applies a `[patch]` or a `[replace]` only in the root workspace, so
-        # a consumer never sees one, and a `[patch]`, a `paths` override, or
-        # a `[source]` replacement in a Cargo configuration changes where a
-        # dependency comes from as well. Each file is parsed, so every
-        # spelling TOML allows for a table — quoted, dotted, escaped, or
-        # inline — reaches the same key. The lock is held to the effect: each
-        # locked package comes from crates.io, or from a path and is the
-        # consumer or a published crate, and no patch is recorded, so a
-        # patch from anywhere Cargo reads one shows.
+        # given the text of its manifest, the files of its `.cargo`
+        # directory (an attribute set of name to text), and the text of its
+        # lock file (or null): one line for each. Cargo applies a `[patch]`
+        # or a `[replace]` only in the root workspace, so a consumer never
+        # sees one. The manifest is parsed, so every spelling TOML allows
+        # for a table — quoted, dotted, escaped, or inline — reaches the
+        # same key. A Cargo configuration changes where a dependency comes
+        # from in more ways than a parse can follow: a `[patch]`, a `paths`
+        # override, a `[source]` replacement, an `include` of another file,
+        # and a legacy `config` file that Cargo reads in place of
+        # `config.toml` when both exist. A consumer from crates.io has none
+        # of them, so the consumer may keep no `.cargo` directory at all.
+        # The lock is held to the effect: each locked package comes from
+        # crates.io, or from a path and is the consumer or a published
+        # crate, and no patch is recorded, so a patch from anywhere Cargo
+        # reads one shows. The lock records no path, so the build holds each
+        # path package to its own directory as well (`downstreamPathCheck`).
         downstreamGuardViolations =
           {
             manifest,
-            config ? null,
+            cargo ? { },
             lock ? null,
           }:
           let
@@ -1376,14 +1382,40 @@
             "patch"
             "replace"
           ]
-          ++ pkgs.lib.optionals (config != null) (
-            tables ".cargo/config.toml" config [
-              "patch"
-              "paths"
-              "source"
-            ]
-          )
+          ++ optional (
+            cargo != { }
+          ) ".cargo holds ${pkgs.lib.concatStringsSep ", " (builtins.attrNames cargo)}, and a consumer from crates.io has no Cargo configuration"
           ++ pkgs.lib.optionals (lock != null) lockViolations;
+
+        # The path packages of a build's `cargo metadata` (its first
+        # argument) that do not sit at their own directory under the
+        # `rust` directory its second argument names: the consumer's, or a
+        # published crate's. A copy of a published crate elsewhere, say
+        # under the consumer's `vendor`, would build in its place while the
+        # lock still names the crate.
+        downstreamPathCheck = pkgs.writeShellApplication {
+          name = "wcmp-downstream-path-check";
+          runtimeInputs = [ pkgs.jq ];
+          text =
+            let
+              program = pkgs.writeText "wcmp-downstream-path-check.jq" ''
+                ($allowed | map("\($rust)/\(.)/Cargo.toml")) as $paths
+                | .packages[]
+                | select(.source == null and (.manifest_path as $path | $paths | index($path) | not))
+                | "  \(.name) \(.version) from \(.manifest_path)"
+              '';
+              allowed = builtins.toJSON ([ "wcmp-downstream" ] ++ publishedCrates);
+            in
+            ''
+              stray=$(jq -r --arg rust "$2" --argjson allowed ${pkgs.lib.escapeShellArg allowed} \
+                -f ${program} "$1")
+              if [ -n "$stray" ]; then
+                echo "The downstream build takes a path package from outside its own directory:" >&2
+                echo "$stray" >&2
+                exit 1
+              fi
+            '';
+        };
 
         # The guard against cases it must refuse, failing the check when it
         # accepts one. Each is a manifest, a configuration, or a lock that
@@ -1432,23 +1464,47 @@
               '';
               config-patch = {
                 inherit manifest;
-                config = ''
+                cargo."config.toml" = ''
                   [patch.crates-io]
                   anyhow = { path = "../anyhow" }
                 '';
               };
               config-paths = {
                 inherit manifest;
-                config = ''
+                cargo."config.toml" = ''
                   paths = ["../anyhow"]
                 '';
               };
               config-source-replacement = {
                 inherit manifest;
-                config = ''
+                cargo."config.toml" = ''
                   [source.crates-io]
                   replace-with = "mirror"
                 '';
+              };
+              config-include = {
+                inherit manifest;
+                cargo = {
+                  "config.toml" = ''
+                    include = [{ path = "mirror.toml" }]
+                  '';
+                  "mirror.toml" = ''
+                    [source.crates-io]
+                    replace-with = "mirror"
+                  '';
+                };
+              };
+              # Cargo reads `config` in place of a benign `config.toml`
+              # when both exist.
+              config-two-files = {
+                inherit manifest;
+                cargo = {
+                  "config.toml" = "";
+                  config = ''
+                    [source.crates-io]
+                    replace-with = "mirror"
+                  '';
+                };
               };
               lock-git-source = {
                 inherit manifest;
@@ -1479,10 +1535,40 @@
             accepted = builtins.filter (name: downstreamGuardViolations cases.${name} == [ ]) (
               builtins.attrNames cases
             );
+            # `cargo metadata` of a build whose `wcmp` is a copy under the
+            # consumer's `vendor`, and of one whose path packages are all
+            # where they belong.
+            metadata =
+              packages:
+              builtins.toFile "metadata.json" (
+                builtins.toJSON {
+                  packages = map (path: {
+                    name = baseNameOf (dirOf path);
+                    version = "0.1.0";
+                    source = null;
+                    manifest_path = "/build/rust/${path}";
+                  }) packages;
+                }
+              );
+            vendored = metadata [
+              "wcmp-downstream/Cargo.toml"
+              "wcmp-downstream/vendor/wcmp/Cargo.toml"
+            ];
+            placed = metadata [
+              "wcmp-downstream/Cargo.toml"
+              "wcmp/Cargo.toml"
+            ];
           in
           pkgs.runCommand "wcmp-downstream-guard-check" { } (
             if accepted == [ ] then
-              ''touch "$out"''
+              ''
+                ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${placed} /build/rust
+                if ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${vendored} /build/rust; then
+                  echo "The downstream path check accepted a published crate under vendor" >&2
+                  exit 1
+                fi
+                touch "$out"
+              ''
             else
               ''
                 echo "The downstream guard accepted: ${toString accepted}" >&2
@@ -1507,14 +1593,13 @@
           let
             directory = ./rust/wcmp-downstream;
             lock = directory + "/Cargo.lock";
-            readIfExists = path: if builtins.pathExists path then builtins.readFile path else null;
             violations = downstreamGuardViolations {
               manifest = builtins.readFile (directory + "/Cargo.toml");
-              config =
+              cargo =
                 let
-                  current = readIfExists (directory + "/.cargo/config.toml");
+                  dot = directory + "/.cargo";
                 in
-                if current != null then current else readIfExists (directory + "/.cargo/config");
+                if builtins.pathExists dot then builtins.mapAttrs (_: _: null) (builtins.readDir dot) else { };
               lock = builtins.readFile lock;
             };
           in
@@ -1552,6 +1637,10 @@
                 ''
                   cargo build --locked --offline
                   cargo build --locked --offline --target wasm32-unknown-unknown
+                  cargo metadata --locked --offline --format-version 1 > metadata.json
+                  ${downstreamPathCheck}/bin/wcmp-downstream-path-check metadata.json "$(cd .. && pwd -P)"
+                  cargo clippy --locked --offline --all-targets -- -D warnings
+                  cargo clippy --locked --offline --all-targets --target wasm32-unknown-unknown -- -D warnings
                   cargo test --locked --offline
                   cargo tree --locked --offline --target wasm32-unknown-unknown \
                     --edges features,no-dev --invert js-sys > js-sys-features.txt
@@ -2351,11 +2440,14 @@
                   committed=$(mktemp)
                   trap 'rm -f "$committed"' EXIT
                   cp "$crate/Cargo.lock" "$committed"
+                  # From here a dry run puts the committed lock back however
+                  # it exits: a failed update, an interrupt, or a normal end.
+                  trap 'if [ -n "$dry" ]; then cp "$committed" "$crate/Cargo.lock"; fi; rm -f "$committed"' EXIT
+                  trap 'exit 130' INT TERM HUP
                   cargo update --workspace --manifest-path "$crate/Cargo.toml"
                   if diff -u "$committed" "$crate/Cargo.lock"; then
                     echo "downstream lock: rust/wcmp-downstream/Cargo.lock is current, nothing to write"
                   elif [ -n "$dry" ]; then
-                    cp "$committed" "$crate/Cargo.lock"
                     echo "downstream lock: the diff above is what a run would write; rust/wcmp-downstream/Cargo.lock is unchanged"
                   else
                     echo "downstream lock: wrote rust/wcmp-downstream/Cargo.lock"
