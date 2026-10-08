@@ -37,6 +37,7 @@ pub fn benchmarks() -> Vec<Benchmark> {
         list_u8_roundtrip(),
         list_u8_roundtrip_typed(),
         list_u32_roundtrip(),
+        list_u32_roundtrip_typed(),
         list_record_roundtrip(),
         resource_handle(),
         composition_call(),
@@ -245,6 +246,23 @@ async fn list_u32_roundtrip(run: &mut Run) -> Result<()> {
     run.moves_elements(count);
     while run.iterate() {
         echo.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `echo` component: `echo-list-u32: func(xs: list<u32>) -> list<u32>`, which returns the pointer and length it was given",
+    payload = "the case's number of u32 elements through `TypedFunc<(Vec<u32>,), Vec<u32>>`, cloned into each call; the cases move the bytes of `list-u8-roundtrip-typed`'s, so the two compare a wide element with a byte at equal size",
+    cases = [16, 1024, 16384]
+)]
+async fn list_u32_roundtrip_typed(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
+    let echo = export(&instance, "echo-list-u32")?.typed::<(Vec<u32>,), Vec<u32>>()?;
+    let payload: Vec<u32> = (0..count).map(|index| index as u32).collect();
+    run.moves_bytes(count * 4);
+    while run.iterate() {
+        echo.call(&mut store, (payload.clone(),)).await?;
     }
     Ok(())
 }

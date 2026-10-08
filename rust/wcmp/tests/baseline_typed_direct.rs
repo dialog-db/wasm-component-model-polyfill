@@ -112,11 +112,18 @@ fn stop_counting() -> Allocated {
 
 /// A component that echoes a string or a list of bytes back: the
 /// lowered pointer and length are returned unchanged, so one call is
-/// one lower into guest memory and one lift back out of it. Its
+/// one lower into guest memory and one lift back out of it. The
+/// string echo is lifted under each of the three string encodings. Its
 /// allocator bumps and grows the memory as a payload needs, so a
 /// payload of any size the memory can reach fits. `reset` puts the
 /// bump back at the start, so a later payload reuses memory an earlier
 /// one grew.
+///
+/// It also returns values no lift accepts, each from bytes beneath
+/// the bump: a string that is not UTF-8, a list of characters with
+/// one past 0x10FFFF or a surrogate, and a list of `u32` at an odd
+/// address. `spilled` takes eighteen flat values, two past the most
+/// that pass as core parameters, so a caller spills them to memory.
 const ECHO: &[u8] = component!(
     r#"
     (component
@@ -149,7 +156,37 @@ const ECHO: &[u8] = component!(
           local.get $ret local.get $ptr i32.store
           local.get $ret local.get $len i32.store offset=4
           local.get $ret)
-        (func (export "reset") i32.const 16 global.set $bump))
+        (func (export "reset") i32.const 16 global.set $bump)
+        ;; Beneath the bump: two bytes that are not UTF-8, the
+        ;; characters `A` and 0x110000, and a surrogate.
+        (data (i32.const 0) "\ff\fe\00\00\41\00\00\00\00\00\11\00\00\d8\00\00")
+        (func $pair (param $ptr i32) (param $len i32) (result i32)
+          (local $ret i32)
+          i32.const 0 i32.const 0 i32.const 4 i32.const 8 call $realloc local.set $ret
+          local.get $ret local.get $ptr i32.store
+          local.get $ret local.get $len i32.store offset=4
+          local.get $ret)
+        (func (export "bad-string") (result i32) (call $pair (i32.const 0) (i32.const 2)))
+        (func (export "bad-chars-high") (result i32) (call $pair (i32.const 4) (i32.const 2)))
+        (func (export "bad-chars-surrogate") (result i32) (call $pair (i32.const 12) (i32.const 1)))
+        (func (export "misaligned") (result i32) (call $pair (i32.const 1) (i32.const 1)))
+        ;; The spilled tuple `(string, list<u32, 8>, list<u32, 8>)` at
+        ;; `$p`: the string's length times 1000, plus each number times
+        ;; its place, counting from 1, plus the string's first byte.
+        (func (export "spilled") (param $p i32) (result i32)
+          (local $i i32) (local $acc i32)
+          (local.set $acc (i32.mul (i32.load offset=4 (local.get $p)) (i32.const 1000)))
+          (block $done
+            (loop $next
+              (br_if $done (i32.ge_u (local.get $i) (i32.const 16)))
+              (local.set $acc
+                (i32.add (local.get $acc)
+                  (i32.mul (i32.add (local.get $i) (i32.const 1))
+                    (i32.load offset=8
+                      (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 2)))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $next)))
+          (i32.add (local.get $acc) (i32.load8_u (i32.load (local.get $p))))))
       (core instance $i (instantiate $m))
       (func (export "echo-string") (param "s" string) (result string)
         (canon lift (core func $i "echo")
@@ -163,7 +200,28 @@ const ECHO: &[u8] = component!(
         (canon lift (core func $i "echo")
           (memory (core memory $i "memory"))
           (realloc (core func $i "cabi_realloc"))))
-      (func (export "reset") (canon lift (core func $i "reset"))))
+      (func (export "reset") (canon lift (core func $i "reset")))
+      (func (export "echo-utf16") (param "s" string) (result string)
+        (canon lift (core func $i "echo") string-encoding=utf16
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc"))))
+      (func (export "echo-latin1-utf16") (param "s" string) (result string)
+        (canon lift (core func $i "echo") string-encoding=latin1+utf16
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc"))))
+      (func (export "bad-string") (result string)
+        (canon lift (core func $i "bad-string") (memory (core memory $i "memory"))))
+      (func (export "bad-chars-high") (result (list char))
+        (canon lift (core func $i "bad-chars-high") (memory (core memory $i "memory"))))
+      (func (export "bad-chars-surrogate") (result (list char))
+        (canon lift (core func $i "bad-chars-surrogate") (memory (core memory $i "memory"))))
+      (func (export "misaligned") (result (list u32))
+        (canon lift (core func $i "misaligned") (memory (core memory $i "memory"))))
+      (func (export "spilled")
+        (param "s" string) (param "a" (list u32 8)) (param "b" (list u32 8)) (result u32)
+        (canon lift (core func $i "spilled")
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc")))))
     "#
 );
 
@@ -354,6 +412,144 @@ async fn it_refuses_a_typed_handle_of_the_wrong_element_type() {
     // the untyped signature reports.
     let func = instance.get_func("echo-bytes").expect("the export");
     assert!(matches!(func.ty().parameters[0].ty, ValueType::List(_)));
+}
+
+#[wcmp_macros::test]
+async fn it_round_trips_a_typed_string_under_each_utf16_encoding() {
+    let (mut store, instance) = echo().await;
+    for name in ["echo-utf16", "echo-latin1-utf16"] {
+        let echo_typed = typed::<(String,), String>(&instance, name);
+        let echo_untyped = instance.get_func(name).expect("the export");
+        // ASCII, Latin-1 beyond ASCII, and text only UTF-16 holds, which
+        // moves `latin1+utf16` to its UTF-16 form.
+        for text in ["plain", "café crème", "日本語 🎉"] {
+            let returned = echo_typed
+                .call(&mut store, (text.to_owned(),))
+                .await
+                .expect("the typed string echoes");
+            assert_eq!(returned, text, "{name}");
+            let untyped = echo_untyped
+                .call(&mut store, &[Val::String(text.to_owned())])
+                .await
+                .expect("the untyped string echoes");
+            assert_eq!(untyped.as_ref(), [Val::String(returned)], "{name}");
+        }
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
+    let (mut store, instance) = echo().await;
+    let spilled = typed::<(String, [u32; 8], [u32; 8]), u32>(&instance, "spilled");
+    let text = "spill".to_owned();
+    let first = [1, 2, 3, 4, 5, 6, 7, 8];
+    let second = [10, 20, 30, 40, 50, 60, 70, 80];
+    let expected = text.len() as u32 * 1000
+        + first
+            .iter()
+            .chain(&second)
+            .enumerate()
+            .map(|(index, value)| (index as u32 + 1) * value)
+            .sum::<u32>()
+        + u32::from(text.as_bytes()[0]);
+
+    let returned = spilled
+        .call(&mut store, (text.clone(), first, second))
+        .await
+        .expect("the typed call spills its parameters");
+    assert_eq!(returned, expected);
+    let fixed = |values: [u32; 8]| Val::FixedLengthList(values.map(Val::U32).into());
+    let untyped = instance
+        .get_func("spilled")
+        .expect("the export")
+        .call(
+            &mut store,
+            &[Val::String(text), fixed(first), fixed(second)],
+        )
+        .await
+        .expect("the untyped call spills its parameters");
+    assert_eq!(untyped.as_ref(), [Val::U32(expected)]);
+}
+
+/// The message the typed call of `name` fails with, and the message
+/// the untyped call fails with, each in a store of its own, since a
+/// failed lift traps and poisons the store.
+async fn both_failures<R: wcmp::ComponentResult + std::fmt::Debug>(name: &str) -> (String, String) {
+    let (mut store, instance) = echo().await;
+    let typed_failure = typed::<(), R>(&instance, name)
+        .call(&mut store, ())
+        .await
+        .expect_err("the typed lift refuses the value");
+    let (mut store, instance) = echo().await;
+    let untyped_failure = instance
+        .get_func(name)
+        .expect("the export")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the untyped lift refuses the value");
+    (typed_failure.to_string(), untyped_failure.to_string())
+}
+
+#[wcmp_macros::test]
+async fn it_fails_each_typed_lift_with_the_untyped_paths_message() {
+    for (name, cause, (typed_message, untyped_message)) in [
+        (
+            "bad-string",
+            "invalid utf-8",
+            both_failures::<String>("bad-string").await,
+        ),
+        (
+            "bad-chars-high",
+            "not a valid Unicode scalar",
+            both_failures::<Vec<char>>("bad-chars-high").await,
+        ),
+        (
+            "bad-chars-surrogate",
+            "not a valid Unicode scalar",
+            both_failures::<Vec<char>>("bad-chars-surrogate").await,
+        ),
+        (
+            "misaligned",
+            "list pointer is not aligned",
+            both_failures::<Vec<u32>>("misaligned").await,
+        ),
+    ] {
+        assert!(untyped_message.contains(cause), "{name}: {untyped_message}");
+        assert_eq!(typed_message, untyped_message, "{name}");
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_carries_a_typed_byte_vector_and_string_through_call_concurrent() {
+    let (mut store, instance) = echo().await;
+    let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
+    let echo_string = typed::<(String,), String>(&instance, "echo-string");
+    let payload = pattern(4096);
+    let text = "héllo, wörld 🎉".to_owned();
+
+    let (bytes, string) = store
+        .run_concurrent(async |accessor| {
+            let bytes = echo_bytes
+                .call_concurrent(accessor, (payload.clone(),))
+                .await?;
+            let string = echo_string
+                .call_concurrent(accessor, (text.clone(),))
+                .await?;
+            Ok::<_, wcmp::Error>((bytes, string))
+        })
+        .await
+        .expect("run the closure")
+        .expect("call the exports");
+    assert_eq!(bytes, payload);
+    assert_eq!(string, text);
+    assert_eq!(
+        echo_bytes
+            .call(&mut store, (payload.clone(),))
+            .await
+            .expect("the direct call"),
+        bytes,
+        "the concurrent call answers what the direct one does"
+    );
 }
 
 /// Over a hundred megabytes, which the untyped path would hold as
