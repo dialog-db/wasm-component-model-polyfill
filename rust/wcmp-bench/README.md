@@ -58,6 +58,11 @@ bench web provider=off
 `bench web` also reads `WCMP_BENCH_BUDGET_SECONDS` (900 by default) for how long
 the whole browser run may take before the driver gives up.
 
+To compare benchmarks whose iteration costs a few hundred microseconds in
+headless Chrome, pass `target-sample-ms=50` or more. There `performance.now()`
+steps in 100 microseconds, so one step is up to 2% of a 5 ms batch and 0.2% of a
+50 ms one, and the default batch can hide a change of that size.
+
 ## Writing a benchmark
 
 A benchmark is an `async fn` under `src/suite.rs` carrying the

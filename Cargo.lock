@@ -2497,6 +2497,7 @@ dependencies = [
  "js-sys",
  "tracing",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wasm-encoder 0.258.0",
  "wasmparser 0.258.0",

@@ -8,8 +8,10 @@
 //! guest function.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use js_sys::{Array, Function, Object, Uint8Array, WebAssembly};
+use js_sys::{Array, Function, Object, Promise, Uint8Array, WebAssembly};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_encoder::{
     CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, FunctionSection, GlobalSection,
@@ -74,7 +76,8 @@ pub struct Entrance {
     /// its result globals.
     record: Option<(WebAssembly::Global, Vec<WebAssembly::Global>)>,
     /// The result globals that hold a reference, which the host clears
-    /// once it read them.
+    /// once it read them, or once the promise of a call that returned in a
+    /// later stretch settles.
     references: Vec<WebAssembly::Global>,
 }
 
@@ -150,12 +153,17 @@ impl Entrance {
         self.record.is_some()
     }
 
-    /// The token of the call of the flight numbered `id`.
+    /// The token of the call of the flight numbered `id`: the id modulo
+    /// 2^32, with `0` read as `1`, since `$done` holds `0` before the first
+    /// return and no call may have that token.
     ///
-    /// No call has the token `0`, which `$done` holds before the first
-    /// return: the store numbers its flights from 1.
+    /// Tokens repeat once the ids pass 2^32. A call mistakes another's
+    /// return for its own only where their tokens match and no other call
+    /// of the entrance returned in between, the later trapping in its
+    /// first stretch: flights whose ids are equal modulo 2^32, or the
+    /// flights `k * 2^32` and `k * 2^32 + 1`, which both take the token 1.
     pub fn token(id: u64) -> i32 {
-        id as u32 as i32
+        (id as u32).max(1) as i32
     }
 
     /// What the call whose token is `token` returned, as the guest
@@ -180,12 +188,53 @@ impl Entrance {
                 .collect::<Array>()
                 .into(),
         };
+        self.release();
+        Some(returned)
+    }
+
+    /// Lets go of the references in the result globals once `promise`, the
+    /// promise of a call that did not return in its first stretch, settles.
+    ///
+    /// Such a call returns its results through its promise, so the host
+    /// never reads them from the globals. Left there, they would stay alive
+    /// until the entrance's next first-stretch return, which may never
+    /// come. The handlers run on a microtask, where no call of the store is
+    /// between its return and the host's read of it, so they clear nothing
+    /// another call still needs. They hold the entrance weakly.
+    pub fn release_when_settled(self: &Rc<Self>, promise: &Promise) {
+        if self.references.is_empty() {
+            return;
+        }
+        let (fulfilled, rejected) = (Rc::downgrade(self), Rc::downgrade(self));
+        let fulfilled = Closure::once_into_js(move |_: JsValue| {
+            if let Some(entrance) = fulfilled.upgrade() {
+                entrance.release_settled();
+            }
+        });
+        let rejected = Closure::once_into_js(move |_: JsValue| {
+            if let Some(entrance) = rejected.upgrade() {
+                entrance.release_settled();
+            }
+        });
+        // `then` never throws for a promise.
+        let _ = js::call_method(promise, "then", &[fulfilled, rejected]);
+    }
+
+    /// Clears the result globals for a call whose promise settled, and
+    /// counts it where the tests ask.
+    fn release_settled(&self) {
+        #[cfg(test)]
+        tests::SETTLED.with(|settled| settled.set(settled.get() + 1));
+        self.release();
+    }
+
+    /// Clears every result global that holds a reference.
+    fn release(&self) {
         for global in &self.references {
             // A result global is nullable and holds a type that the
             // JavaScript API reaches, so `null` clears it without fail.
             let _ = js::set_value(global, &JsValue::NULL);
         }
-        Some(returned)
     }
 }
 
@@ -289,5 +338,139 @@ fn holder(ty: ValType) -> (ValType, ConstExpr) {
             }),
             ConstExpr::ref_null(reference.heap_type),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::cell::Cell;
+    use core::task::Poll;
+    use js_sys::Reflect;
+    use wasm_bindgen_futures::JsFuture;
+    use wcmp_wasm_core::{
+        Engine, ExternRef, Func, FuncType, Instance, Module, ResumableCall, Store, Val,
+    };
+
+    thread_local! {
+        /// How many times an entrance released its references because the
+        /// promise of a later-stretch call settled.
+        pub static SETTLED: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A module whose `hand` waits on its import, which suspends, and then
+    /// gives back the externref it was given.
+    const SUSPENDS: &[u8] = wcmp_macros::wasm!(
+        r#"
+        (module
+          (import "" "wait" (func $wait))
+          (func (export "hand") (param externref) (result externref)
+            call $wait
+            local.get 0))
+        "#
+    );
+
+    /// `hand` of [`SUSPENDS`], whose import suspends on a promise that is
+    /// already fulfilled.
+    fn hand(jspi: &Jspi) -> Function {
+        let wait = Closure::<dyn FnMut() -> Promise>::new(|| Promise::resolve(&JsValue::UNDEFINED))
+            .into_js_value()
+            .unchecked_into::<Function>();
+        let wait = jspi
+            .suspending(&wait)
+            .expect("the browser wraps the import");
+        let imports = js::object(&[("wait", wait)])
+            .and_then(|imports| js::object(&[("", imports.into())]))
+            .expect("the imports");
+        let module = WebAssembly::Module::new(&Uint8Array::from(SUSPENDS).into())
+            .expect("the module compiles");
+        let instance =
+            WebAssembly::Instance::new(&module, &imports).expect("the module instantiates");
+        export::<Function>(&instance.exports(), "hand").expect("the module exports `hand`")
+    }
+
+    #[wcmp_macros::test]
+    async fn it_releases_the_references_of_a_call_that_returns_in_a_later_stretch() {
+        let jspi = Jspi::read().expect("the browser has JSPI");
+        let entrance = Rc::new(
+            Entrance::new(
+                &jspi,
+                &hand(&jspi),
+                Some((vec![ValType::EXTERNREF], vec![ValType::EXTERNREF])),
+                &mut HashMap::new(),
+            )
+            .expect("the entrance"),
+        );
+        assert!(entrance.records(), "a module names the function's type");
+
+        // The first call is not watched, so the entrance keeps what it
+        // returned; the second is, and the entrance lets it go.
+        for (token, watched) in [(1, false), (2, true)] {
+            let value: JsValue = Object::new().into();
+            let args = Array::of2(&value, &JsValue::from(token));
+            let promise = Reflect::apply(entrance.promising(), &JsValue::UNDEFINED, &args)
+                .expect("the call starts")
+                .dyn_into::<Promise>()
+                .expect("a promising call answers a promise");
+            assert!(entrance.returned(token).is_none(), "the call suspended");
+            if watched {
+                entrance.release_when_settled(&promise);
+            }
+            let returned = JsFuture::from(promise).await.expect("the call returns");
+            assert!(
+                Object::is(&returned, &value),
+                "the call returned its argument"
+            );
+            let kept = entrance.references[0].value();
+            if watched {
+                assert!(kept.is_null(), "the entrance let go of {kept:?}");
+            } else {
+                assert!(
+                    Object::is(&kept, &value),
+                    "an unwatched entrance keeps the return"
+                );
+            }
+        }
+    }
+
+    #[wcmp_macros::test]
+    async fn it_releases_a_later_stretch_return_of_a_store_call() {
+        let engine = Engine::with_backend(crate::Web::new());
+        let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+        let wait = Func::new_suspending(&mut store, FuncType::new([], []), |_, _, _| {
+            Ok(Poll::Pending)
+        })
+        .expect("the store makes a suspending host function");
+        let module = Module::compile(&engine, SUSPENDS)
+            .await
+            .expect("the module compiles");
+        let instance = Instance::instantiate(&mut store, &module, &[wait.into()])
+            .await
+            .expect("the module instantiates");
+        let hand = instance
+            .get_export(&mut store, "hand")
+            .expect("the instance belongs to the store")
+            .and_then(|export| export.into_func())
+            .expect("the module exports `hand`");
+
+        let before = SETTLED.with(Cell::get);
+        let held = ExternRef::new(&mut store, "held").expect("the store makes an externref");
+        let mut results = [Val::ExternRef(None)];
+        let Ok(ResumableCall::Suspended(handle)) = hand
+            .call_resumable(&mut store, &[Val::ExternRef(Some(held))], &mut results)
+            .await
+        else {
+            panic!("the call suspends in `wait`");
+        };
+        assert_eq!(SETTLED.with(Cell::get), before, "the call has not returned");
+        let finished = handle
+            .resume(&mut store, &[], &mut results)
+            .await
+            .expect("the resumed call returns");
+        assert!(matches!(finished, ResumableCall::Finished), "{finished:?}");
+        assert!(matches!(results[0], Val::ExternRef(Some(_))));
+        // The store watched the call's promise, and the entrance let go of
+        // what the later stretch returned once it settled.
+        assert_eq!(SETTLED.with(Cell::get), before + 1);
     }
 }

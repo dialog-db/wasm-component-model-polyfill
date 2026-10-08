@@ -442,6 +442,7 @@ impl WebStore {
                 let promise = started
                     .and_then(|promise| promise.dyn_into::<Promise>())
                     .unwrap_or_else(|error| Promise::reject(&error));
+                entrance.release_when_settled(&promise);
                 flight.watch(&promise);
             }
         }
