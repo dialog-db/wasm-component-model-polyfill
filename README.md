@@ -351,6 +351,285 @@ prints the current numbers.
 
 The consumer of the polyfill is Rust code. There is no JavaScript API.
 
+## Backends compared
+
+The polyfill runs core Wasm on one of three backends. The host makes one and
+hands it to `Engine::with_backend`, as the [quick start](#quick-start) shows.
+This section says what each backend can do, where it stops, and which record
+holds each fact.
+
+| Backend  | Crate                          | Runs                                                       | Engine                                  |
+| -------- | ------------------------------ | ---------------------------------------------------------- | --------------------------------------- |
+| Browser  | `rust/wcmp-wasm-core-web`      | In a browser, on `wasm32-unknown-unknown`                  | The browser's `WebAssembly` API         |
+| Wasmi    | `rust/wcmp-wasm-core-wasmi`    | Natively. It also builds for `wasm32`, which no lane tests | Wasmi 2.0, an interpreter               |
+| Wasmtime | `rust/wcmp-wasm-core-wasmtime` | Natively only                                              | Wasmtime 49, used as a core engine only |
+
+The Wasmtime backend is the control: it runs beside the other two on every test
+lane, so that a person can compare their results with Wasmtime's.
+
+### Capabilities
+
+Every backend runs Wasm 2.0. A capability is a Wasm feature above Wasm 2.0, or
+host suspension, that a backend declares only where its engine implements it
+faithfully. The names come from one fixed list
+(`rust/wcmp-wasm-core/src/capability/capability.rs`). A component that needs a
+capability the backend does not declare fails at `Component::new` with
+`Error::Unsupported` and the name of the capability.
+
+| Capability            | Browser, as a probe finds it     | Wasmi | Wasmtime                         |
+| --------------------- | -------------------------------- | ----- | -------------------------------- |
+| `multi_memory`        | Yes in Chromium                  | Yes   | Yes                              |
+| `memory64`            | Yes in Chromium. No in WebKitGTK | Yes   | Yes                              |
+| `tail_call`           | Yes in Chromium                  | Yes   | Yes                              |
+| `exceptions`          | Yes in Chromium                  | No    | Yes                              |
+| `function_references` | Yes in Chromium                  | No    | Yes                              |
+| `gc`                  | Yes in Chromium                  | No    | Yes                              |
+| `relaxed_simd`        | Yes in Chromium                  | Yes   | Yes                              |
+| `threads`             | Yes in Chromium                  | No    | Yes                              |
+| `stack_switching`     | No browser ships it              | No    | Where Wasmtime's compiler has it |
+| `host_suspension`     | Where the browser has JSPI       | Yes   | No                               |
+
+Sources: each backend's `src/backend.rs` and crate docs (`src/lib.rs`). The
+Chromium column is the test `it_declares_what_chromium_implements` in
+`rust/wcmp-wasm-core-web/tests/web.rs`. The `stack_switching` row for browsers
+is from `rust/wcmp/src/concurrency/stack_switching_provider.rs`.
+
+The browser backend decides each Wasm row at run time. When `Web::new` runs, it
+gives one small module per feature to `WebAssembly.validate`, and it declares
+each feature whose module the browser accepts
+(`rust/wcmp-wasm-core-web/src/probes.rs`). It declares `host_suspension` where
+the browser has both functions of JavaScript Promise Integration (JSPI),
+`WebAssembly.Suspending` and `WebAssembly.promising`. A browser that lacks a
+feature still loads the backend, which then declares less.
+
+Two browser cases matter today:
+
+- WebKitGTK 2.54.0 ships JavaScriptCore with memory64 off and with multi-memory
+  and JSPI on. The polyfill refuses a component with a 64-bit memory there with
+  `Unsupported(memory64)` (card `629412`, 2026-10-05).
+- In a browser without `multi_memory`, as older Safari releases were
+  (`rust/wcmp/tests/baseline_content_security_policy.rs`), the backend copies
+  bytes in bulk with JavaScript `TypedArray.set`, which is the slower path. The
+  translator then refuses a fused adapter that copies between the memories of
+  two components (card `b5a406`).
+
+### Host suspension
+
+Host suspension lets a host function answer "not yet". The engine sets the guest
+call aside, and the host resumes it later with the result. The polyfill uses it
+to pause a guest thread. The section
+[Blocking needs a suspend provider](#blocking-needs-a-suspend-provider) explains
+how the engine picks a provider, and what happens without one.
+
+|                              | Browser                                                    | Wasmi                                           | Wasmtime                                                                                |
+| ---------------------------- | ---------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Mechanism                    | JSPI: `WebAssembly.promising` and `WebAssembly.Suspending` | Wasmi's resumable calls (`call_resumable`)      | None. The polyfill uses stack switching instead, where the backend declares it          |
+| Suspend provider             | Host suspension                                            | Host suspension                                 | Stack switching on x86_64 Linux, otherwise none                                         |
+| A resumption                 | Runs later, on a microtask                                 | Runs at once, to the next suspension or the end | Not applicable                                                                          |
+| Suspended calls in one store | Any number, resumed in any order                           | Any number, resumed in any order                | Not applicable. `Func::call_async` holds the store, so one store has one suspended call |
+
+Sources: the crate docs of each backend, and
+`rust/wcmp/src/suspend_provider_kind.rs` for the provider. The Wasmtime crate
+docs name x86-64 Linux and macOS as the platforms where it declares
+`stack_switching`. The polyfill's switch probe passes on x86_64 Linux.
+
+Known limits:
+
+- **Browser and Wasmi.** A call can suspend only where WebAssembly frames alone
+  lie between the start of the resumable call and the host function. Where a
+  host frame lies between them, "not yet" traps the guest with `TrapKind::Host`
+  (each crate's docs).
+- **Browser.** A host function cannot resume a call, because the browser runs
+  the resumed stack only after the host function returns. The attempt fails with
+  `Error::Backend` (crate docs). A guest thread that starts inside a host
+  function and traps before it first pauses loses the reason for the trap: the
+  browser reports the reason only to a caller that awaits the call, and a host
+  function cannot await. This costs one conformance directive,
+  `wasmtime/thread-transparency/reentrancy.wast:114`
+  (`rust/wcmp/tests/corpus/expected-failures.web.txt`, card `656c71`).
+- **Wasmi.** A start and a resumption both finish inside the poll that begins
+  them: each future is ready on its first poll (crate docs). So a long guest
+  computation holds the thread that polls until it suspends or ends.
+
+### Memory
+
+| Memory operation                        | Browser                                                                | Wasmi                                   | Wasmtime                                                           |
+| --------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| How guest memory is held                | The browser's engine decides                                           | A `Vec` that is zero-filled as it grows | Reserved address space, with only touched pages committed          |
+| A scalar load or store                  | A call into a generated accessor module, from Wasm to Wasm             | Direct                                  | Direct                                                             |
+| `with_bytes` (lend a range to the host) | Copies the range into a buffer of the polyfill once                    | Lends the memory's own bytes            | Lends the memory's own bytes, or copies a shared memory atomically |
+| A bulk copy                             | One `memory.copy` with `multi_memory`. One `TypedArray.set` without it | One `memmove`                           | One `memmove`                                                      |
+| A shared memory without `multi_memory`  | Eight bytes per accessor call, each byte atomic                        | Not supported                           | Not applicable                                                     |
+
+Sources: each backend's crate docs, `rust/wcmp-wasm-core-web/src/accessor.rs`,
+card `f7eb9b` for the eight-byte batching, and
+`rust/wcmp/tests/corpus/README.md` for how Wasmi and Wasmtime hold memory.
+
+What this costs:
+
+- **Wasmi holds every page.** Measured alone in the debug build,
+  `wasmtime/memory64.wast` peaks at 34 MiB on Wasmtime and 4112 MiB on Wasmi,
+  and `wasmtime/big-strings.wast` at 34 MiB and 5134 MiB
+  (`rust/wcmp/tests/corpus/README.md`). The Wasmi lane runs these two files one
+  at a time.
+- **The browser reaches only 4 GiB.** The polyfill is 32-bit code in the
+  browser, and its Canonical ABI addresses guest memory with `usize`. So it
+  cannot lift or lower data that lies past 4 GiB in a 64-bit guest memory. This
+  costs three directives of `wasmtime/memory64.wast`
+  (`rust/wcmp/tests/corpus/expected-failures.web.txt`). Without `multi_memory`,
+  a bulk copy also works only within the first 4 GiB of a memory, and fails with
+  `Error::Backend` past it (`rust/wcmp-wasm-core-web/src/store.rs`).
+
+### Performance
+
+The numbers below come from the benchmark suite (`rust/wcmp-bench`). Absolute
+times depend on the machine. Compare a benchmark with itself before and after a
+change, on one machine (`rust/wcmp-bench/README.md`). The baseline `afc71435f`
+is the last commit before every browser call went through JSPI.
+
+**The browser's host-suspension path.** When every browser export call became a
+JSPI resumable call (card `7eb780`), each call cost about 3 µs more. Card
+`721eac` recorded these figures, with the benchmark names as the card gives
+them:
+
+| Benchmark          | Before (µs) | After the change (µs) |
+| ------------------ | ----------- | --------------------- |
+| `u32-call`         | 3.333       | 4.381                 |
+| `string/64`        | 4.158       | 6.800                 |
+| `list-u8-typed/64` | 3.889       | 6.333                 |
+| `list-u32/4096`    | 78.0        | 120.5                 |
+
+Card `721eac` then made a call that never suspends end on its first poll, with
+no JavaScript closure, no promise handler, and no microtask. Its reviewer
+measured every string and list benchmark at 0.875 to 0.997 times the baseline,
+for example `string/64` 4.32 → 3.78 µs. Card `f87de5` closed the remaining gaps.
+Its reviewer's paired ratios against the baseline: `u32-call-typed` 0.89,
+`composition-call` 0.90, `resource-handle` 0.91, `host-calls-in-flight/8` 0.97,
+and `host-calls-in-flight/64` 0.99. Native ratios were 0.91 to 1.00. Card
+`bf9a7f` records one older gap: `list-u8-roundtrip/65536` is about 1 to 2%
+slower than the baseline.
+
+A call that does suspend still pays for a promise and a microtask at each
+resumption (crate docs of `rust/wcmp-wasm-core-web`).
+
+**Floats in the browser.** The JavaScript API carries a float as a `Number`,
+which can change the bits of a NaN. So the backend calls each export whose type
+holds a float through a carrier: a small generated module that passes an `f64`
+as the `i64` of its bits, which JavaScript receives as a `BigInt`
+(`rust/wcmp-wasm-core-web/src/carrier.rs`). No benchmark measures this cost yet.
+Card `841af1` asks for one.
+
+### Fidelity
+
+| Suite                          | Browser                      | Wasmi                 | Wasmtime              |
+| ------------------------------ | ---------------------------- | --------------------- | --------------------- |
+| Conformance, directives passed | 2407 of 2443 (98.5%)         | 2352 of 2443 (96.3%)  | 2412 of 2443 (98.7%)  |
+| Fidelity, script tests passed  | 264, with 83 listed failures | 264, with none listed | 267, with none listed |
+| Zena scenarios passed          | 18 of 18                     | 2 of 18               | 18 of 18              |
+
+- **Conformance** is the Component Model and Wasmtime `.wast` corpora under the
+  [conformance](#conformance) harness, with the suspend provider on. The figures
+  are the Baseline tables of `rust/wcmp/tests/corpus/README.md`, from the
+  `tests all` run of 2026-10-08. On Wasmi, the 60 lines of
+  `expected-failures.wasmi.txt` are components that need a capability Wasmi
+  lacks, and the directives that fail after them.
+- **Fidelity** is the WebAssembly specification test suite, run on one backend
+  through the runtime layer (`rust/wcmp-wasm-core-fidelity`). The counts are
+  from card `c91d3d` (2026-10-01). The Wasmtime file has three more tests, which
+  test the runner itself. A script that needs a capability the backend does not
+  declare passes without a run, so the same count does not mean the same
+  coverage. Each backend lists its expected failures, each with a citation, in
+  `tests/fidelity/expected-failures.txt` in its crate. The browser's 83 are V8
+  defects and limits that the web embedding requires (see
+  [known limits](#known-limits)).
+- **Zena** runs programs that the Zena toolchain compiles, as components
+  (`rust/wcmp/tests/zena/README.md`). The counts are the passes per subject in
+  `rust/wcmp/tests/zena/record.txt`. The report of 2026-10-08 in the README
+  gives the same counts. The Wasmtime column is the polyfill over the Wasmtime
+  backend (`native` in the record). Wasmtime's own run (`wasmtime`) also passes
+  18 of 18. On Wasmi, 16 scenarios stop at `Component::new` with
+  `Unsupported(gc)`.
+
+### Known limits
+
+**Engine defects.**
+
+- V8 words two traps, an integer overflow and an invalid conversion to integer,
+  with one message. The browser backend reads that trap as `TrapKind::Other`,
+  never as a wrong kind. This is 75 of the browser's fidelity failures
+  (`rust/wcmp-wasm-core-web/tests/fidelity/expected-failures.txt`, cited to V8's
+  `message-template.h`).
+- V8 checks the element segment before the array in `array.init_elem`, where the
+  specification checks the array first. Two fidelity failures (same file, cited
+  to V8's `runtime-wasm.cc`).
+- A Wasmi built optimized with debug assertions overflows the native stack on a
+  long run (wasmi-labs/wasmi#2039). The Wasmi crate docs give the profile
+  setting that avoids it.
+- Wasmtime's embedding API cannot carry a continuation reference
+  (bytecodealliance/wasmtime#10248). The Wasmtime backend refuses such a
+  crossing with `Error::Backend` (crate docs).
+
+**Limits that the web embedding requires.**
+
+- The JavaScript API carries no `v128`, no `exnref`, and no continuation
+  reference, and it can change the bits of a NaN. The backend carries `v128`,
+  `exnref`, and float values of an export through a generated carrier. Any other
+  crossing of `v128` or `exnref`, such as the value of a global or a table
+  element of that type, fails with `Error::TypeMismatch` (crate docs).
+- The JavaScript API limits a table to 10,000,000 elements and a 64-bit memory
+  to 2^37-1 pages. Every browser refuses a module above them. Four fidelity
+  failures, cited to the
+  [JavaScript API](https://github.com/WebAssembly/spec/blob/608711107b7f1edb13efd57b7d79b49477462d36/document/js-api/index.bs#L2208-L2234).
+- An atomic wait on the main thread of a page throws, as `Atomics.wait` does.
+  Two fidelity failures, cited to the threads proposal and ECMA-262.
+- Chromium refuses a synchronous compile of a module above 8 MB on the main
+  thread. `Component::new` compiles asynchronously, so this affects only the
+  synchronous compile (crate docs).
+- A shared memory needs a page with cross-origin isolation. The test lanes serve
+  every page with the headers for it, so no lane shows a page without them
+  (crate docs, card `f7eb9b`).
+
+**Missing capabilities.**
+
+- **Wasmi** lacks `gc`, `exceptions`, `function_references`, `threads`, and
+  `stack_switching`. For lack of `gc`, 16 of 18 Zena scenarios stop at
+  `Component::new` on Wasmi (`rust/wcmp/tests/zena/record.txt`). Together, the
+  missing capabilities cost Wasmi 23 conformance directives (16 for
+  `exceptions`, 5 for `gc`, and one each for `threads` and
+  `function_references`), and 37 more that fail after them
+  (`rust/wcmp/tests/corpus/expected-failures.wasmi.txt`).
+- **Browser.** No browser ships `stack_switching`. WebKitGTK 2.54.0 ships
+  memory64 off (card `629412`). In a browser without `gc`, `thread.new-indirect`
+  fails with an internal error when it is called, not with `Unsupported(gc)` at
+  `Component::new` (card `10acdb`, open).
+- **Wasmtime** does not declare `host_suspension`, and declares
+  `stack_switching` only where its compiler has it (crate docs).
+
+**Backend limits.**
+
+- **Wasmi: 64 nested host calls.** Wasmi does not bound a chain of host
+  functions that call back into a guest, because each call runs Wasmi again on
+  the native stack. The backend allows at most 64 such calls inside one another.
+  The 65th traps with `TrapKind::StackOverflow` before the host function runs
+  (crate docs, `MAX_HOST_DEPTH` in `rust/wcmp-wasm-core-wasmi/src/store.rs`).
+- **Wasmi: a 64-bit memory with the largest maximum.** Wasmi panics when it
+  grows a 64-bit memory whose maximum is 2^48 pages (`wasmi_core` 2.0.0,
+  `crates/core/src/memory/mod.rs:165`). The backend refuses to make such a
+  memory, and refuses a host's growth of one. It cannot stop a guest's
+  `memory.grow` on one, and on x86-64 that panic aborts the process. A host that
+  runs untrusted memory64 modules on Wasmi checks their maxima itself (crate
+  docs).
+- **Wasmi: memory.** Every grown page is allocated and zero-filled (see
+  [memory](#memory)).
+- **Browser: 4 GiB.** See [memory](#memory).
+- **Browser: host suspension.** A host function cannot resume a call, and a trap
+  early in a thread started inside a host function loses its reason (see
+  [host suspension](#host-suspension), and
+  [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider) for
+  the other rare cases).
+- **Wasmtime: no browser.** The Wasmtime backend does not build for the browser.
+  On `wasm32` the crate is empty (crate docs).
+
 ## Development
 
 The repository is a Nix flake. Enter the shell with `nix develop`. It prints a
