@@ -130,6 +130,10 @@ impl Guest for Fixture {
     fn tally_drops() -> u32 {
         host_ops::tally_drops()
     }
+
+    fn mix(values: Scalars, text: String, bytes: Vec<u8>, tag: u32, step: i8) -> Mixture {
+        host_ops::mix(values, &text, &bytes, tag, step)
+    }
 }
 
 export!(Fixture);

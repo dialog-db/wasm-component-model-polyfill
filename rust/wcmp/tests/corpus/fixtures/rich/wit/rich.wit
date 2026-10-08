@@ -8,7 +8,7 @@ package wcmp:rich@0.1.0;
 
 /// Every value shape the fixture carries across a component
 /// boundary: records, variants, enums, flags, options, results,
-/// nested lists, and strings.
+/// nested lists, strings, tuples, and every scalar type.
 interface shapes {
   record point {
     x: s32,
@@ -51,6 +51,66 @@ interface shapes {
     blank,
     unpaintable(colour),
   }
+
+  /// Thirty-two flags, the most a flags type may hold, so the set
+  /// fills its word up to the sign bit.
+  flags wide {
+    f0,
+    f1,
+    f2,
+    f3,
+    f4,
+    f5,
+    f6,
+    f7,
+    f8,
+    f9,
+    f10,
+    f11,
+    f12,
+    f13,
+    f14,
+    f15,
+    f16,
+    f17,
+    f18,
+    f19,
+    f20,
+    f21,
+    f22,
+    f23,
+    f24,
+    f25,
+    f26,
+    f27,
+    f28,
+    f29,
+    f30,
+    f31,
+  }
+
+  /// The scalar types and the shapes the other types leave out.
+  record scalars {
+    letter: char,
+    flag: bool,
+    short: u16,
+    big: u64,
+    signed: s64,
+    single: f32,
+    double: f64,
+    pair: tuple<u8, s16>,
+    nested: option<option<u32>>,
+    marks: wide,
+  }
+
+  /// Everything `mix` takes, as one value.
+  record mixture {
+    values: scalars,
+    text: string,
+    bytes: list<u8>,
+    tag: u32,
+    step: s8,
+  }
 }
 
 /// What the support component provides: the same shapes, and a
@@ -58,7 +118,7 @@ interface shapes {
 /// component that defines it while another component holds the
 /// handle.
 interface host-ops {
-  use shapes.{drawing, point, outline, colour, style, failure};
+  use shapes.{drawing, point, outline, colour, style, failure, scalars, mixture};
 
   resource tally {
     constructor(seed: u32);
@@ -71,6 +131,9 @@ interface host-ops {
   describe: func(colour: colour, style: style, title: option<string>) -> string;
   fold: func(rows: list<list<u32>>) -> list<u32>;
   tally-drops: func() -> u32;
+  /// Nineteen flat parameters, three past the most that pass as core
+  /// parameters, so the caller spills them to memory.
+  mix: func(values: scalars, text: string, bytes: list<u8>, tag: u32, step: s8) -> mixture;
 }
 
 /// The resource the guest defines: a constructor, two methods, a
@@ -90,7 +153,7 @@ interface counters {
 /// every call it answers is forwarded through the guest, so a value
 /// crosses three component boundaries and back.
 world driver {
-  use shapes.{drawing, point, outline, colour, style, failure};
+  use shapes.{drawing, point, outline, colour, style, failure, scalars, mixture};
 
   import counters;
   import round-trip: func(picture: drawing) -> drawing;
@@ -100,6 +163,7 @@ world driver {
   import fold: func(rows: list<list<u32>>) -> list<u32>;
   import exercise-tallies: func(steps: list<u32>) -> u32;
   import tally-drops: func() -> u32;
+  import mix: func(values: scalars, text: string, bytes: list<u8>, tag: u32, step: s8) -> mixture;
 
   export round-trip: func(picture: drawing) -> drawing;
   export measure-all: func(shapes: list<outline>) -> list<result<point, failure>>;
@@ -108,6 +172,7 @@ world driver {
   export fold: func(rows: list<list<u32>>) -> list<u32>;
   export exercise-tallies: func(steps: list<u32>) -> u32;
   export tally-drops: func() -> u32;
+  export mix: func(values: scalars, text: string, bytes: list<u8>, tag: u32, step: s8) -> mixture;
   export exercise-counters: func(steps: list<u32>) -> u32;
   export counter-drops: func() -> u32;
 }
@@ -116,7 +181,7 @@ world driver {
 /// and resource, and exports its own resource beside the functions
 /// the driver calls.
 world guest {
-  use shapes.{drawing, point, outline, colour, style, failure};
+  use shapes.{drawing, point, outline, colour, style, failure, scalars, mixture};
 
   import host-ops;
 
@@ -129,6 +194,7 @@ world guest {
   export fold: func(rows: list<list<u32>>) -> list<u32>;
   export exercise-tallies: func(steps: list<u32>) -> u32;
   export tally-drops: func() -> u32;
+  export mix: func(values: scalars, text: string, bytes: list<u8>, tag: u32, step: s8) -> mixture;
 }
 
 /// The support component: the far side of every shape the guest

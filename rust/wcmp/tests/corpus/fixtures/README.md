@@ -77,7 +77,8 @@ polyfill's linker would have to be handed.
 ### `rich`
 
 Three components against one world of records, variants, enums, flags,
-options, results, nested lists, strings, and two resources:
+options, results, nested lists, strings, tuples, every scalar type, and
+two resources:
 
 - `support` exports `wcmp:rich/host-ops@0.1.0`: the far side of every
   shape, and the `tally` resource whose constructor, methods, and
@@ -93,6 +94,16 @@ options, results, nested lists, strings, and two resources:
 
 `wac plug` joins them in two steps, so every value the assertions
 check has crossed three component boundaries in each direction.
+
+`mix` carries the shapes the rest leave out: `char`, `bool`, `u16`,
+`u64`, `s64`, both floats, a tuple, `option<option<u32>>`, a set of
+thirty-two flags, a string of multi-byte characters, and a list of
+every byte value. Thirty-two flags is the most a flags type may hold,
+and they flatten to one `i32`. With the `u8`, `s8`, `s16`, `u32`, and
+`s32` elsewhere in the world, every scalar type crosses. Its parameters
+flatten to nineteen values, three more than may pass as core
+parameters, so every caller spills them to memory, the host's call
+into the driver included.
 
 The composed component keeps one import, the type-only
 `wcmp:rich/shapes@0.1.0` instance that the worlds' `use` declarations

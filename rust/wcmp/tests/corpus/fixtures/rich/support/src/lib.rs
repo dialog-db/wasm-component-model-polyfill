@@ -19,7 +19,9 @@ wit_bindgen::generate!({
 });
 
 use exports::wcmp::rich::host_ops::{Guest, GuestTally};
-use wcmp::rich::shapes::{Colour, Drawing, Failure, Label, Outline, Point, Style};
+use wcmp::rich::shapes::{
+    Colour, Drawing, Failure, Label, Mixture, Outline, Point, Scalars, Style, Wide,
+};
 
 /// How many `tally` destructors have run. The guest reads it back
 /// through `tally-drops`, so a destructor that never ran shows up as
@@ -156,6 +158,37 @@ impl Guest for Support {
 
     fn tally_drops() -> u32 {
         TALLY_DROPS.load(Ordering::Relaxed)
+    }
+
+    /// Changes every value, so each comes back different from what
+    /// went out: the next code point, the other boolean, one more, the
+    /// negation, the float doubled or quartered (both exact), the other
+    /// arm of the nested option, the first and last flags toggled, the
+    /// characters reversed, and the bytes inverted.
+    fn mix(values: Scalars, text: String, bytes: Vec<u8>, tag: u32, step: i8) -> Mixture {
+        let (byte, half) = values.pair;
+        Mixture {
+            values: Scalars {
+                letter: char::from_u32(u32::from(values.letter) + 1).unwrap_or('?'),
+                flag: !values.flag,
+                short: values.short.wrapping_add(1),
+                big: values.big.wrapping_add(1),
+                signed: values.signed.wrapping_neg(),
+                single: values.single * 2.0,
+                double: values.double / 4.0,
+                pair: (byte.wrapping_add(1), half.wrapping_neg()),
+                nested: match values.nested {
+                    None => Some(None),
+                    Some(None) => None,
+                    Some(Some(number)) => Some(Some(number.wrapping_add(1))),
+                },
+                marks: values.marks ^ (Wide::F0 | Wide::F31),
+            },
+            text: text.chars().rev().collect(),
+            bytes: bytes.iter().map(|byte| !byte).collect(),
+            tag: tag.wrapping_add(1),
+            step: step.wrapping_neg(),
+        }
     }
 }
 

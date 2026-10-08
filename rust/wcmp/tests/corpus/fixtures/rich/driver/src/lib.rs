@@ -50,6 +50,10 @@ impl Guest for Driver {
         crate::tally_drops()
     }
 
+    fn mix(values: Scalars, text: String, bytes: Vec<u8>, tag: u32, step: i8) -> Mixture {
+        crate::mix(values, &text, &bytes, tag, step)
+    }
+
     /// The guest's own resource, driven from another component: two
     /// constructors, a method per step, the static method over two
     /// borrows, and two handle drops that run the guest's destructor.

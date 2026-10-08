@@ -155,12 +155,13 @@ emit_wast composition composed composition/composed.wasm
 
 # rich: three components built by `cargo` and wit-bindgen against a
 # world of records, variants, enums, flags, options, results, nested
-# lists, strings, and two resources. `support` answers the shapes and
-# owns the `tally` resource; `guest` imports it, exports its own
-# `counter` resource, and exports the functions the assertions call;
-# `driver` forwards each of those and drives `counter` from outside
-# the component that defines it. Two `wac plug` steps join them, so
-# every value crosses three component boundaries.
+# lists, strings, tuples, every scalar type, and two resources.
+# `support` answers the shapes and owns the `tally` resource; `guest`
+# imports it, exports its own `counter` resource, and exports the
+# functions the assertions call; `driver` forwards each of those and
+# drives `counter` from outside the component that defines it. Two
+# `wac plug` steps join them, so every value crosses three component
+# boundaries.
 rust_components rich support guest driver
 wac plug --plug "$work/rich-support.wasm" "$work/rich-guest.wasm" -o "$work/rich-linked.wasm"
 wac plug --plug "$work/rich-linked.wasm" "$work/rich-driver.wasm" -o rich/rich.wasm
