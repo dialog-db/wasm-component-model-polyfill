@@ -1798,8 +1798,12 @@
         # lane starts write their profiles under the same directory. The
         # path is kept short on purpose: Chromium puts Unix sockets under
         # `$TMPDIR`, and a socket path longer than 108 bytes aborts the
-        # browser at startup.
+        # browser at startup. The variables that steer the Zena test that
+        # holds every subject to the record are unset here, so only
+        # `tests zena` sets them: one inherited from the caller's shell
+        # would have that test write the record instead of gating it.
         testWorkspace = lane: ''
+          unset WCMP_ZENA_REGENERATE WCMP_ZENA_WEB_RUN WCMP_ZENA_REPORT
           workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${lane}"
           rm -rf "$workspace"
           mkdir -p "$workspace/archive" "$workspace/tmp"
@@ -2239,7 +2243,7 @@
                 '';
               };
               zena = {
-                description = "The Zena scenarios on every subject, held to every line of tests/zena/record.txt, then the compatibility report: the pin, each scenario with the stage of Browser, Native (the polyfill over Wasmtime), Wasmi, and Wasmtime and the reason of each that stopped before pass, and pass counts (`tests zena regenerate [--dry-run]` writes the record again from every subject, the browser included, or only prints the difference)";
+                description = "Zena gate and report on every subject; `regenerate [--dry-run]` rewrites the record";
                 command = zenaCommand;
               };
               # The conformance corpus runs in four states: each target with

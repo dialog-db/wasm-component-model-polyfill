@@ -445,58 +445,73 @@ async fn it_holds_every_subject_of_every_scenario_to_the_committed_record() {
     );
 }
 
-/// The browser's reports, from the output of its scenario run that
-/// `tests zena` keeps in the file `WCMP_ZENA_WEB_RUN` names: every line
-/// that starts with `PRINTED`.
+/// The browser's reports in `output`, the output of its scenario run
+/// that `tests zena` keeps: every line that starts with `PRINTED`. The
+/// run must report every scenario of `scenarios` once, as the browser
+/// subject, and no other scenario, or the error says which line or
+/// scenario breaks that.
+fn browser_reports_in(output: &str, scenarios: &[&str]) -> Result<Vec<Report>, String> {
+    let mut reports: Vec<Report> = Vec::new();
+    for line in output
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix(PRINTED))
+    {
+        let report: Report = line.parse().map_err(|error| format!("`{line}`: {error}"))?;
+        if report.subject != Subject::Web {
+            return Err(format!("`{report}` is not a report of the browser"));
+        }
+        if !scenarios.contains(&report.scenario.as_str()) {
+            return Err(format!("`{report}` names no scenario of the bundle"));
+        }
+        if reports.iter().any(|seen| seen.scenario == report.scenario) {
+            return Err(format!("`{report}` reports its scenario a second time"));
+        }
+        reports.push(report);
+    }
+    let missing: Vec<&str> = scenarios
+        .iter()
+        .copied()
+        .filter(|&scenario| !reports.iter().any(|report| report.scenario == scenario))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "the browser's run reports no line for {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(reports)
+}
+
+/// The browser's reports of `scenarios`, from the output of its scenario
+/// run that `tests zena` keeps in the file `WCMP_ZENA_WEB_RUN` names.
 #[cfg(not(target_arch = "wasm32"))]
-fn browser_reports() -> Vec<Report> {
+fn browser_reports(scenarios: &[&str]) -> Vec<Report> {
     let path = std::env::var("WCMP_ZENA_WEB_RUN").unwrap_or_else(|_| {
         panic!("WCMP_ZENA_WEB_RUN names no file; this test reads the browser's run that `tests zena` keeps")
     });
     let output = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
-    let reports: Vec<Report> = output
-        .lines()
-        .filter_map(|line| line.trim_start().strip_prefix(PRINTED))
-        .map(|line| {
-            line.parse()
-                .unwrap_or_else(|error| panic!("{path}: `{line}`: {error}"))
-        })
-        .collect();
-    for report in &reports {
-        assert_eq!(report.subject, Subject::Web, "{path}: `{report}`");
-    }
-    reports
+    browser_reports_in(&output, scenarios).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[wcmp_macros::test]
 async fn it_holds_every_subject_to_the_record_and_prints_the_report() {
-    let browser = browser_reports();
+    let bundled = zena_scenarios();
+    let scenarios: Vec<&str> = bundled
+        .iter()
+        .map(|scenario| scenario.name.as_str())
+        .collect();
+    let browser = browser_reports(&scenarios);
     // Both native subjects run here, whatever backend the run chose.
     let wasmtime = PolyfillRun::over(test_backend::Kind::Wasmtime)
         .unwrap_or_else(|error| panic!("the polyfill run over Wasmtime: {error}"));
     let wasmi = PolyfillRun::over(test_backend::Kind::Wasmi)
         .unwrap_or_else(|error| panic!("the polyfill run over Wasmi: {error}"));
-    let bundled = zena_scenarios();
     let mut reports = subjects_of(&wasmtime, BUNDLE).await;
     for scenario in &bundled {
         reports.push(report(&wasmi, scenario).await);
     }
-    let mut scenarios: Vec<&str> = bundled
-        .iter()
-        .map(|scenario| scenario.name.as_str())
-        .collect();
-    let mut reported: Vec<&str> = browser
-        .iter()
-        .map(|report| report.scenario.as_str())
-        .collect();
-    scenarios.sort_unstable();
-    reported.sort_unstable();
-    assert_eq!(
-        reported, scenarios,
-        "the browser's run reports these scenarios where the bundle holds those"
-    );
-    reports.extend(browser.iter().cloned());
+    reports.extend(browser);
 
     let pin = built_revision();
     let run = Record::new("zena", pin.clone(), reports.clone());
@@ -518,6 +533,155 @@ async fn it_holds_every_subject_to_the_record_and_prints_the_report() {
         "the Zena run of every subject differs from tests/zena/record.txt:\n{}where this run stopped:\n{}{REGENERATE}",
         lines(&differences),
         lines(&run.lines)
+    );
+}
+
+/// `reports` as the browser's scenario run prints them, among lines of
+/// the test runner's own.
+fn browser_run(reports: &[Report]) -> String {
+    let mut output = String::from("    Starting 1 test across 1 binary\n");
+    for report in reports {
+        output.push_str(&format!("  {PRINTED}{report}\n"));
+    }
+    output.push_str("        PASS [   1.000s] wcmp::zena it_runs_every_zena_scenario\n");
+    output
+}
+
+/// The committed record's browser lines.
+fn recorded_browser_reports(record: &Record) -> Vec<Report> {
+    record
+        .lines
+        .iter()
+        .filter(|line| line.subject == Subject::Web)
+        .cloned()
+        .collect()
+}
+
+#[wcmp_macros::test]
+fn it_reads_every_browser_report_of_a_run_and_nothing_else() {
+    let expected = recorded_browser_reports(&committed_record());
+    let scenarios: Vec<&str> = expected
+        .iter()
+        .map(|report| report.scenario.as_str())
+        .collect();
+    assert!(!expected.is_empty());
+    assert_eq!(
+        browser_reports_in(&browser_run(&expected), &scenarios),
+        Ok(expected.clone())
+    );
+}
+
+#[wcmp_macros::test]
+fn it_refuses_a_browser_run_that_reports_no_scenario() {
+    let scenarios = [SCALAR_EXPORT, STRING_ROUNDTRIP];
+    for output in ["", "        PASS [   1.000s] wcmp::zena it_runs\n"] {
+        assert_eq!(
+            browser_reports_in(output, &scenarios),
+            Err(format!(
+                "the browser's run reports no line for {SCALAR_EXPORT}, {STRING_ROUNDTRIP}"
+            )),
+            "{output:?}"
+        );
+    }
+}
+
+#[wcmp_macros::test]
+fn it_refuses_a_browser_run_that_misses_a_scenario_or_names_another() {
+    let scenarios = [SCALAR_EXPORT, STRING_ROUNDTRIP];
+    let one = format!("{PRINTED}{SCALAR_EXPORT} web pass\n");
+    assert_eq!(
+        browser_reports_in(&one, &scenarios),
+        Err(format!(
+            "the browser's run reports no line for {STRING_ROUNDTRIP}"
+        ))
+    );
+    let stray = format!("{one}{PRINTED}no-such-scenario web pass\n");
+    assert_eq!(
+        browser_reports_in(&stray, &scenarios),
+        Err("`no-such-scenario web pass` names no scenario of the bundle".to_string())
+    );
+}
+
+#[wcmp_macros::test]
+fn it_refuses_a_browser_line_of_another_subject() {
+    for subject in Subject::ALL {
+        if subject == Subject::Web {
+            continue;
+        }
+        let output = format!("{PRINTED}{SCALAR_EXPORT} {subject} pass\n");
+        assert_eq!(
+            browser_reports_in(&output, &[SCALAR_EXPORT]),
+            Err(format!(
+                "`{SCALAR_EXPORT} {subject} pass` is not a report of the browser"
+            ))
+        );
+    }
+}
+
+#[wcmp_macros::test]
+fn it_refuses_a_browser_run_that_reports_a_scenario_twice() {
+    let output =
+        format!("{PRINTED}{SCALAR_EXPORT} web pass\n{PRINTED}{SCALAR_EXPORT} web link \"again\"\n");
+    assert_eq!(
+        browser_reports_in(&output, &[SCALAR_EXPORT]),
+        Err(format!(
+            "`{SCALAR_EXPORT} web link \"again\"` reports its scenario a second time"
+        ))
+    );
+}
+
+#[wcmp_macros::test]
+fn it_refuses_a_browser_line_that_is_not_a_report() {
+    for line in [
+        String::new(),
+        "garbage".to_string(),
+        format!("{SCALAR_EXPORT} web"),
+        format!("{SCALAR_EXPORT} web no-such-stage"),
+        format!("{SCALAR_EXPORT} no-such-subject pass"),
+    ] {
+        let output = format!("{PRINTED}{line}\n");
+        let error = browser_reports_in(&output, &[SCALAR_EXPORT])
+            .expect_err(&format!("`{line}` is not a report"));
+        assert!(error.starts_with(&format!("`{line}`: ")), "{error}");
+    }
+}
+
+#[wcmp_macros::test]
+fn it_fails_the_gate_when_the_browser_run_reports_another_stage_than_the_record() {
+    let record = committed_record();
+    let mut recorded = recorded_browser_reports(&record);
+    let scenarios: Vec<String> = recorded
+        .iter()
+        .map(|report| report.scenario.clone())
+        .collect();
+    let scenarios: Vec<&str> = scenarios.iter().map(String::as_str).collect();
+    let gate = |browser: &[Report]| {
+        let read = browser_reports_in(&browser_run(browser), &scenarios).unwrap();
+        let reports: Vec<Report> = record
+            .lines
+            .iter()
+            .filter(|line| line.subject != Subject::Web)
+            .cloned()
+            .chain(read)
+            .collect();
+        record.differences(&record.pin, &reports)
+    };
+    assert_eq!(gate(&recorded), Vec::<Difference>::new());
+
+    let stage = recorded[0].verdict.stage;
+    let other = *Stage::ALL.iter().find(|&&each| each != stage).unwrap();
+    recorded[0].verdict = Verdict {
+        stage: other,
+        reason: "another stage".to_string(),
+    };
+    assert_eq!(
+        gate(&recorded),
+        [Difference::Stage {
+            scenario: recorded[0].scenario.clone(),
+            subject: Subject::Web,
+            recorded: stage,
+            verdict: recorded[0].verdict.clone(),
+        }]
     );
 }
 
