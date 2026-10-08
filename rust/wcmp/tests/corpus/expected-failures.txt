@@ -34,11 +34,11 @@ cm/validation/max-value-size.wast:48 validation expected rejection `exceeds maxi
 cm/validation/max-value-size.wast:57 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 cm/validation/max-value-size.wast:63 validation expected rejection `exceeds maximum byte size`, but the component parsed (wasmparser 0.254 predates the element-size limit the corpus checks)
 fixtures/wasi-http-same-instance.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
-fixtures/wasi-http-same-instance.wast:2128 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
-fixtures/wasi-http-same-instance.wast:2131 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
+fixtures/wasi-http-same-instance.wast:2143 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
+fixtures/wasi-http-same-instance.wast:2146 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
 fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
-fixtures/wasi-http.wast:2246 cascade no instance to invoke
-fixtures/wasi-http.wast:2249 cascade no instance to invoke
+fixtures/wasi-http.wast:2263 cascade no instance to invoke
+fixtures/wasi-http.wast:2266 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer reads an i31 reference, but the polyfill's public `CoreValueType` names only `funcref` and `externref`, so it refuses the imported core module type with its `(ref i31)` table before instantiation)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
