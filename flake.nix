@@ -75,12 +75,9 @@
     # `buildZenaScenarios` and `zenaSource` below); neither enters the
     # development shell.
     #
-    # The input names a fork of Zena while Zena lacks a change this
-    # repository needs. Today that is one change: a host can pass its own
-    # reader to the WIT module synthesis, so the compiler builds as a
-    # component that serves its sources from memory (branch
-    # `component-target-compiler`, offered to Zena as a pull request). The
-    # fork holds only changes offered to Zena, as a patch series:
+    # The input names Zena's own repository. Should this repository need a
+    # change Zena lacks, the input names a fork that holds only changes
+    # offered to Zena, as a patch series:
     #
     # - Each change is one commit that addresses one concern.
     # - Each commit starts from Zena's `main`, so that it can go to Zena as
@@ -95,7 +92,13 @@
     #
     # When Zena accepts a change, the series drops it. When Zena holds
     # every change, the input moves back to `github:elematic/zena`.
-    zena.url = "github:cdata/zena/component-target-compiler";
+    #
+    # The lock holds Zena at `1ac5684`. A later Zena changes its compile
+    # options (from `91c27df`), so moving the pin past it needs the
+    # compiler entry module (`zena/compiler/compiler.zena`) ported to them.
+    # Zena's own flake also fails to build from `3891263` on, whose npm
+    # dependency hash is stale. Check both before `nix flake update`.
+    zena.url = "github:elematic/zena";
   };
 
   # The project's binary cache. CI pushes to it, so a shell or a build that

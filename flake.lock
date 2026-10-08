@@ -371,11 +371,11 @@
     },
     "nixpkgs_4": {
       "locked": {
-        "lastModified": 1781577229,
-        "narHash": "sha256-lrp67w8AulE9Ks53n27I45ADSzbOCn4H+CNW1Ck8B+8=",
+        "lastModified": 1791048980,
+        "narHash": "sha256-KgItSKML8Xvte0B7/uGnBDsYzSnnKHcOaiUbgWBXLXw=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "567a49d1913ce81ac6e9582e3553dd90a955875f",
+        "rev": "a7868a727837f3c09cee2ce0ca671c76b1589fed",
         "type": "github"
       },
       "original": {
@@ -592,16 +592,15 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1790923105,
-        "narHash": "sha256-K8TcYuVz8BxnQrZFhQ6NljD9h0J/Bg4UkWpMEthDRd0=",
-        "owner": "cdata",
+        "lastModified": 1791243095,
+        "narHash": "sha256-eZh1CQPHAeBFaKr+ezhVW6VXC60OQCuCPwhROJzKVPE=",
+        "owner": "elematic",
         "repo": "zena",
-        "rev": "1bbe472f4c34d3faf12c74f9876afcfe541c4ac3",
+        "rev": "1ac5684d6cbd97bff30c0657f307cd742c20d10b",
         "type": "github"
       },
       "original": {
-        "owner": "cdata",
-        "ref": "component-target-compiler",
+        "owner": "elematic",
         "repo": "zena",
         "type": "github"
       }

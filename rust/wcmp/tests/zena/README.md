@@ -21,10 +21,10 @@ disagree, the record is right.
 
 ## Report
 
-The report of `tests zena` on 2026-10-02:
+The report of `tests zena` on 2026-10-08:
 
 ```text
-zena at 1bbe472f4c34d3faf12c74f9876afcfe541c4ac3
+zena at 1ac5684d6cbd97bff30c0657f307cd742c20d10b
 
 - async-sleep
   - Browser: pass

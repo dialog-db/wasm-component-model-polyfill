@@ -20,8 +20,10 @@
 // library and relative imports included, comes from the host's
 // `read-source`. A directory of WIT, such as the standard library's
 // `wit`, is read the same way: the host answers its path with the text
-// Zena's `readWitSource` makes of it, every `.wit` file in the
-// directory in name order, each followed by a newline. A package
+// Zena's `joinWitFiles` makes of it, every `.wit` file in the
+// directory in name order, each followed by a newline. So the entry
+// lists no directory, and the WIT module synthesis reads the path as
+// one file through the same reader. A package
 // manifest, `zena-packages.json`, comes from the host too, when it has
 // one, as `zena build` reads it from the working directory.
 import { Future } from 'zena:async';
@@ -41,7 +43,7 @@ import { Module } from 'zena-compiler:ast';
 import { compileComponentRuntimeModule } from 'zena-compiler:codegen/component-runtime';
 import { makeImportEncoder } from 'zena-compiler:codegen/wit-imports';
 import {
-  isWitModulePath, synthesizeWitModuleFrom, synthesizeExportWrapper,
+  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper,
   declaredPackageNamespaces
 } from 'zena-compiler:wit-module-synth';
 import { ComponentEntryWrapper } from 'zena-compiler:component-entry';
@@ -105,10 +107,7 @@ final class HostReader implements CompilerHost {
 
   readFile(path: String): String {
     if (isWitModulePath(path)) {
-      let worldSource = this.worldSource;
-      return synthesizeWitModuleFrom(path,
-          (witRoot: String): String => readText(witRoot, worldSource),
-          this.packagesWit);
+      return synthesizeWitModule(this, path, this.packagesWit);
     }
     if (path == this.entryPath) {
       return this.entrySource;
@@ -117,6 +116,14 @@ final class HostReader implements CompilerHost {
       return readText(stdlibRoot + '/' + stdlibIdToRelativeFile(path), this.worldSource);
     }
     return readText(path, this.worldSource);
+  }
+
+  /**
+   * No directory is listed: the host answers a WIT directory's path with
+   * its joined document, so the synthesis reads that path as one file.
+   */
+  listDir(path: String): Array<String> | null {
+    return null;
   }
 }
 
