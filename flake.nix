@@ -66,9 +66,9 @@
       flake = false;
     };
 
-    # The Zena toolchain the Zena scenarios compile with. It tracks Zena's
-    # `main`, since Zena has no releases, and the lock holds the pin; `nix
-    # flake update zena` moves it. It keeps its own nixpkgs, as Zena's author
+    # The Zena toolchain the Zena scenarios compile with. Zena has no
+    # releases, so the url names a revision of Zena's `main`, and a blanket
+    # `nix flake update` leaves it where it is. It keeps its own nixpkgs, as Zena's author
     # builds and tests it: a different Node.js or Rust can break its build
     # for reasons unrelated to Zena. Its `zena` command and its source tree
     # are used only inside the scenario and compiler builds (see
@@ -93,12 +93,13 @@
     # When Zena accepts a change, the series drops it. When Zena holds
     # every change, the input moves back to `github:elematic/zena`.
     #
-    # The lock holds Zena at `1ac5684`. A later Zena changes its compile
-    # options (from `91c27df`), so moving the pin past it needs the
-    # compiler entry module (`zena/compiler/compiler.zena`) ported to them.
-    # Zena's own flake also fails to build from `3891263` on, whose npm
-    # dependency hash is stale. Check both before `nix flake update`.
-    zena.url = "github:elematic/zena";
+    # To move the pin, change the revision below, run `nix flake update
+    # zena`, then `tests zena regenerate` and `tests zena`. The pin is
+    # `1ac5684`. A later Zena changes its compile options (from `91c27df`),
+    # so moving past it needs the compiler entry module
+    # (`zena/compiler/compiler.zena`) ported to them. Zena's own flake also
+    # fails to build from `3891263` on, whose npm dependency hash is stale.
+    zena.url = "github:elematic/zena/1ac5684d6cbd97bff30c0657f307cd742c20d10b";
   };
 
   # The project's binary cache. CI pushes to it, so a shell or a build that

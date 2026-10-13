@@ -602,6 +602,7 @@
       "original": {
         "owner": "elematic",
         "repo": "zena",
+        "rev": "1ac5684d6cbd97bff30c0657f307cd742c20d10b",
         "type": "github"
       }
     }
