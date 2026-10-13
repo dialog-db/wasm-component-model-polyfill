@@ -1786,6 +1786,7 @@
           in
           ''
             echo "== conformance progress: ${label}"
+            unset WCMP_ZENA_REGENERATE WCMP_ZENA_WEB_RUN WCMP_ZENA_REPORT
             archive=$(nix build --no-link --print-out-paths .#${package})
             summary="''${CARGO_TARGET_DIR:-target}/conformance/${file}"
             mkdir -p "$(dirname "$summary")" "''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${scratch}"
@@ -1843,6 +1844,7 @@
                 ;;
             esac
           done
+          unset WCMP_ZENA_REGENERATE WCMP_ZENA_WEB_RUN WCMP_ZENA_REPORT
           archive=$(nix build --no-link --print-out-paths .#tests-native-debug)
           workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/tests-native-debug-regenerate"
           rm -rf "$workspace"
@@ -1896,7 +1898,8 @@
         # browser at startup. The variables that steer the Zena test that
         # holds every subject to the record are unset here, so only
         # `tests zena` sets them: one inherited from the caller's shell
-        # would have that test write the record instead of gating it.
+        # would have that test write the record instead of gating it. The
+        # `test-lane-environment` check holds every lane to that.
         testWorkspace = lane: ''
           unset WCMP_ZENA_REGENERATE WCMP_ZENA_WEB_RUN WCMP_ZENA_REPORT
           workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/wcmp-tests/${lane}"
@@ -2050,6 +2053,87 @@
             fi
           fi
         '';
+
+        # Every `tests` command that replays an archive, run with stand-ins
+        # for `nix`, `git`, `wbg-pool` and `cargo`, and with the Zena
+        # variables exported as a caller's shell might leave them. The
+        # stand-in `cargo` records whether it saw one of those values. The
+        # check fails if any lane hands an inherited value to nextest, which
+        # would turn the Zena gate into a write of the record (the `unset`
+        # in `testWorkspace`, `conformanceSummaryFor` and `tests
+        # regenerate`), or if a lane never reached `cargo`. A lane runs on
+        # past a failed step here, because its archive and repository are
+        # empty; only what the replays saw counts.
+        testLaneEnvironmentCheck =
+          let
+            leaves =
+              path: node:
+              if node ? command then
+                [
+                  {
+                    name = pkgs.lib.concatStringsSep " " path;
+                    inherit (node) command;
+                  }
+                ]
+              else
+                pkgs.lib.concatLists (
+                  pkgs.lib.mapAttrsToList (name: leaves (path ++ [ name ])) (node.subcommands or { })
+                );
+            replaying = builtins.filter (leaf: pkgs.lib.hasInfix "cargo nextest" leaf.command) (
+              leaves [ "tests" ] ciCommands.tests
+            );
+            scripts = map (leaf: {
+              inherit (leaf) name;
+              script = pkgs.writeText "lane" leaf.command;
+            }) replaying;
+          in
+          pkgs.runCommand "wcmp-test-lane-environment-check" { } (
+            ''
+              mkdir -p stubs archive repo
+              cat > stubs/nix <<EOF
+              #!${pkgs.runtimeShell}
+              echo "$PWD/archive"
+              EOF
+              cat > stubs/git <<EOF
+              #!${pkgs.runtimeShell}
+              echo "$PWD/repo"
+              EOF
+              cat > stubs/wbg-pool <<EOF
+              #!${pkgs.runtimeShell}
+              exit 0
+              EOF
+              cat > stubs/cargo <<'EOF'
+              #!${pkgs.runtimeShell}
+              echo "$LANE" >> "$REPLAYS"
+              for variable in WCMP_ZENA_REGENERATE WCMP_ZENA_WEB_RUN WCMP_ZENA_REPORT; do
+                if [ "''${!variable:-}" = inherited ]; then
+                  echo "$LANE: nextest saw $variable from the caller's shell" >> "$LEAKS"
+                fi
+              done
+              EOF
+              chmod +x stubs/*
+              export PATH="$PWD/stubs:$PATH" HOME="$PWD/home"
+              export REPLAYS="$PWD/replays" LEAKS="$PWD/leaks"
+              export WCMP_ZENA_REGENERATE=inherited WCMP_ZENA_WEB_RUN=inherited WCMP_ZENA_REPORT=inherited
+              touch "$REPLAYS" "$LEAKS"
+              status=0
+            ''
+            + pkgs.lib.concatMapStrings (lane: ''
+              LANE=${pkgs.lib.escapeShellArg lane.name} bash ${lane.script} >/dev/null 2>&1 || true
+              if ! grep -qxF ${pkgs.lib.escapeShellArg lane.name} "$REPLAYS"; then
+                echo ${pkgs.lib.escapeShellArg "${lane.name}: the lane never reached cargo"} >&2
+                status=1
+              fi
+            '') scripts
+            + ''
+              if [ -s "$LEAKS" ]; then
+                cat "$LEAKS" >&2
+                status=1
+              fi
+              test "$status" = 0
+              touch "$out"
+            ''
+          );
 
         menuTestCommand =
           {
@@ -3015,6 +3099,9 @@
             # The browser backend makes no function from a string of
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
+            # No `tests` lane hands nextest a Zena variable inherited from
+            # the caller's shell: see `testLaneEnvironmentCheck`.
+            test-lane-environment = testLaneEnvironmentCheck;
             # Every published crate packages, and a crate outside the
             # workspace builds and runs against the polyfill and a backend
             # with no patch of a dependency, which the guard refuses in
