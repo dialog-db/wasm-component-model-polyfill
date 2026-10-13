@@ -1345,17 +1345,22 @@
         # override, a `[source]` replacement, an `include` of another file,
         # and a legacy `config` file that Cargo reads in place of
         # `config.toml` when both exist. A consumer from crates.io has none
-        # of them, so the consumer may keep no `.cargo` directory at all.
+        # of them, so the consumer may keep no `.cargo` directory at all,
+        # and its directory holds only what a crate's build reads
+        # (`downstreamEntries`): a directory such as `.cargo-home` could
+        # otherwise become `CARGO_HOME`, whose configuration Cargo reads too.
         # The lock is held to the effect: each locked package comes from
         # crates.io, or from a path and is the consumer or a published
         # crate, and no patch is recorded, so a patch from anywhere Cargo
         # reads one shows. The lock records no path, so the build holds each
-        # path package to its own directory as well (`downstreamPathCheck`).
+        # package to its own directory or to the vendored crates as well
+        # (`downstreamPathCheck`).
         downstreamGuardViolations =
           {
             manifest,
             cargo ? { },
             lock ? null,
+            entries ? downstreamEntries,
           }:
           let
             inherit (pkgs.lib) concatMap optional;
@@ -1391,14 +1396,28 @@
           ++ optional (
             cargo != { }
           ) ".cargo holds ${pkgs.lib.concatStringsSep ", " (builtins.attrNames cargo)}, and a consumer from crates.io has no Cargo configuration"
+          ++ map (entry: "the consumer's directory holds ${entry}, which a crate's build does not read") (
+            pkgs.lib.subtractLists downstreamEntries entries
+          )
           ++ pkgs.lib.optionals (lock != null) lockViolations;
 
-        # The path packages of a build's `cargo metadata` (its first
-        # argument) that do not sit at their own directory under the
-        # `rust` directory its second argument names: the consumer's, or a
-        # published crate's. A copy of a published crate elsewhere, say
-        # under the consumer's `vendor`, would build in its place while the
-        # lock still names the crate.
+        # What the consumer's directory may hold.
+        downstreamEntries = [
+          "Cargo.lock"
+          "Cargo.toml"
+          "src"
+          "tests"
+        ];
+
+        # The packages of a build's `cargo metadata` (its first argument)
+        # that sit neither at their own directory under the `rust`
+        # directory its second argument names (the consumer's, or a
+        # published crate's) nor under one of the vendored crates'
+        # directories the arguments after it name, whatever their source.
+        # A copy of a published crate elsewhere, say under the consumer's
+        # `vendor`, would build in its place while the lock still names the
+        # crate; so would a fork of a crates.io dependency that a Cargo
+        # `paths` override names, while its source stays crates.io.
         downstreamPathCheck = pkgs.writeShellApplication {
           name = "wcmp-downstream-path-check";
           runtimeInputs = [ pkgs.jq ];
@@ -1407,16 +1426,22 @@
               program = pkgs.writeText "wcmp-downstream-path-check.jq" ''
                 ($allowed | map("\($rust)/\(.)/Cargo.toml")) as $paths
                 | .packages[]
-                | select(.source == null and (.manifest_path as $path | $paths | index($path) | not))
+                | .manifest_path as $path
+                | select(($paths | index($path) | not)
+                    and ($vendored | any(. as $directory | $path | startswith("\($directory)/")) | not))
                 | "  \(.name) \(.version) from \(.manifest_path)"
               '';
               allowed = builtins.toJSON ([ "wcmp-downstream" ] ++ publishedCrates);
             in
             ''
-              stray=$(jq -r --arg rust "$2" --argjson allowed ${pkgs.lib.escapeShellArg allowed} \
-                -f ${program} "$1")
+              metadata="$1"
+              rust="$2"
+              shift 2
+              vendored=$(jq -nc '$ARGS.positional' --args "$@")
+              stray=$(jq -r --arg rust "$rust" --argjson allowed ${pkgs.lib.escapeShellArg allowed} \
+                --argjson vendored "$vendored" -f ${program} "$metadata")
               if [ -n "$stray" ]; then
-                echo "The downstream build takes a path package from outside its own directory:" >&2
+                echo "The downstream build takes a package from outside its own directory and the vendored crates:" >&2
                 echo "$stray" >&2
                 exit 1
               fi
@@ -1488,6 +1513,9 @@
                   replace-with = "mirror"
                 '';
               };
+              # This case and the next are refused on their file names
+              # alone, as every file under `.cargo` is: the guard does not
+              # parse a configuration, and the build hands it no content.
               config-include = {
                 inherit manifest;
                 cargo = {
@@ -1501,7 +1529,7 @@
                 };
               };
               # Cargo reads `config` in place of a benign `config.toml`
-              # when both exist.
+              # when both exist. Refused on its file names, as above.
               config-two-files = {
                 inherit manifest;
                 cargo = {
@@ -1511,6 +1539,12 @@
                     replace-with = "mirror"
                   '';
                 };
+              };
+              # A directory that crane's hooks would make `CARGO_HOME`
+              # when none is set, with a configuration of its own.
+              cargo-home = {
+                inherit manifest;
+                entries = downstreamEntries ++ [ ".cargo-home" ];
               };
               lock-git-source = {
                 inherit manifest;
@@ -1542,35 +1576,56 @@
               builtins.attrNames cases
             );
             # `cargo metadata` of a build whose `wcmp` is a copy under the
-            # consumer's `vendor`, and of one whose path packages are all
-            # where they belong.
+            # consumer's `vendor`, of one whose crates.io `anyhow` is a fork
+            # a `paths` override names, and of one whose packages are all
+            # where they belong. A path is under `/build/rust` unless it
+            # names the vendored crates' directory.
             metadata =
               packages:
               builtins.toFile "metadata.json" (
                 builtins.toJSON {
-                  packages = map (path: {
-                    name = baseNameOf (dirOf path);
-                    version = "0.1.0";
-                    source = null;
-                    manifest_path = "/build/rust/${path}";
-                  }) packages;
+                  packages = map (
+                    { path, source ? null }:
+                    {
+                      name = baseNameOf (dirOf path);
+                      version = "0.1.0";
+                      inherit source;
+                      manifest_path = if pkgs.lib.hasPrefix "/" path then path else "/build/rust/${path}";
+                    }
+                  ) packages;
                 }
               );
+            cratesIo = "registry+https://github.com/rust-lang/crates.io-index";
             vendored = metadata [
-              "wcmp-downstream/Cargo.toml"
-              "wcmp-downstream/vendor/wcmp/Cargo.toml"
+              { path = "wcmp-downstream/Cargo.toml"; }
+              { path = "wcmp-downstream/vendor/wcmp/Cargo.toml"; }
+            ];
+            overridden = metadata [
+              { path = "wcmp-downstream/Cargo.toml"; }
+              {
+                path = "wcmp-downstream/fork/anyhow/Cargo.toml";
+                source = cratesIo;
+              }
             ];
             placed = metadata [
-              "wcmp-downstream/Cargo.toml"
-              "wcmp/Cargo.toml"
+              { path = "wcmp-downstream/Cargo.toml"; }
+              { path = "wcmp/Cargo.toml"; }
+              {
+                path = "/vendor/anyhow-1.0.0/Cargo.toml";
+                source = cratesIo;
+              }
             ];
           in
           pkgs.runCommand "wcmp-downstream-guard-check" { } (
             if accepted == [ ] then
               ''
-                ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${placed} /build/rust
-                if ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${vendored} /build/rust; then
+                ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${placed} /build/rust /vendor
+                if ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${vendored} /build/rust /vendor; then
                   echo "The downstream path check accepted a published crate under vendor" >&2
+                  exit 1
+                fi
+                if ${downstreamPathCheck}/bin/wcmp-downstream-path-check ${overridden} /build/rust /vendor; then
+                  echo "The downstream path check accepted a crates.io package from a paths override" >&2
                   exit 1
                 fi
                 touch "$out"
@@ -1591,7 +1646,10 @@
         # lock` refreshes the lock when a published crate's dependencies
         # change. The source holds the consumer, the published crates, and
         # the workspace manifest they inherit from, and nothing else of the
-        # workspace, so no Cargo configuration above the consumer applies.
+        # workspace. `CARGO_HOME` is set outside the source before crane's
+        # hooks would put it in the consumer's directory, so no Cargo
+        # configuration from the source applies, above the consumer or
+        # inside it.
         # Its wasm32 feature tree also holds the polyfill's path free of
         # js-sys's `unsafe-eval` feature: that path runs under a strict
         # Content Security Policy, and the consumer's tree is exactly it.
@@ -1607,6 +1665,7 @@
                 in
                 if builtins.pathExists dot then builtins.mapAttrs (_: _: null) (builtins.readDir dot) else { };
               lock = builtins.readFile lock;
+              entries = builtins.attrNames (builtins.readDir directory);
             };
           in
           publishCrane.mkCargoDerivation {
@@ -1624,7 +1683,10 @@
             };
             cargoLock = lock;
             cargoVendorDir = publishCrane.vendorCargoDeps { cargoLock = lock; };
+            # Crane's hooks set `CARGO_HOME` to `$PWD/.cargo-home` when it
+            # is unset, which would be inside the consumer's directory.
             postUnpack = ''
+              export CARGO_HOME="$NIX_BUILD_TOP/cargo-home"
               cd "$sourceRoot/rust/wcmp-downstream"
               sourceRoot=.
             '';
@@ -1644,7 +1706,8 @@
                   cargo build --locked --offline
                   cargo build --locked --offline --target wasm32-unknown-unknown
                   cargo metadata --locked --offline --format-version 1 > metadata.json
-                  ${downstreamPathCheck}/bin/wcmp-downstream-path-check metadata.json "$(cd .. && pwd -P)"
+                  ${downstreamPathCheck}/bin/wcmp-downstream-path-check metadata.json "$(cd .. && pwd -P)" \
+                    $(sed -n 's/^directory = "\(.*\)"$/\1/p' "$cargoVendorDir/config.toml")
                   cargo clippy --locked --offline --all-targets -- -D warnings
                   cargo clippy --locked --offline --all-targets --target wasm32-unknown-unknown -- -D warnings
                   cargo test --locked --offline
