@@ -22,9 +22,11 @@ use super::error_context_id::ErrorContextId;
 /// Passed to a call into another store, it fails with the wrong-store
 /// cause before the call changes anything, as
 /// [`ErrorContextAny`](crate::ErrorContextAny) states. Held in a
-/// `ComponentValue` type of the host's own, it is not checked before the
-/// call; its lower inside the call fails the call, which poisons the
-/// store. It implements [`ComponentValue`](crate::ComponentValue), which
+/// `ComponentValue` type of the host's own, it is checked before the
+/// call only when that type overrides
+/// [`ComponentValue::check_store`](crate::ComponentValue::check_store)
+/// to check it; otherwise its lower inside the call fails the call,
+/// which poisons the store. It implements [`ComponentValue`](crate::ComponentValue), which
 /// converts it to and from a
 /// [`Val::ErrorContext`](crate::Val::ErrorContext) and lifts and
 /// lowers it as a typed value.

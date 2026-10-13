@@ -8,6 +8,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::internal::StoreIdInternal;
+
 /// A process-unique identity for one [`Store`].
 ///
 /// Every store mints a fresh id at construction. An [`Instance`]
@@ -15,15 +17,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// handle compares that id with the store it is called with. The
 /// wrapped integer is opaque and not exposed.
 ///
+/// A host meets one only as the parameter of
+/// [`ComponentValue::check_store`], and can only hand it on: a type of
+/// the host's own that holds an [`ErrorContext`] passes it to that
+/// field's `check_store`, so a call refuses another store's error
+/// context before it starts. No host makes one.
+///
+/// ```rust
+/// use wcmp::StoreId;
+/// let _: Option<StoreId> = None;
+/// ```
+///
+/// Minting one is the crate's own:
+///
+/// ```compile_fail
+/// use wcmp::internal::StoreIdInternal;
+/// let _ = <wcmp::StoreId as StoreIdInternal>::fresh();
+/// ```
+///
 /// [`Store`]: crate::Store
 /// [`Instance`]: crate::Instance
+/// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
+/// [`ErrorContext`]: crate::ErrorContext
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StoreId(u64);
 
-impl StoreId {
-    /// Mint an identity no other store in this process carries.
-    /// Workspace-internal; not re-exported by `lib.rs`.
-    pub fn fresh() -> Self {
+impl StoreIdInternal for StoreId {
+    fn fresh() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         Self(COUNTER.fetch_add(1, Ordering::Relaxed))
     }

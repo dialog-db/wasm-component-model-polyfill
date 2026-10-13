@@ -50,6 +50,12 @@ use crate::runtime_layer::{
 use crate::store::{StoreContext, StoreId};
 use crate::types::ValueType;
 
+/// The crate-internal face of [`StoreId`](crate::StoreId).
+pub trait StoreIdInternal {
+    /// Mint an identity no other store in this process carries.
+    fn fresh() -> Self;
+}
+
 /// The crate-internal face of [`ResourceType`](crate::ResourceType).
 pub trait ResourceTypeInternal {
     /// A resource type identity from a label and the index of the

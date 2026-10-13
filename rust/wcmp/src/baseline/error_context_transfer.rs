@@ -43,8 +43,8 @@ use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, AbiPosition, Component, ComponentValue, Engine, EngineConfig, Error, ErrorContext,
     ErrorContextAny, Func, FunctionParameter, FunctionType, FutureReader, HostCall, Instance,
-    InstantiationError, Linker, PrimitiveType, Source, Store, StoreContext, StreamConsumer,
-    StreamReader, StreamResult, Val, ValueType,
+    InstantiationError, Linker, PrimitiveType, RecordField, RecordType, Source, Store,
+    StoreContext, StoreId, StreamConsumer, StreamReader, StreamResult, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
 
@@ -293,6 +293,8 @@ const COMPOSED: &[u8] = component!(
         (with "take-stream" (func $r "take-stream"))
         (with "take-records" (func $r "take-records"))))
       (export "take-one" (func $r "take-one"))
+      (export $rec-out "rec" (type $r "rec"))
+      (export "take-record" (func $r "take-record") (func (param "r" $rec-out) (result u32)))
       (export "take-list" (func $r "take-list"))
       (export "take-stream" (func $r "take-stream"))
       (export "message" (func $r "message"))
@@ -1012,6 +1014,90 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
         message(&mut first, &first_instance, received).await,
         "disk full"
     );
+}
+
+/// The receiver's record, `record { tag: u8, context: error-context,
+/// tail: u8 }`, as a host writes it with no help from the crate: it
+/// implements `ComponentValue` itself, through the public API, and
+/// overrides `check_store` to check the error context it holds.
+struct Tagged {
+    tag: u8,
+    context: ErrorContext,
+    tail: u8,
+}
+
+impl ComponentValue for Tagged {
+    fn value_type() -> ValueType {
+        ValueType::Record(RecordType::new([
+            RecordField::new("tag", u8::value_type()),
+            RecordField::new("context", ErrorContext::value_type()),
+            RecordField::new("tail", u8::value_type()),
+        ]))
+    }
+    fn from_val(val: &Val) -> crate::Result<Self> {
+        match val {
+            Val::Record(fields) if fields.len() == 3 => Ok(Self {
+                tag: u8::from_val(&fields[0].value)?,
+                context: ErrorContext::from_val(&fields[1].value)?,
+                tail: u8::from_val(&fields[2].value)?,
+            }),
+            other => panic!("not the record: {other:?}"),
+        }
+    }
+    fn to_val(self) -> Val {
+        let field = |name: &str, value| ValField {
+            name: name.to_owned(),
+            value,
+        };
+        Val::Record(Box::new([
+            field("tag", self.tag.to_val()),
+            field("context", self.context.to_val()),
+            field("tail", self.tail.to_val()),
+        ]))
+    }
+    fn check_store(&self, store: StoreId) -> crate::Result<()> {
+        self.context.check_store(store)
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_host_record_holding_another_stores_error_context_before_the_call() {
+    let (mut first, first_instance) = instantiate().await;
+    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
+    let foreign = leak(&mut first, &first_instance, first_handle).await;
+
+    let (mut store, instance) = instantiate().await;
+    let handle = new_context(&mut store, &instance, "local").await;
+    let context = context_at(&mut store, handle_table(&instance, "new"), handle);
+    let own = leak(&mut store, &instance, handle).await;
+    let tagged = |value: &Val| Tagged {
+        tag: 7,
+        context: ErrorContext::from_val(value).expect("an error context"),
+        tail: 9,
+    };
+    let take = func(&instance, "take-record")
+        .typed::<(Tagged,), u32>()
+        .expect("take-record is typed");
+
+    let error = take
+        .call(&mut store, (tagged(&foreign),))
+        .await
+        .expect_err("a value of another store does not cross");
+    assert!(
+        wrong_store(&error),
+        "refused before the call, not trapped inside it: {}",
+        chain(&error)
+    );
+    assert_eq!(handle_count(&mut store, context), Some(1));
+
+    // The store is not poisoned, and its own value crosses in the same
+    // record.
+    let received = take
+        .call(&mut store, (tagged(&own),))
+        .await
+        .map_err(|error| chain(&error))
+        .expect("the record crosses in its own store");
+    assert_eq!(message(&mut store, &instance, received).await, "local");
 }
 
 #[wcmp_macros::test]

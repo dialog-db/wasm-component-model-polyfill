@@ -78,10 +78,58 @@ pub trait ComponentValue: Sized + Send + Sync + 'static {
     /// Refuse this value, with the wrong-store cause, when it holds a
     /// host value of a store other than `store`, before a call into
     /// that store creates anything. The default holds none; the
-    /// crate's containers check each value they hold. A host's own type
-    /// cannot override it, so an error context inside one is checked
-    /// only when it lowers, inside the call.
-    #[doc(hidden)]
+    /// crate's containers check each value they hold, and an
+    /// [`ErrorContext`] checks its own store.
+    ///
+    /// A host's own type that holds an error context overrides it and
+    /// hands `store` to each such field. Without the override, an
+    /// error context of another store inside the type is found only
+    /// when it lowers inside the call, which fails the call and poisons
+    /// the store.
+    ///
+    /// ```rust
+    /// use wcmp::{
+    ///     AbiCause, AbiError, AbiPosition, ComponentValue, Error, ErrorContext, RecordField,
+    ///     RecordType, Result, StoreId, Val, ValField, ValueType,
+    /// };
+    ///
+    /// /// `record failure { code: u32, context: error-context }`
+    /// struct Failure {
+    ///     code: u32,
+    ///     context: ErrorContext,
+    /// }
+    ///
+    /// impl ComponentValue for Failure {
+    ///     fn value_type() -> ValueType {
+    ///         ValueType::Record(RecordType::new([
+    ///             RecordField::new("code", u32::value_type()),
+    ///             RecordField::new("context", ErrorContext::value_type()),
+    ///         ]))
+    ///     }
+    ///     fn from_val(val: &Val) -> Result<Self> {
+    ///         match val {
+    ///             Val::Record(fields) if fields.len() == 2 => Ok(Self {
+    ///                 code: u32::from_val(&fields[0].value)?,
+    ///                 context: ErrorContext::from_val(&fields[1].value)?,
+    ///             }),
+    ///             _ => Err(Error::from(AbiError {
+    ///                 position: AbiPosition::Result,
+    ///                 valtype: Some(Self::value_type()),
+    ///                 cause: AbiCause::HostValueMismatch,
+    ///             })),
+    ///         }
+    ///     }
+    ///     fn to_val(self) -> Val {
+    ///         Val::Record(Box::new([
+    ///             ValField { name: "code".to_owned(), value: self.code.to_val() },
+    ///             ValField { name: "context".to_owned(), value: self.context.to_val() },
+    ///         ]))
+    ///     }
+    ///     fn check_store(&self, store: StoreId) -> Result<()> {
+    ///         self.context.check_store(store)
+    ///     }
+    /// }
+    /// ```
     fn check_store(&self, store: StoreId) -> Result<()> {
         let _ = store;
         Ok(())

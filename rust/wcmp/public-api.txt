@@ -647,6 +647,7 @@ pub struct wcmp::ErrorContext
 impl core::fmt::Debug for wcmp::ErrorContext
 pub fn wcmp::ErrorContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl wcmp::ComponentValue for wcmp::ErrorContext
+pub fn wcmp::ErrorContext::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::ErrorContext::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ErrorContext::to_val(self) -> wcmp::Val
 pub fn wcmp::ErrorContext::value_type() -> wcmp::ValueType
@@ -754,6 +755,7 @@ pub fn wcmp::FutureReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp
 impl<T, D: 'static> core::convert::From<wcmp::GuardedFutureReader<T, D>> for wcmp::FutureReader<T>
 pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, D>) -> Self
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::FutureReader<T>
+pub fn wcmp::FutureReader<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::FutureReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::FutureReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::FutureReader<T>::value_type() -> wcmp::ValueType
@@ -1101,6 +1103,18 @@ pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
 pub fn wcmp::StoreContext<'a, T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
+pub struct wcmp::StoreId(_)
+impl core::clone::Clone for wcmp::StoreId
+pub fn wcmp::StoreId::clone(&self) -> wcmp::StoreId
+impl core::cmp::Eq for wcmp::StoreId
+impl core::cmp::PartialEq for wcmp::StoreId
+pub fn wcmp::StoreId::eq(&self, &wcmp::StoreId) -> bool
+impl core::fmt::Debug for wcmp::StoreId
+pub fn wcmp::StoreId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::StoreId
+pub fn wcmp::StoreId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::StoreId
+impl core::marker::StructuralPartialEq for wcmp::StoreId
 pub struct wcmp::StreamAny
 impl wcmp::StreamAny
 pub fn wcmp::StreamAny::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
@@ -1127,6 +1141,7 @@ pub fn wcmp::StreamReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp
 impl<T, D: 'static> core::convert::From<wcmp::GuardedStreamReader<T, D>> for wcmp::StreamReader<T>
 pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, D>) -> Self
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::StreamReader<T>
+pub fn wcmp::StreamReader<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::StreamReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::StreamReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::StreamReader<T>::value_type() -> wcmp::ValueType
@@ -1251,86 +1266,107 @@ pub fn T::from_val(core::option::Option<&wcmp::Val>) -> wcmp::Result<Self>
 pub fn T::into_val(self) -> core::option::Option<wcmp::Val>
 pub fn T::result_type() -> core::option::Option<wcmp::ValueType>
 pub trait wcmp::ComponentValue: core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
+pub fn wcmp::ComponentValue::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::ComponentValue::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ComponentValue::to_val(self) -> wcmp::Val
 pub fn wcmp::ComponentValue::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for alloc::string::String
+pub fn alloc::string::String::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn alloc::string::String::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn alloc::string::String::to_val(self) -> wcmp::Val
 pub fn alloc::string::String::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for bool
+pub fn bool::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn bool::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn bool::to_val(self) -> wcmp::Val
 pub fn bool::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for char
+pub fn char::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn char::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn char::to_val(self) -> wcmp::Val
 pub fn char::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for f32
+pub fn f32::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn f32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn f32::to_val(self) -> wcmp::Val
 pub fn f32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for f64
+pub fn f64::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn f64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn f64::to_val(self) -> wcmp::Val
 pub fn f64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i16
+pub fn i16::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn i16::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i16::to_val(self) -> wcmp::Val
 pub fn i16::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i32
+pub fn i32::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn i32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i32::to_val(self) -> wcmp::Val
 pub fn i32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i64
+pub fn i64::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn i64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i64::to_val(self) -> wcmp::Val
 pub fn i64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for i8
+pub fn i8::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn i8::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn i8::to_val(self) -> wcmp::Val
 pub fn i8::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u16
+pub fn u16::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn u16::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u16::to_val(self) -> wcmp::Val
 pub fn u16::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u32
+pub fn u32::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn u32::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u32::to_val(self) -> wcmp::Val
 pub fn u32::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u64
+pub fn u64::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn u64::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u64::to_val(self) -> wcmp::Val
 pub fn u64::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for u8
+pub fn u8::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn u8::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn u8::to_val(self) -> wcmp::Val
 pub fn u8::value_type() -> wcmp::ValueType
 impl wcmp::ComponentValue for wcmp::ErrorContext
+pub fn wcmp::ErrorContext::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::ErrorContext::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::ErrorContext::to_val(self) -> wcmp::Val
 pub fn wcmp::ErrorContext::value_type() -> wcmp::ValueType
 impl<K: wcmp::ComponentValue + core::cmp::Eq + core::hash::Hash, V: wcmp::ComponentValue> wcmp::ComponentValue for std::collections::hash::map::HashMap<K, V>
+pub fn std::collections::hash::map::HashMap<K, V>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn std::collections::hash::map::HashMap<K, V>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn std::collections::hash::map::HashMap<K, V>::to_val(self) -> wcmp::Val
 pub fn std::collections::hash::map::HashMap<K, V>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue, const N: usize> wcmp::ComponentValue for [T; N]
+pub fn [T; N]::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn [T; N]::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn [T; N]::to_val(self) -> wcmp::Val
 pub fn [T; N]::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for alloc::vec::Vec<T>
+pub fn alloc::vec::Vec<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn alloc::vec::Vec<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn alloc::vec::Vec<T>::to_val(self) -> wcmp::Val
 pub fn alloc::vec::Vec<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for core::option::Option<T>
+pub fn core::option::Option<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn core::option::Option<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn core::option::Option<T>::to_val(self) -> wcmp::Val
 pub fn core::option::Option<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::FutureReader<T>
+pub fn wcmp::FutureReader<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::FutureReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::FutureReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::FutureReader<T>::value_type() -> wcmp::ValueType
 impl<T: wcmp::ComponentValue> wcmp::ComponentValue for wcmp::StreamReader<T>
+pub fn wcmp::StreamReader<T>::check_store(&self, wcmp::StoreId) -> wcmp::Result<()>
 pub fn wcmp::StreamReader<T>::from_val(&wcmp::Val) -> wcmp::Result<Self>
 pub fn wcmp::StreamReader<T>::to_val(self) -> wcmp::Val
 pub fn wcmp::StreamReader<T>::value_type() -> wcmp::ValueType

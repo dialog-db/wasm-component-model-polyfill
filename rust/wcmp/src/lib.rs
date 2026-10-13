@@ -305,7 +305,7 @@ pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
 pub use crate::resource::{ResourceHandle, ResourceTypeId};
-pub use crate::store::{Store, StoreContext};
+pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;
 pub use crate::types::{
     EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,

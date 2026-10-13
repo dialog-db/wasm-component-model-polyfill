@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
-use crate::internal::{ErrorInternal, ResourceHandleInternal};
+use crate::internal::{ErrorInternal, ResourceHandleInternal, StoreIdInternal};
 use crate::resource::{
     HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts, ResourceTypeId,
 };
