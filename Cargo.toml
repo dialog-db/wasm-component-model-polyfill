@@ -114,12 +114,24 @@ path = "./rust/wcmp-wasm-core-fidelity"
 
 [workspace.dependencies.wcmp-wasm-core-wasmi]
 path = "./rust/wcmp-wasm-core-wasmi"
+# The polyfill's own unit tests hand their engines this backend, and Cargo
+# keeps a dev-dependency in a published package only when it has a version,
+# so the path carries the version too. It moves with the workspace version.
+version = "0.1.0"
 
 [workspace.dependencies.wcmp-wasm-core-wasmtime]
 path = "./rust/wcmp-wasm-core-wasmtime"
+# The polyfill's own unit tests hand their engines this backend, and Cargo
+# keeps a dev-dependency in a published package only when it has a version,
+# so the path carries the version too. It moves with the workspace version.
+version = "0.1.0"
 
 [workspace.dependencies.wcmp-wasm-core-web]
 path = "./rust/wcmp-wasm-core-web"
+# The polyfill's own unit tests hand their engines this backend, and Cargo
+# keeps a dev-dependency in a published package only when it has a version,
+# so the path carries the version too. It moves with the workspace version.
+version = "0.1.0"
 
 [profile.dev]
 opt-level = 1

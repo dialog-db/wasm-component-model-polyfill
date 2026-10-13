@@ -8,7 +8,9 @@ edition.workspace = true
 repository.workspace = true
 # The tests and their corpus are most of the crate's size, and a consumer
 # runs none of them, so the package leaves them out, except the backend choice
-# under `tests/support`, which the crate's own unit tests include.
+# under `tests/support`, which the crate's own unit tests include. The backends
+# those tests use are versioned dev-dependencies, so the packaged unit tests
+# compile; the `package` flake check builds them.
 exclude = ["/tests/*", "!/tests/support/"]
 
 [features]

@@ -1324,6 +1324,22 @@
             done
             publish --target wasm32-unknown-unknown \
               ${pkgs.lib.concatMapStringsSep " " (crate: "--package ${crate}") publishedCrates}
+            # The packaged polyfill's own unit tests compile against the
+            # packaged backends, outside this workspace, on both targets.
+            # Cargo drops a dev-dependency with no version from a package,
+            # so this fails if one of theirs loses its version.
+            cp -r "$registry/wcmp-${publishedVersion}" "$NIX_BUILD_TOP/packaged-wcmp"
+            (
+              cd "$NIX_BUILD_TOP/packaged-wcmp"
+              unit() {
+                cargo \
+                  --config 'source.crates-io.replace-with = "published"' \
+                  --config "source.published.directory = \"$registry\"" \
+                  test --offline --lib --no-run "$@"
+              }
+              unit
+              unit --target wasm32-unknown-unknown
+            )
           '';
           installPhaseCommand = ''
             mkdir -p "$out"
