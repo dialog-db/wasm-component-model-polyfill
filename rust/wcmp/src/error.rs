@@ -904,6 +904,24 @@ pub enum AbiCause {
     )]
     CopyBudgetSpent,
 
+    /// A string transcode between two ranges of one memory found
+    /// them overlapping, and refused it before it wrote anything.
+    /// Wasmtime refuses the same transcode with a panic; the
+    /// specification says nothing of it.
+    #[error(
+        "string transcode source of {source_bytes} bytes at {source_offset} overlaps its destination of {destination_bytes} bytes at {destination_offset} in the same memory"
+    )]
+    OverlappingTranscode {
+        /// The offset of the source string.
+        source_offset: usize,
+        /// The source string's length in bytes.
+        source_bytes: usize,
+        /// The offset of the destination the transcode was to write.
+        destination_offset: usize,
+        /// The destination's length in bytes.
+        destination_bytes: usize,
+    },
+
     /// A value lowered into a running call holds an error context
     /// lifted in another store, whose record this store cannot name.
     /// A host function's result or a host stream's write meets it once

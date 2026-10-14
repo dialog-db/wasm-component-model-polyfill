@@ -11,6 +11,11 @@ pub wcmp::AbiCause::OutOfBoundsMemory::length: usize
 pub wcmp::AbiCause::OutOfBoundsMemory::offset: usize
 pub wcmp::AbiCause::OutstandingBorrows
 pub wcmp::AbiCause::OutstandingBorrows::count: usize
+pub wcmp::AbiCause::OverlappingTranscode
+pub wcmp::AbiCause::OverlappingTranscode::destination_bytes: usize
+pub wcmp::AbiCause::OverlappingTranscode::destination_offset: usize
+pub wcmp::AbiCause::OverlappingTranscode::source_bytes: usize
+pub wcmp::AbiCause::OverlappingTranscode::source_offset: usize
 pub wcmp::AbiCause::ReallocFailed(anyhow::Error)
 pub wcmp::AbiCause::ReallocReturn
 pub wcmp::AbiCause::ReallocReturn::reason: alloc::string::String

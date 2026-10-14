@@ -30,10 +30,11 @@
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::FlatType;
-use crate::error::{Error, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::executor::ir::TranscodeOp;
 use crate::internal::ErrorInternal;
 use crate::runtime_layer::Val as RuntimeVal;
+use crate::types::{PrimitiveType, ValueType};
 
 /// The tag a "compact UTF-16" length carries when the string was
 /// left as UTF-16 rather than deflated to Latin-1.
@@ -60,20 +61,31 @@ enum Step {
 /// arrive at the width of the memory they address, `i32` for a
 /// 32-bit memory and `i64` for a 64-bit one, and the results are
 /// written back at the widths `result_widths` names.
+///
+/// When both sides name one memory (`same_memory`), a source and a
+/// destination that overlap fail with [`AbiCause::OverlappingTranscode`]
+/// before anything is written: see [`refuse_overlap`].
 #[tracing::instrument(level = "trace", name = "string transcode", skip_all)]
 pub fn transcode<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     op: TranscodeOp,
+    same_memory: bool,
     args: &[RuntimeVal],
     results: &mut [RuntimeVal],
     result_widths: &[FlatType],
 ) -> Result<()> {
     let set_results =
         |results: &mut [RuntimeVal], values: &[usize]| set_results(results, result_widths, values);
+    // The source's and the destination's bytes, as Wasmtime's
+    // transcoders measure them.
+    let overlap = |src: usize, src_bytes: usize, dst: usize, dst_bytes: usize| {
+        refuse_overlap(same_memory, (src, src_bytes), (dst, dst_bytes))
+    };
     match op {
         TranscodeOp::CopyUtf8 => {
             let (src, len, dst) = three(args)?;
             check_source(ctx, src, len)?;
+            overlap(src, len, dst, len)?;
             validate_utf8(ctx, src, len)?;
             copy(ctx, src, dst, len)
         }
@@ -81,17 +93,20 @@ pub fn transcode<T: 'static>(
             let (src, len, dst) = three(args)?;
             let bytes = utf16_bytes(len)?;
             check_source(ctx, src, bytes)?;
+            overlap(src, bytes, dst, bytes)?;
             validate_utf16(ctx, src, bytes)?;
             copy(ctx, src, dst, bytes)
         }
         TranscodeOp::CopyLatin1 => {
             let (src, len, dst) = three(args)?;
             check_source(ctx, src, len)?;
+            overlap(src, len, dst, len)?;
             copy(ctx, src, dst, len)
         }
         TranscodeOp::Latin1ToUtf16 => {
             let (src, len, dst) = three(args)?;
             check_source(ctx, src, len)?;
+            overlap(src, len, dst, utf16_bytes(len)?)?;
             walk(ctx, src, len, Some(dst), |bytes, _, out| {
                 for b in bytes {
                     out.extend_from_slice(&u16::from(*b).to_le_bytes());
@@ -103,6 +118,7 @@ pub fn transcode<T: 'static>(
         TranscodeOp::Utf8ToUtf16 => {
             let (src, len, dst) = three(args)?;
             check_source(ctx, src, len)?;
+            overlap(src, len, dst, utf16_bytes(len)?)?;
             validate_utf8(ctx, src, len)?;
             let units = utf8_to_utf16(ctx, src, len, dst)?;
             set_results(results, &[units])
@@ -111,6 +127,7 @@ pub fn transcode<T: 'static>(
             let (src, src_len, dst, dst_len, first_pass) = five(args)?;
             let bytes = utf16_bytes(src_len)?;
             check_source(ctx, src, bytes)?;
+            overlap(src, bytes, dst, dst_len)?;
             let mut src_read = 0usize;
             let mut consumed = 0usize;
             let mut written = 0usize;
@@ -139,6 +156,7 @@ pub fn transcode<T: 'static>(
         TranscodeOp::Latin1ToUtf8 => {
             let (src, src_len, dst, dst_len, first_pass) = five(args)?;
             check_source(ctx, src, src_len)?;
+            overlap(src, src_len, dst, dst_len)?;
             let mut read_count = 0usize;
             let mut written = 0usize;
             walk(ctx, src, src_len, Some(dst), |bytes, _, out| {
@@ -164,6 +182,7 @@ pub fn transcode<T: 'static>(
             let (src, len, dst) = three(args)?;
             let bytes = utf16_bytes(len)?;
             check_source(ctx, src, bytes)?;
+            overlap(src, bytes, dst, bytes)?;
             if validate_utf16(ctx, src, bytes)? {
                 walk(ctx, src, bytes, Some(dst), |chunk, _, out| {
                     // Every unit is at most 0xFF, so its low byte,
@@ -180,6 +199,7 @@ pub fn transcode<T: 'static>(
         TranscodeOp::Utf8ToLatin1 => {
             let (src, len, dst) = three(args)?;
             check_source(ctx, src, len)?;
+            overlap(src, len, dst, len)?;
             validate_utf8(ctx, src, len)?;
             let mut read_count = 0usize;
             let written = walk(ctx, src, len, Some(dst), |bytes, last, out| {
@@ -211,6 +231,7 @@ pub fn transcode<T: 'static>(
             let (src, len, dst) = three(args)?;
             let bytes = utf16_bytes(len)?;
             check_source(ctx, src, bytes)?;
+            overlap(src, bytes, dst, len)?;
             let written = walk(ctx, src, bytes, Some(dst), |chunk, _, out| {
                 for pair in chunk.chunks_exact(2) {
                     match u8::try_from(u16::from_le_bytes([pair[0], pair[1]])) {
@@ -226,19 +247,21 @@ pub fn transcode<T: 'static>(
         // they inflate the Latin-1 prefix already in the destination,
         // so a source that is out of bounds or invalid writes nothing.
         TranscodeOp::Utf8ToCompactUtf16 => {
-            let (src, src_len, dst, _dst_len, latin1_so_far) = five(args)?;
+            let (src, src_len, dst, dst_len, latin1_so_far) = five(args)?;
             let rest = at(dst, latin1_so_far.checked_mul(2))?;
             check_source(ctx, src, src_len)?;
+            overlap(src, src_len, dst, utf16_bytes(dst_len)?)?;
             validate_utf8(ctx, src, src_len)?;
             inflate_latin1(ctx, dst, latin1_so_far)?;
             let units = utf8_to_utf16(ctx, src, src_len, rest)?;
             set_results(results, &[at(units, Some(latin1_so_far))?])
         }
         TranscodeOp::Utf16ToCompactUtf16 => {
-            let (src, src_len, dst, _dst_len, latin1_so_far) = five(args)?;
+            let (src, src_len, dst, dst_len, latin1_so_far) = five(args)?;
             let rest = at(dst, latin1_so_far.checked_mul(2))?;
             let bytes = utf16_bytes(src_len)?;
             check_source(ctx, src, bytes)?;
+            overlap(src, bytes, dst, utf16_bytes(dst_len)?)?;
             validate_utf16(ctx, src, bytes)?;
             inflate_latin1(ctx, dst, latin1_so_far)?;
             copy(ctx, src, rest, bytes)?;
@@ -246,6 +269,56 @@ pub fn transcode<T: 'static>(
         }
     }
 }
+
+/// Refuse a transcode whose `source` and `destination` byte ranges,
+/// each an offset and a length, share a byte of one memory.
+///
+/// The specification says nothing of an overlap. The reference
+/// decodes the whole source before it writes, so an overlap there
+/// behaves like `memmove`. Wasmtime refuses one in every transcoder
+/// (`assert_no_overlap` in
+/// `crates/wasmtime/src/runtime/vm/component/libcalls.rs`), with a
+/// panic. Where the specification is silent the polyfill does what
+/// Wasmtime does, so it refuses one too, but with a trap that names
+/// the two ranges. A converting transcode here writes each chunk
+/// before it reads the next, so an overlap it did not refuse would
+/// corrupt the string.
+///
+/// An overlap is possible only when both sides name one memory, which
+/// a guest reaches when its own `realloc` hands back a range that
+/// still holds the string. `same_memory` says whether the adapter's
+/// two memory indices are one; two indices that alias one memory are
+/// not detected, since a memory has no identity to compare. Ranges
+/// meet only where both hold a byte, so an empty string overlaps
+/// nothing; Wasmtime refuses an empty source at the destination's
+/// start too.
+fn refuse_overlap(
+    same_memory: bool,
+    (source, source_bytes): (usize, usize),
+    (destination, destination_bytes): (usize, usize),
+) -> Result<()> {
+    let overlaps = source < destination.saturating_add(destination_bytes)
+        && destination < source.saturating_add(source_bytes);
+    if !same_memory || source_bytes == 0 || destination_bytes == 0 || !overlaps {
+        return Ok(());
+    }
+    Err(Error::from(AbiError {
+        position: DESTINATION_ARGUMENT,
+        valtype: Some(ValueType::Primitive(PrimitiveType::String)),
+        cause: AbiCause::OverlappingTranscode {
+            source_offset: source,
+            source_bytes,
+            destination_offset: destination,
+            destination_bytes,
+        },
+    }))
+}
+
+/// The transcoder's argument a refused overlap names: the destination
+/// pointer, after the source pointer and its length. The transcode
+/// cannot know which argument or result of the adapted call the
+/// string is.
+const DESTINATION_ARGUMENT: AbiPosition = AbiPosition::Argument(2);
 
 /// Walk the `length` bytes at `offset` of the source side in chunks
 /// of at most [`CHUNK`] bytes, lending each to `step` with whether it
@@ -536,11 +609,23 @@ mod tests {
         destination: Memory,
         source_options: BoundaryOptions,
         destination_options: BoundaryOptions,
+        /// Whether the transcode is told both sides are one memory.
+        same_memory: bool,
     }
 
     impl TwoMemories {
         fn new() -> Self {
             Self::with_type(MemoryType::new(PAGES, None))
+        }
+
+        /// One memory on both sides, as an adapter between two
+        /// instances sharing a memory sees it.
+        fn one_memory() -> Self {
+            let mut copy = Self::new();
+            copy.destination = copy.source;
+            copy.destination_options = copy.source_options.clone();
+            copy.same_memory = true;
+            copy
         }
 
         /// Two 64-bit memories, which memory64 adapters address with
@@ -579,6 +664,7 @@ mod tests {
                 destination,
                 source_options: BoundaryOptions::for_memory(0, &state).expect("source"),
                 destination_options: BoundaryOptions::for_memory(1, &state).expect("destination"),
+                same_memory: false,
             }
         }
 
@@ -635,7 +721,14 @@ mod tests {
                 None,
             );
             let mut slots = vec![RuntimeVal::I32(0); results];
-            transcode(&mut ctx, op, args, &mut slots, &vec![width; results])?;
+            transcode(
+                &mut ctx,
+                op,
+                self.same_memory,
+                args,
+                &mut slots,
+                &vec![width; results],
+            )?;
             Ok(slots
                 .iter()
                 .map(|slot| match slot {
@@ -644,6 +737,70 @@ mod tests {
                     _ => panic!("an integer result"),
                 })
                 .collect())
+        }
+    }
+
+    /// Each transcode with its arguments over a 16-byte string at 0
+    /// whose destination starts at `dst`.
+    fn every_op(dst: usize) -> Vec<(TranscodeOp, Vec<usize>, usize)> {
+        use TranscodeOp::*;
+        vec![
+            (CopyUtf8, vec![0, 16, dst], 0),
+            (CopyUtf16, vec![0, 8, dst], 0),
+            (CopyLatin1, vec![0, 16, dst], 0),
+            (Latin1ToUtf16, vec![0, 16, dst], 0),
+            (Utf8ToUtf16, vec![0, 16, dst], 1),
+            (Utf16ToUtf8, vec![0, 8, dst, 32, 0], 2),
+            (Latin1ToUtf8, vec![0, 16, dst, 32, 0], 2),
+            (Utf16ToCompactProbablyUtf16, vec![0, 8, dst], 1),
+            (Utf8ToLatin1, vec![0, 16, dst], 2),
+            (Utf16ToLatin1, vec![0, 8, dst], 2),
+            (Utf8ToCompactUtf16, vec![0, 16, dst, 16, 0], 1),
+            (Utf16ToCompactUtf16, vec![0, 8, dst, 8, 0], 1),
+        ]
+    }
+
+    #[wcmp_macros::test]
+    fn it_refuses_every_transcode_whose_ranges_overlap_in_one_memory() {
+        // ASCII, so the string is valid in every source encoding: as
+        // UTF-16 it is "aa" repeated.
+        let text = [b'a'; 16];
+        for (op, args, results) in every_op(4) {
+            let mut copy = TwoMemories::one_memory();
+            copy.put(0, &text);
+            let before = copy.take(0, 64);
+            let error = copy
+                .run(op, &args, results)
+                .expect_err("an overlapping transcode is refused");
+            assert!(
+                matches!(
+                    &error,
+                    Error::Abi(abi) if matches!(
+                        abi.cause,
+                        AbiCause::OverlappingTranscode { source_offset: 0, destination_offset: 4, .. }
+                    )
+                ),
+                "{op:?}: {error}"
+            );
+            assert_eq!(copy.take(0, 64), before, "{op:?} wrote nothing");
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_runs_a_transcode_within_one_memory_whose_ranges_do_not_meet() {
+        let text = [b'a'; 16];
+        for (op, args, results) in every_op(1024) {
+            let mut copy = TwoMemories::one_memory();
+            copy.put(0, &text);
+            copy.run(op, &args, results)
+                .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+        }
+        // Two memories never overlap, at any offsets.
+        for (op, args, results) in every_op(4) {
+            let mut copy = TwoMemories::new();
+            copy.put(0, &text);
+            copy.run(op, &args, results)
+                .unwrap_or_else(|error| panic!("{op:?}: {error}"));
         }
     }
 

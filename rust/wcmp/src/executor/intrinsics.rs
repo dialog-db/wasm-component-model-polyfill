@@ -586,8 +586,15 @@ pub fn build_transcoder<T: 'static>(
                 BoundaryInstance::without_tables(instance),
                 scope,
             );
-            transcode(&mut ctx, op, args, results, &result_widths)
-                .map_err(|err| anyhow!("string transcoder failed: {err}"))
+            transcode(
+                &mut ctx,
+                op,
+                from_memory == to_memory,
+                args,
+                results,
+                &result_widths,
+            )
+            .map_err(|err| anyhow!("string transcoder failed: {err}"))
         },
     )
 }
