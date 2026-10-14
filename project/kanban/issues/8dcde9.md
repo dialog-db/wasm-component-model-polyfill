@@ -32,8 +32,8 @@ Smaller gap: the test of a host function returning another store's error context
 
 ## Implementation notes
 
-- 2026-10-13 (`test(concurrency): Cover every container branch of the
-  error-context store check`):
+- 2026-10-13 (`test(concurrency): Cover each container branch of the store
+  check`):
   - `abi::call_values::tests::it_finds_another_stores_error_context_in_every_container`
     covers bare, list, fixed-length list, tuple, map key, map value,
     record, variant, option, result ok and result err, both refused and
@@ -51,3 +51,9 @@ Smaller gap: the test of a host function returning another store's error context
   `Val::Option(Some(inner))` arm failed the walker test.
 
 - 2026-10-13 gate on the series tip: `tests all` green (native debug and release 1741/1741, no-provider 169, Wasmi 1458, web debug and release 1728/1728, fidelity 264/267/264, Zena Browser 18/18, Native 18/18, Wasmi 2/18, Wasmtime 18/18, demo 68/68), no `unexpected:` or `stale expectation:` line, `tests regenerate --dry-run` current, and the full `lint` green.
+
+## Review notes
+
+- 2026-10-13, review round 1 (context-free reviewer): nit. The commit's
+  subject was 80 characters, over the rule's ~70. It is now `test(concurrency):
+  Cover each container branch of the store check`.
