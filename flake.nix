@@ -94,10 +94,12 @@
     # every change, the input moves back to `github:elematic/zena`.
     #
     # To move the pin, change the revision below, run `nix flake update
-    # zena`, then `tests zena regenerate` and `tests zena`. The pin is
-    # `43234db`, Zena's `main` on 2026-10-13, unmodified. Zena's own flake
-    # fails to build there on a stale npm dependency hash, which
-    # `zenaPackage` below overrides.
+    # zena`, then `tests zena regenerate`, `tests zena` and `tests demo`.
+    # The Zena scenarios do not compile the demo's Zena sources, which
+    # only the demo lane does. The pin is `43234db`, Zena's `main` on
+    # 2026-10-13, unmodified. Zena's own flake fails to build there on a
+    # stale npm dependency hash, which `zenaPackage` below overrides; a
+    # new pin may need the hash the failed build prints as `got:` there.
     zena.url = "github:elematic/zena/43234db086afd2ae521415659b169db467b7d023";
   };
 
@@ -330,8 +332,8 @@
         # made atomically too, so parallel runs can share it.
         #
         # Zena's own flake records a stale npm dependency hash at the pin:
-        # its lockfile changed in `9dd3aa7`, `4ac9f1d` and `de7264d`, after
-        # `73682b4` last updated the hash. The source stays Zena's,
+        # its lockfile changed in `9dd3aa7` and `4ac9f1d`, after `73682b4`
+        # last updated the hash. The source stays Zena's,
         # unmodified, and only the hash of its fixed-output npm fetch is
         # overridden here, until Zena updates its own. Moving the pin past
         # a lockfile change needs the new hash, which the failed build
