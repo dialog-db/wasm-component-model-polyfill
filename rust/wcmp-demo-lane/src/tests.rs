@@ -111,6 +111,7 @@ pub static TESTS: &[Test] = &[
     test!(shelf::it_shows_what_is_under_the_pointer),
     test!(shelf::it_completes_the_members_after_a_dot),
     test!(shelf::it_goes_to_a_definition_and_formats_the_source),
+    test!(shelf::it_formats_the_source_on_a_click_wherever_the_focus_was),
 ];
 
 /// Fail with `message` unless `condition` holds.

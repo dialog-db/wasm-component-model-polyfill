@@ -248,7 +248,14 @@ pub fn place_caret(text: &HtmlTextAreaElement, offset: u32) {
 
 /// Replace the UTF-16 range `start` to `end` of `text` with `replacement`,
 /// as typing would, so the browser's undo takes it back.
+///
+/// The text area takes the focus first. The browser's `insertText`
+/// edits wherever the document's selection is, and a click on a button
+/// leaves that in the field focused before it: another field of the
+/// page, or the caret of this one, which a selection set while the text
+/// area is not focused does not move.
 pub fn replace(text: &HtmlTextAreaElement, start: u32, end: u32, replacement: &str) {
+    let _ = text.focus();
     let _ = text.set_selection_range(start, end);
     insert(text, replacement);
 }
@@ -280,8 +287,12 @@ fn on_key(text: &HtmlTextAreaElement, event: &web_sys::KeyboardEvent) {
 
 /// Insert `inserted` at the selection of `text`, as typing would, so the
 /// browser's undo takes it back.
+///
+/// The browser's `insertText` edits the focused field, so it runs only
+/// while `text` has the focus; otherwise the text goes in without undo.
 fn insert(text: &HtmlTextAreaElement, inserted: &str) {
-    let document = text.owner_document();
+    let focused = text.matches(":focus").unwrap_or(false);
+    let document = text.owner_document().filter(|_| focused);
     let typed = document
         .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
         .and_then(|document| {
@@ -291,7 +302,8 @@ fn insert(text: &HtmlTextAreaElement, inserted: &str) {
         })
         .unwrap_or(false);
     if !typed {
-        // A browser without the command: insert the text without undo.
+        // A browser without the command, or a text area without the
+        // focus: insert the text without undo.
         let start = text.selection_start().ok().flatten().unwrap_or(0);
         let end = text.selection_end().ok().flatten().unwrap_or(start);
         let _ = text.set_range_text_with_start_and_end(inserted, start, end);

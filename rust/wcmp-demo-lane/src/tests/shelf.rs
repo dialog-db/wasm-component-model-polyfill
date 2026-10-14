@@ -705,6 +705,92 @@ pub fn it_completes_the_members_after_a_dot(browser: &Browser) -> Result<(), Str
     )
 }
 
+/// Click the middle of the element `selector` of the source `kind` `name`
+/// as a person's mouse would, through Chrome's input events rather than
+/// a script's `click()`, so the click moves the focus and the document's
+/// selection as a real one does.
+fn click_for_real(browser: &Browser, kind: &str, name: &str, selector: &str) -> Result<(), String> {
+    let point = run(
+        browser,
+        &format!(
+            "const target = section('{kind}', '{name}').querySelector('{selector}');
+             target.scrollIntoView({{ block: 'center' }});
+             await settle(100);
+             const rect = target.getBoundingClientRect();
+             return {{ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }};"
+        ),
+    )?;
+    for kind in ["mousePressed", "mouseReleased"] {
+        browser.cdp(
+            "Input.dispatchMouseEvent",
+            serde_json::json!({
+                "type": kind,
+                "x": point["x"],
+                "y": point["y"],
+                "button": "left",
+                "clickCount": 1,
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+pub fn it_formats_the_source_on_a_click_wherever_the_focus_was(
+    browser: &Browser,
+) -> Result<(), String> {
+    browser.boot()?;
+    // The focus in another field, as the application's input has it on
+    // load, while the editor holds an unformatted change.
+    run(
+        browser,
+        "const editor = await openTab('element', 'todo-item');
+         const text = editor.querySelector('textarea');
+         typeInto(text, text.value.replace('var editing = false;', 'var   editing=false ;'), 0, ' ');
+         const other = document.createElement('input');
+         other.id = 'format-probe';
+         document.body.append(other);
+         other.focus();
+         return true;",
+    )?;
+    click_for_real(browser, "element", "todo-item", "[data-action=\"format\"]")?;
+    let elsewhere = run(
+        browser,
+        "const text = section('element', 'todo-item').querySelector('textarea');
+         await later(() => text.value.includes('var editing = false;'), 'the format');
+         const other = document.getElementById('format-probe');
+         const answer = { other: other.value, text: text.value };
+         other.remove();
+         return answer;",
+    )?;
+    let formatted = elsewhere["text"].as_str().unwrap_or_default().to_string();
+    check(
+        elsewhere["other"] == "" && formatted.matches("export class TodoItem").count() == 1,
+        || format!("with the focus in another field, the format gave {elsewhere}"),
+    )?;
+    // The caret in the middle of the editor's text, after a click there.
+    run(
+        browser,
+        "const text = section('element', 'todo-item').querySelector('textarea');
+         typeInto(text, text.value.replace('var editing = false;', 'var   editing=false ;'), 0, ' ');
+         await caretAt(text, Math.floor(text.value.length / 2));
+         return true;",
+    )?;
+    click_for_real(browser, "element", "todo-item", "[data-action=\"format\"]")?;
+    let at_caret = run(
+        browser,
+        "const text = section('element', 'todo-item').querySelector('textarea');
+         await later(() => text.value.includes('var editing = false;'), 'the format');
+         return text.value;",
+    )?;
+    check(at_caret.as_str() == Some(formatted.as_str()), || {
+        format!(
+            "with the caret in the editor, the format gave {} bytes, not the {} it gave before",
+            at_caret.as_str().map_or(0, str::len),
+            formatted.len()
+        )
+    })
+}
+
 pub fn it_goes_to_a_definition_and_formats_the_source(browser: &Browser) -> Result<(), String> {
     browser.boot()?;
     let answer = run(
