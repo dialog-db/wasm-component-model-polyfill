@@ -925,8 +925,12 @@ pub enum AbiCause {
     /// A value lowered into a running call holds an error context
     /// lifted in another store, whose record this store cannot name.
     /// A host function's result or a host stream's write meets it once
-    /// the call runs; a call's own arguments are refused before it
-    /// starts, with [`InstantiationError::WrongStore`].
+    /// the call runs. So does an argument of a host type that does not
+    /// override [`ComponentValue::check_store`]; every other argument
+    /// of a call is refused before the call starts, with
+    /// [`InstantiationError::WrongStore`].
+    ///
+    /// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
     #[error("the value holds an error context lifted in a different store")]
     WrongStore,
 

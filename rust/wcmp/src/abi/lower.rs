@@ -225,10 +225,13 @@ pub fn lower<T: 'static>(
 /// [`AbiCause::WrongStore`], at `position` and `ty`, before anything
 /// changes. A call refuses such an argument before it starts, with
 /// [`InstantiationError::WrongStore`]; this cause is the one a value
-/// meets once the call runs, from a host function's result or a host
-/// stream's write, where the trap names which value it was.
+/// meets once the call runs, from a host function's result, a host
+/// stream's write, or an argument of a host type that does not
+/// override [`ComponentValue::check_store`], where the trap names
+/// which value it was.
 ///
 /// [`InstantiationError::WrongStore`]: crate::InstantiationError::WrongStore
+/// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
 pub fn lower_error_context<T: 'static>(
     ctx: &BoundaryContext<'_, T>,
     context: &ErrorContextAny,

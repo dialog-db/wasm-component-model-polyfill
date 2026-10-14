@@ -222,7 +222,6 @@ let resumeSession = (kept: Session, key: String, source: String,
   return kept;
 };
 
-/** A new session for the configuration a compile runs in. */
 /**
  * The packages of a configuration, which a compiler of it takes, and the
  * WIT text of those backed by WIT.
@@ -287,6 +286,7 @@ let compileOptionsFor = (entryPath: String, witSource: String, worldName: String
   return options;
 };
 
+/** A new session for the configuration a compile runs in. */
 let openSession = (source: String, entryPath: String, witSource: String,
     hasManifest: boolean): Session => {
   let host = new HostReader(entryPath, source, witSource);

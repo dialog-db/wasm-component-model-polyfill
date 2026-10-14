@@ -15,7 +15,8 @@ use crate::internal::StoreIdInternal;
 /// Every store mints a fresh id at construction. An [`Instance`]
 /// records the id of the store it was created in, and a function
 /// handle compares that id with the store it is called with. The
-/// wrapped integer is opaque and not exposed.
+/// wrapped integer is opaque: nothing reads it, and only `Debug`
+/// prints it.
 ///
 /// A host meets one only as the parameter of
 /// [`ComponentValue::check_store`], and can only hand it on: a type of
