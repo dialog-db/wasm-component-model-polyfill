@@ -21,6 +21,9 @@
 
 #![cfg(test)]
 
+use core::future::{Future, poll_fn};
+use core::pin::pin;
+use core::task::Poll;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -122,8 +125,10 @@ fn stop_counting() -> Allocated {
 /// It also returns values no lift accepts, each from bytes beneath
 /// the bump: a string that is not UTF-8, a list of characters with
 /// one past 0x10FFFF or a surrogate, and a list of `u32` at an odd
-/// address. `spilled` takes eighteen flat values, two past the most
+/// address. `spilled` takes twenty flat values, four past the most
 /// that pass as core parameters, so a caller spills them to memory.
+/// `length-utf16` and `length-latin1-utf16` answer the length word a
+/// string was lowered with, which tells which encoding the lower used.
 const ECHO: &[u8] = component!(
     r#"
     (component
@@ -170,11 +175,14 @@ const ECHO: &[u8] = component!(
         (func (export "bad-chars-high") (result i32) (call $pair (i32.const 4) (i32.const 2)))
         (func (export "bad-chars-surrogate") (result i32) (call $pair (i32.const 12) (i32.const 1)))
         (func (export "misaligned") (result i32) (call $pair (i32.const 1) (i32.const 1)))
-        ;; The spilled tuple `(string, list<u32, 8>, list<u32, 8>)` at
-        ;; `$p`: the string's length times 1000, plus each number times
-        ;; its place, counting from 1, plus the string's first byte.
+        ;; The spilled tuple `(string, list<u32>, list<u32, 8>,
+        ;; list<u32, 8>)` at `$p`: the string's length times 1000, plus
+        ;; each number of the two fixed lists times its place, counting
+        ;; from 1, plus the vector's length times 100000 and each of its
+        ;; numbers times its place, counting on from 17, plus the
+        ;; string's first byte.
         (func (export "spilled") (param $p i32) (result i32)
-          (local $i i32) (local $acc i32)
+          (local $i i32) (local $acc i32) (local $v i32) (local $n i32)
           (local.set $acc (i32.mul (i32.load offset=4 (local.get $p)) (i32.const 1000)))
           (block $done
             (loop $next
@@ -182,11 +190,26 @@ const ECHO: &[u8] = component!(
               (local.set $acc
                 (i32.add (local.get $acc)
                   (i32.mul (i32.add (local.get $i) (i32.const 1))
-                    (i32.load offset=8
+                    (i32.load offset=16
                       (i32.add (local.get $p) (i32.shl (local.get $i) (i32.const 2)))))))
               (local.set $i (i32.add (local.get $i) (i32.const 1)))
               (br $next)))
-          (i32.add (local.get $acc) (i32.load8_u (i32.load (local.get $p))))))
+          (local.set $v (i32.load offset=8 (local.get $p)))
+          (local.set $n (i32.load offset=12 (local.get $p)))
+          (local.set $acc (i32.add (local.get $acc) (i32.mul (local.get $n) (i32.const 100000))))
+          (local.set $i (i32.const 0))
+          (block $vector-done
+            (loop $vector-next
+              (br_if $vector-done (i32.ge_u (local.get $i) (local.get $n)))
+              (local.set $acc
+                (i32.add (local.get $acc)
+                  (i32.mul (i32.add (local.get $i) (i32.const 17))
+                    (i32.load (i32.add (local.get $v) (i32.shl (local.get $i) (i32.const 2)))))))
+              (local.set $i (i32.add (local.get $i) (i32.const 1)))
+              (br $vector-next)))
+          (i32.add (local.get $acc) (i32.load8_u (i32.load (local.get $p)))))
+        (func (export "length") (param $ptr i32) (param $len i32) (result i32)
+          (local.get $len)))
       (core instance $i (instantiate $m))
       (func (export "echo-string") (param "s" string) (result string)
         (canon lift (core func $i "echo")
@@ -209,6 +232,14 @@ const ECHO: &[u8] = component!(
         (canon lift (core func $i "echo") string-encoding=latin1+utf16
           (memory (core memory $i "memory"))
           (realloc (core func $i "cabi_realloc"))))
+      (func (export "length-utf16") (param "s" string) (result u32)
+        (canon lift (core func $i "length") string-encoding=utf16
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc"))))
+      (func (export "length-latin1-utf16") (param "s" string) (result u32)
+        (canon lift (core func $i "length") string-encoding=latin1+utf16
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc"))))
       (func (export "bad-string") (result string)
         (canon lift (core func $i "bad-string") (memory (core memory $i "memory"))))
       (func (export "bad-chars-high") (result (list char))
@@ -218,7 +249,8 @@ const ECHO: &[u8] = component!(
       (func (export "misaligned") (result (list u32))
         (canon lift (core func $i "misaligned") (memory (core memory $i "memory"))))
       (func (export "spilled")
-        (param "s" string) (param "a" (list u32 8)) (param "b" (list u32 8)) (result u32)
+        (param "s" string) (param "v" (list u32)) (param "a" (list u32 8)) (param "b" (list u32 8))
+        (result u32)
         (canon lift (core func $i "spilled")
           (memory (core memory $i "memory"))
           (realloc (core func $i "cabi_realloc")))))
@@ -435,26 +467,57 @@ async fn it_round_trips_a_typed_string_under_each_utf16_encoding() {
             assert_eq!(untyped.as_ref(), [Val::String(returned)], "{name}");
         }
     }
+    // The echo hands back what it was given, so a typed path that used
+    // UTF-8 both ways would round-trip too. The length word the guest
+    // received tells the encoding: UTF-16 code units, Latin-1 bytes, or
+    // UTF-16 code units with the high bit set when `latin1+utf16` needs
+    // UTF-16.
+    // Only text beyond ASCII has a UTF-8 length of its own.
+    const UTF16_TAG: u32 = 1 << 31;
+    for (text, utf16, latin1_utf16) in [("café crème", 10, 10), ("日本語 🎉", 6, 6 | UTF16_TAG)]
+    {
+        assert_ne!(
+            text.len() as u32,
+            utf16,
+            "{text}: UTF-8 has a length of its own"
+        );
+        for (name, expected) in [
+            ("length-utf16", utf16),
+            ("length-latin1-utf16", latin1_utf16),
+        ] {
+            let length = typed::<(String,), u32>(&instance, name)
+                .call(&mut store, (text.to_owned(),))
+                .await
+                .expect("the typed string lowers");
+            assert_eq!(length, expected, "{name}: {text}");
+        }
+    }
 }
 
 #[wcmp_macros::test]
 async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
     let (mut store, instance) = echo().await;
-    let spilled = typed::<(String, [u32; 8], [u32; 8]), u32>(&instance, "spilled");
+    // A `Vec<u32>` is wider than a byte, so its typed `store` takes the
+    // direct numeric branch, which writes its pointer and length into the
+    // spilled tuple.
+    let spilled = typed::<(String, Vec<u32>, [u32; 8], [u32; 8]), u32>(&instance, "spilled");
     let text = "spill".to_owned();
+    let vector = vec![3, 5, 7];
     let first = [1, 2, 3, 4, 5, 6, 7, 8];
     let second = [10, 20, 30, 40, 50, 60, 70, 80];
     let expected = text.len() as u32 * 1000
         + first
             .iter()
             .chain(&second)
+            .chain(&vector)
             .enumerate()
             .map(|(index, value)| (index as u32 + 1) * value)
             .sum::<u32>()
+        + vector.len() as u32 * 100_000
         + u32::from(text.as_bytes()[0]);
 
     let returned = spilled
-        .call(&mut store, (text.clone(), first, second))
+        .call(&mut store, (text.clone(), vector.clone(), first, second))
         .await
         .expect("the typed call spills its parameters");
     assert_eq!(returned, expected);
@@ -464,7 +527,12 @@ async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
         .expect("the export")
         .call(
             &mut store,
-            &[Val::String(text), fixed(first), fixed(second)],
+            &[
+                Val::String(text),
+                Val::List(vector.into_iter().map(Val::U32).collect()),
+                fixed(first),
+                fixed(second),
+            ],
         )
         .await
         .expect("the untyped call spills its parameters");
@@ -527,15 +595,35 @@ async fn it_carries_a_typed_byte_vector_and_string_through_call_concurrent() {
     let payload = pattern(4096);
     let text = "héllo, wörld 🎉".to_owned();
 
+    // Both calls are in flight at once: one poll drives the two, and
+    // each result is taken when its call finishes.
     let (bytes, string) = store
         .run_concurrent(async |accessor| {
-            let bytes = echo_bytes
-                .call_concurrent(accessor, (payload.clone(),))
-                .await?;
-            let string = echo_string
-                .call_concurrent(accessor, (text.clone(),))
-                .await?;
-            Ok::<_, wcmp::Error>((bytes, string))
+            let mut bytes = pin!(echo_bytes.call_concurrent(accessor, (payload.clone(),)));
+            let mut string = pin!(echo_string.call_concurrent(accessor, (text.clone(),)));
+            let (mut bytes_done, mut string_done) = (None, None);
+            poll_fn(|context| {
+                if bytes_done.is_none()
+                    && let Poll::Ready(result) = bytes.as_mut().poll(context)
+                {
+                    bytes_done = Some(result);
+                }
+                if string_done.is_none()
+                    && let Poll::Ready(result) = string.as_mut().poll(context)
+                {
+                    string_done = Some(result);
+                }
+                if bytes_done.is_some() && string_done.is_some() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            Ok::<_, wcmp::Error>((
+                bytes_done.expect("the bytes call finished")?,
+                string_done.expect("the string call finished")?,
+            ))
         })
         .await
         .expect("run the closure")

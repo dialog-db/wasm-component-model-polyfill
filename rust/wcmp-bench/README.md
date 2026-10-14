@@ -107,7 +107,7 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 | `list-u8-roundtrip-typed/N`  | the same bytes as a `Vec<u8>` through `TypedFunc`                |
 | `list-u32-roundtrip/N`       | a list of numbers, copied straight to and from its bytes         |
 | `list-u32-roundtrip-typed/N` | the same numbers as a `Vec<u32>`, at the typed `u8` list's bytes |
-| `list-record-roundtrip/N`    | the same, with a two-field record per element                    |
+| `list-record-roundtrip/N`    | an untyped list with a two-field record per element              |
 | `resource-handle`            | one owned handle minted, passed, handed back, and dropped        |
 | `composition-call`           | a call through the adapter `wac plug` wrote between two guests   |
 | `host-calls-in-flight/N`     | N host calls pending at once, completing one per turn            |
