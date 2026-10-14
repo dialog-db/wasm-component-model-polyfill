@@ -3362,3 +3362,113 @@
     (field "bytes" list.const (u8.const 254) (u8.const 253) (u8.const 252))
     (field "tag" u32.const 1)
     (field "step" s8.const 0)))
+
+;; Negative zero and infinity in each float, and an `s64` past 2^53
+;; going out and coming back, which an `f64` cannot hold exactly. The
+;; runner compares floats bit for bit, so a lost sign fails.
+(assert_return
+  (invoke "mix"
+    (record.const
+      (field "letter" char.const "a")
+      (field "flag" bool.const true)
+      (field "short" u16.const 7)
+      (field "big" u64.const 1)
+      (field "signed" s64.const -9007199254740993)
+      (field "single" f32.const -0.0)
+      (field "double" f64.const inf)
+      (field "pair" tuple.const (u8.const 7) (s16.const -7))
+      (field "nested" option.none)
+      (field "marks" flags.const))
+    (str.const "")
+    (list.const)
+    (u32.const 0)
+    (s8.const 0))
+  (record.const
+    (field "values" record.const
+      (field "letter" char.const "b")
+      (field "flag" bool.const false)
+      (field "short" u16.const 8)
+      (field "big" u64.const 2)
+      (field "signed" s64.const 9007199254740993)
+      (field "single" f32.const -0.0)
+      (field "double" f64.const inf)
+      (field "pair" tuple.const (u8.const 8) (s16.const 7))
+      (field "nested" option.some (option.none))
+      (field "marks" flags.const "f0" "f31"))
+    (field "text" str.const "")
+    (field "bytes" list.const)
+    (field "tag" u32.const 1)
+    (field "step" s8.const 0)))
+
+;; The other infinity and zero, the other way round.
+(assert_return
+  (invoke "mix"
+    (record.const
+      (field "letter" char.const "a")
+      (field "flag" bool.const true)
+      (field "short" u16.const 7)
+      (field "big" u64.const 1)
+      (field "signed" s64.const 9007199254740993)
+      (field "single" f32.const -inf)
+      (field "double" f64.const -0.0)
+      (field "pair" tuple.const (u8.const 7) (s16.const -7))
+      (field "nested" option.none)
+      (field "marks" flags.const))
+    (str.const "")
+    (list.const)
+    (u32.const 0)
+    (s8.const 0))
+  (record.const
+    (field "values" record.const
+      (field "letter" char.const "b")
+      (field "flag" bool.const false)
+      (field "short" u16.const 8)
+      (field "big" u64.const 2)
+      (field "signed" s64.const -9007199254740993)
+      (field "single" f32.const -inf)
+      (field "double" f64.const -0.0)
+      (field "pair" tuple.const (u8.const 8) (s16.const 7))
+      (field "nested" option.some (option.none))
+      (field "marks" flags.const "f0" "f31"))
+    (field "text" str.const "")
+    (field "bytes" list.const)
+    (field "tag" u32.const 1)
+    (field "step" s8.const 0)))
+
+;; A NaN with a payload in each float. The specification makes every
+;; lifted NaN canonical (`canonicalize_nan32` and `canonicalize_nan64` in
+;; `definitions.py`), so what comes back is the canonical NaN whatever
+;; payload the guest's arithmetic kept. Wasmtime keeps the payload.
+(assert_return
+  (invoke "mix"
+    (record.const
+      (field "letter" char.const "a")
+      (field "flag" bool.const true)
+      (field "short" u16.const 7)
+      (field "big" u64.const 1)
+      (field "signed" s64.const 0)
+      (field "single" f32.const nan:0x200000)
+      (field "double" f64.const nan:0x4000000000000)
+      (field "pair" tuple.const (u8.const 7) (s16.const -7))
+      (field "nested" option.none)
+      (field "marks" flags.const))
+    (str.const "")
+    (list.const)
+    (u32.const 0)
+    (s8.const 0))
+  (record.const
+    (field "values" record.const
+      (field "letter" char.const "b")
+      (field "flag" bool.const false)
+      (field "short" u16.const 8)
+      (field "big" u64.const 2)
+      (field "signed" s64.const 0)
+      (field "single" f32.const nan)
+      (field "double" f64.const nan)
+      (field "pair" tuple.const (u8.const 8) (s16.const 7))
+      (field "nested" option.some (option.none))
+      (field "marks" flags.const "f0" "f31"))
+    (field "text" str.const "")
+    (field "bytes" list.const)
+    (field "tag" u32.const 1)
+    (field "step" s8.const 0)))

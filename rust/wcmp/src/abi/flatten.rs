@@ -27,8 +27,8 @@
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
 use super::{
-    LIST_ELEMENT_COST, lift_end_for_host, lift_list, lift_map, lift_string, lower, lower_list,
-    lower_str,
+    LIST_ELEMENT_COST, canonical_f32, canonical_f64, lift_end_for_host, lift_list, lift_map,
+    lift_string, lower, lower_list, lower_str,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
@@ -648,11 +648,11 @@ fn primitive_from_flat(
             _ => Err(mismatch()),
         },
         PrimitiveType::F32 => match take(cursor) {
-            Some(RuntimeVal::F32(v)) => Ok(Val::F32(f32::from_bits(v))),
+            Some(RuntimeVal::F32(v)) => Ok(Val::F32(canonical_f32(f32::from_bits(v)))),
             _ => Err(mismatch()),
         },
         PrimitiveType::F64 => match take(cursor) {
-            Some(RuntimeVal::F64(v)) => Ok(Val::F64(f64::from_bits(v))),
+            Some(RuntimeVal::F64(v)) => Ok(Val::F64(canonical_f64(f64::from_bits(v)))),
             _ => Err(mismatch()),
         },
         PrimitiveType::Char => match take(cursor) {

@@ -21,6 +21,8 @@
 use core::any::Any;
 use core::mem;
 
+use crate::abi::{canonical_f32, canonical_f64};
+
 /// The little-endian bytes of `items` when `T` is a numeric
 /// primitive's Rust type, or `items` back, untouched, when it is not.
 ///
@@ -99,7 +101,26 @@ pub fn decode<T: 'static>(bytes: Vec<u8>) -> Option<Result<Vec<T>, &'static str>
                 return None;
             };
         }
-        wide!(u16, i16, u32, i32, u64, i64, f32, f64);
+        // A lifted NaN is canonical, as `canonical_f32` states.
+        if let Some(slot) = slot.downcast_mut::<Option<Vec<f32>>>() {
+            *slot = Some(
+                bytes
+                    .chunks_exact(4)
+                    .map(|chunk| canonical_f32(f32::from_le_bytes(array(chunk))))
+                    .collect(),
+            );
+            return out.map(Ok);
+        }
+        if let Some(slot) = slot.downcast_mut::<Option<Vec<f64>>>() {
+            *slot = Some(
+                bytes
+                    .chunks_exact(8)
+                    .map(|chunk| canonical_f64(f64::from_le_bytes(array(chunk))))
+                    .collect(),
+            );
+            return out.map(Ok);
+        }
+        wide!(u16, i16, u32, i32, u64, i64);
     }
     out.map(Ok)
 }

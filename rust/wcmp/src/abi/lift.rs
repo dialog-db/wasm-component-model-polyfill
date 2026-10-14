@@ -608,8 +608,8 @@ fn numeric_decoder(prim: PrimitiveType) -> Option<ElementDecoder> {
         PrimitiveType::U32 => |b| Some(Val::U32(u32::from_le_bytes(array(b)))),
         PrimitiveType::S64 => |b| Some(Val::S64(i64::from_le_bytes(array(b)))),
         PrimitiveType::U64 => |b| Some(Val::U64(u64::from_le_bytes(array(b)))),
-        PrimitiveType::F32 => |b| Some(Val::F32(f32::from_le_bytes(array(b)))),
-        PrimitiveType::F64 => |b| Some(Val::F64(f64::from_le_bytes(array(b)))),
+        PrimitiveType::F32 => |b| Some(Val::F32(canonical_f32(f32::from_le_bytes(array(b))))),
+        PrimitiveType::F64 => |b| Some(Val::F64(canonical_f64(f64::from_le_bytes(array(b))))),
         PrimitiveType::Char => |b| char::from_u32(u32::from_le_bytes(array(b))).map(Val::Char),
         PrimitiveType::String => return None,
     })
@@ -661,11 +661,11 @@ fn lift_primitive<T: 'static>(
         }
         PrimitiveType::F32 => {
             let bytes = ctx.read_array(offset, position, &ty)?;
-            Ok(Val::F32(f32::from_le_bytes(bytes)))
+            Ok(Val::F32(canonical_f32(f32::from_le_bytes(bytes))))
         }
         PrimitiveType::F64 => {
             let bytes = ctx.read_array(offset, position, &ty)?;
-            Ok(Val::F64(f64::from_le_bytes(bytes)))
+            Ok(Val::F64(canonical_f64(f64::from_le_bytes(bytes))))
         }
         PrimitiveType::Char => {
             let raw = u32::from_le_bytes(ctx.read_array(offset, position, &ty)?);
@@ -677,6 +677,44 @@ fn lift_primitive<T: 'static>(
             let (ptr, len) = read_pointer_pair(ctx, offset, position, &ty)?;
             lift_string(ctx, ptr, len, position, &ty).map(Val::String)
         }
+    }
+}
+
+/// The bits of the NaN every lift gives, `CANONICAL_FLOAT32_NAN` in
+/// the Component Model's reference.
+const CANONICAL_F32_NAN: u32 = 0x7fc0_0000;
+
+/// The bits of the NaN every lift gives, `CANONICAL_FLOAT64_NAN` in
+/// the Component Model's reference.
+const CANONICAL_F64_NAN: u64 = 0x7ff8_0000_0000_0000;
+
+/// `value` as a lift gives it: unchanged, unless it is a NaN, which
+/// becomes the one canonical NaN.
+///
+/// The Component Model makes every lifted NaN canonical
+/// (`canonicalize_nan32` in `design/mvp/canonical-abi/definitions.py`,
+/// called from `decode_i32_as_float` and `lift_flat`). Wasmtime keeps
+/// the payload (`f32::from_bits` and `from_le_bytes` in
+/// `crates/wasmtime/src/runtime/component/func/typed.rs`), so a host
+/// reads other NaN bits from it than from the polyfill. The polyfill
+/// follows the specification. A guest sees no difference either way:
+/// a lower may give it any NaN (`maybe_scramble_nan32`), and the
+/// polyfill's lowers keep the bits they are given.
+pub fn canonical_f32(value: f32) -> f32 {
+    if value.is_nan() {
+        f32::from_bits(CANONICAL_F32_NAN)
+    } else {
+        value
+    }
+}
+
+/// `value` as a lift gives it: unchanged, unless it is a NaN, which
+/// becomes the one canonical NaN, as [`canonical_f32`] states.
+pub fn canonical_f64(value: f64) -> f64 {
+    if value.is_nan() {
+        f64::from_bits(CANONICAL_F64_NAN)
+    } else {
+        value
     }
 }
 
@@ -1588,8 +1626,10 @@ mod tests {
         assert_eq!(written, expected);
     }
 
+    /// A lower writes every value's bits, and a lift gives each back
+    /// bit for bit, except a NaN, which it makes canonical.
     #[wcmp_macros::test]
-    fn it_round_trips_a_list_of_f64_bit_for_bit() {
+    fn it_round_trips_a_list_of_f64_bit_for_bit_with_a_canonical_nan() {
         let numbers = [
             -0.0,
             1.5,
@@ -1611,7 +1651,11 @@ mod tests {
                 other => panic!("expected an f64, got {other:?}"),
             })
             .collect();
-        let expected: Vec<u64> = numbers.iter().map(|n| n.to_bits()).collect();
-        assert_eq!(bits, expected, "sign, subnormal, and NaN payload survive");
+        let mut expected: Vec<u64> = numbers.iter().map(|n| n.to_bits()).collect();
+        expected[4] = 0x7ff8_0000_0000_0000;
+        assert_eq!(
+            bits, expected,
+            "sign, infinity and subnormal survive, and the NaN is canonical"
+        );
     }
 }

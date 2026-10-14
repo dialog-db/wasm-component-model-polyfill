@@ -336,7 +336,7 @@ alike.
 
 The corpus runs in four states: each target with the suspend provider
 and without one. The figures below come from one `tests all` run of
-2026-10-08, and the provider-off tables from the `tests regenerate
+2026-10-13, and the provider-off tables from the `tests regenerate
 --dry-run` of the same tree, which left every list as it was
 (`tests conformance` prints the current provider tables).
 
@@ -347,16 +347,16 @@ provider:
 | ---------------- | ---------- | ------ | ------ | ----------------------------------------------------------- |
 | `cm`             | 1126       | 1106   | 98.2   | validation 20                                               |
 | `cm/async`       | 393        | 393    | 100.0  | none                                                        |
-| `fixtures`       | 68         | 62     | 91.2   | deferred-feature 2, cascade 4                               |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                               |
 | `wasmtime`       | 469        | 464    | 98.9   | substrate 1, trap-message 1, cascade 3                      |
 | `wasmtime/async` | 387        | 387    | 100.0  | none                                                        |
-| total            | 2443       | 2412   | 98.7   | deferred-feature 2, substrate 1, validation 20, trap-message 1, cascade 7 |
+| total            | 2446       | 2415   | 98.7   | deferred-feature 2, substrate 1, validation 20, trap-message 1, cascade 7 |
 
 The browser runs its guest threads through the host-suspension provider, so its
 summary is the native one, and the five lines of
 `expected-failures.web.txt` move five passing directives into
 `substrate`: `cm` passes 1105 (98.1%) with substrate 1, `wasmtime` 460
-(98.1%) with substrate 5, and the total is 2407 (98.5%) with substrate
+(98.1%) with substrate 5, and the total is 2410 (98.5%) with substrate
 6. The `async` rows do not change. One line is V8's wording for a core
 validation error that Wasmtime words differently. Three, in
 `wasmtime/memory64.wast`, need allocations past 4 GiB, which the
@@ -381,16 +381,16 @@ missing proposal before it reaches the error the directive expects: two
 in `cm/linking/tags.wast`, and one shared memory in
 `cm/validation/instantiation.wast`, which needs threads. Each `cascade`
 line follows one of them. The summary of the `tests all` run of
-2026-10-08 on Wasmi, where the native run passed 2412 of 2443:
+2026-10-13 on Wasmi, where the native run passed 2415 of 2446:
 
 | Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
 | ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
 | `cm`             | 1126       | 1092   | 97.0   | substrate 8, validation 20, cascade 6                                  |
 | `cm/async`       | 393        | 393    | 100.0  | none                                                                   |
-| `fixtures`       | 68         | 62     | 91.2   | deferred-feature 2, cascade 4                                          |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                                          |
 | `wasmtime`       | 469        | 433    | 92.3   | substrate 13, trap-message 1, cascade 22                               |
 | `wasmtime/async` | 387        | 372    | 96.1   | substrate 3, cascade 12                                                |
-| total            | 2443       | 2352   | 96.3   | deferred-feature 2, substrate 24, validation 20, trap-message 1, cascade 44 |
+| total            | 2446       | 2355   | 96.3   | deferred-feature 2, substrate 24, validation 20, trap-message 1, cascade 44 |
 
 Without a provider, the 56 lines of `expected-failures.no-provider.txt`
 fail beyond the shared list, 32 in `cm/async` and 24 in
@@ -403,15 +403,15 @@ the provider turned off:
 | ---------------- | ---------- | ------ | ------ | ----------------------------------------------------------- |
 | `cm`             | 1126       | 1106   | 98.2   | validation 20                                               |
 | `cm/async`       | 393        | 361    | 91.9   | deferred-feature 22, cascade 10                             |
-| `fixtures`       | 68         | 62     | 91.2   | deferred-feature 2, cascade 4                               |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                               |
 | `wasmtime`       | 469        | 464    | 98.9   | substrate 1, trap-message 1, cascade 3                      |
 | `wasmtime/async` | 387        | 363    | 93.8   | deferred-feature 16, cascade 8                              |
-| total            | 2443       | 2356   | 96.4   | deferred-feature 40, substrate 1, validation 20, trap-message 1, cascade 25 |
+| total            | 2446       | 2359   | 96.4   | deferred-feature 40, substrate 1, validation 20, trap-message 1, cascade 25 |
 
 No line of the web delta names a directive of the overlay, so the
 browser without a provider moves the same five directives into
 `substrate`: `cm` passes 1105 (98.1%), `wasmtime` 460 (98.1%), and the
-total is 2348 (96.2%) with substrate 6.
+total is 2354 (96.2%) with substrate 6.
 
 Without a provider the `async` rows still hold the pass rate down, and
 the stack-switch reason covers what those directories still exercise. A directive that
