@@ -59,9 +59,12 @@ pub enum Val {
     S64(i64),
     /// An unsigned 64-bit integer.
     U64(u64),
-    /// A 32-bit IEEE-754 float.
+    /// A 32-bit IEEE-754 float. A NaN lifted from a guest is the
+    /// canonical NaN, whatever payload the guest gave it, as the
+    /// Component Model says; Wasmtime keeps the payload.
     F32(f32),
-    /// A 64-bit IEEE-754 float.
+    /// A 64-bit IEEE-754 float. A NaN lifted from a guest is the
+    /// canonical NaN, as for [`Val::F32`].
     F64(f64),
     /// A Unicode scalar value.
     Char(char),

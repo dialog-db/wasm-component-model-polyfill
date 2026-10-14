@@ -226,9 +226,9 @@ pub fn lower<T: 'static>(
 /// changes. A call refuses such an argument before it starts, with
 /// [`InstantiationError::WrongStore`]; this cause is the one a value
 /// meets once the call runs, from a host function's result, a host
-/// stream's write, or an argument of a host type that does not
-/// override [`ComponentValue::check_store`], where the trap names
-/// which value it was.
+/// stream's write, a host future's value, or an argument of a host type
+/// that does not override [`ComponentValue::check_store`], where the
+/// trap names which value it was.
 ///
 /// [`InstantiationError::WrongStore`]: crate::InstantiationError::WrongStore
 /// [`ComponentValue::check_store`]: crate::ComponentValue::check_store

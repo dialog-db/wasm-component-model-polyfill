@@ -290,8 +290,9 @@ pub fn transcode<T: 'static>(
 /// two memory indices are one; two indices that alias one memory are
 /// not detected, since a memory has no identity to compare. Ranges
 /// meet only where both hold a byte, so an empty string overlaps
-/// nothing; Wasmtime refuses an empty source at the destination's
-/// start too.
+/// nothing. Wasmtime's assertion also refuses an empty source anywhere
+/// in the destination's range, and an empty destination strictly
+/// inside the source's; the polyfill accepts both.
 fn refuse_overlap(
     same_memory: bool,
     (source, source_bytes): (usize, usize),

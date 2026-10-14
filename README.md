@@ -306,6 +306,14 @@ ways:
 - It drops all queued guest work and pending host futures at the moment of the
   trap. Wasmtime keeps them for a later `run_concurrent`.
 
+### A lifted NaN is canonical
+
+The Component Model makes every NaN that a lift produces the one canonical NaN
+(`0x7fc00000` as an `f32`, `0x7ff8000000000000` as an `f64`). The polyfill
+follows it, so a host reads those bits whatever NaN a guest gave it. Wasmtime
+keeps the guest's payload. A guest sees no difference, since a lower may hand it
+any NaN.
+
 ## Conformance
 
 The test suite runs two `.wast` corpora on both targets: the [Component Model

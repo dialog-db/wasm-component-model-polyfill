@@ -37,8 +37,8 @@ use super::error_context_id::ErrorContextId;
 /// another store that passes it fails with
 /// [`InstantiationError::WrongStore`](crate::InstantiationError::WrongStore)
 /// before the call changes anything, so that store stays usable. A
-/// host function or a host stream that hands it to a guest of another
-/// store fails the guest's call or built-in with
+/// host function, a host stream or a host future that hands it to a
+/// guest of another store fails the guest's call or built-in with
 /// [`AbiCause::WrongStore`](crate::AbiCause::WrongStore), which names
 /// the value's position and type, as any failure of the host's there
 /// does. Wasmtime checks neither, and
