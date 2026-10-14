@@ -132,9 +132,10 @@ impl Func {
     /// future's first poll, so a call that suspends there ends on that
     /// poll, even inside a host function, which cannot wait. A call that
     /// finishes there ends on that poll too, unless the browser's backend
-    /// cannot name the function's type in a generated module. A call that
-    /// traps, or finishes after it suspended, can end only once the browser
-    /// settles its promise.
+    /// cannot name the function's type in a generated module, and so does
+    /// one that a host function failed there, with that function's error.
+    /// A call that traps, or finishes after it suspended, can end only once
+    /// the browser settles its promise.
     /// Where the future drops before the call ends, the host has the store
     /// back, as for [`SuspendedCall::resume`](crate::SuspendedCall::resume).
     /// [`start_resumable`](Self::start_resumable) keeps the call instead.

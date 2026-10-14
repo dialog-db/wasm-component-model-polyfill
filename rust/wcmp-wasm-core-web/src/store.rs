@@ -784,9 +784,10 @@ impl BackendStore for WebStore {
         // received. The call's first stretch runs at once, on a stack of
         // its own. A call that suspends there ends on the future's first
         // poll, and so does one that returns there where its entrance
-        // records the return. One that traps ends only once the browser
-        // settles its promise, which the host function, which cannot wait,
-        // never sees.
+        // records the return, and one whose host function failed there,
+        // with that host function's error. One that traps ends only once
+        // the browser settles its promise, which the host function, which
+        // cannot wait, never sees.
         Box::pin(async move {
             let (flight, returns) = self.start_resumable(func, params, results.len())?;
             let stop = flight.stop().await;

@@ -36,8 +36,8 @@ use crate::concurrency::SPIN_BUDGET;
 use crate::concurrency::StoreProvider;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, EngineConfig, Error, Func, HostCall, Instance, Linker,
-    SchedulerCause, Store, SuspendProviderKind, Val,
+    AbiCause, AbiError, AbiPosition, Accessor, Component, Engine, EngineConfig, Error, Func,
+    HostCall, Instance, Linker, SchedulerCause, Store, SuspendProviderKind, Val,
 };
 use wcmp_macros::component;
 
@@ -2565,6 +2565,132 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
         if has_provider(&engine) {
             assert_eq!(parked_threads(&mut store), 0, "no thread is left suspended");
         }
+    }
+}
+
+/// `run` starts a second thread of `$Outer`, then makes a synchronous call
+/// through `$Mid` into `$Inner`, which blocks on an empty waitable set.
+/// The blocked call cannot suspend the stack below the host functions
+/// it runs in, so the scheduler starts the second thread in place,
+/// inside the wait. That thread's first act is the host import
+/// `refuse`, which fails. The shape is that of
+/// `wasmtime/thread-transparency/reentrancy.wast`, with the host import
+/// where `$Mid`'s guard traps.
+const REFUSES_IN_A_NESTED_START: &[u8] = component!(
+    r#"
+    (component
+      (import "refuse" (func $refuse))
+      (component $Inner
+        (core module $Memory (memory (export "mem") 1))
+        (core instance $memory (instantiate $Memory))
+        (core module $M
+          (import "" "waitable-set.new" (func $ws-new (result i32)))
+          (import "" "waitable-set.wait" (func $ws-wait (param i32 i32) (result i32)))
+          (func (export "g")
+            (drop (call $ws-wait (call $ws-new) (i32.const 0)))
+            unreachable))
+        (core func $ws-new (canon waitable-set.new))
+        (core func $ws-wait (canon waitable-set.wait (memory (core memory $memory "mem"))))
+        (core instance $m (instantiate $M
+          (with "" (instance
+            (export "waitable-set.new" (func $ws-new))
+            (export "waitable-set.wait" (func $ws-wait))))))
+        (func (export "g") async (canon lift (core func $m "g"))))
+      (component $Mid
+        (import "inner" (instance $inner (export "g" (func async))))
+        (core module $M
+          (import "" "g" (func $g))
+          (func (export "f") (call $g)))
+        (canon lower (func $inner "g") (core func $g))
+        (core instance $m (instantiate $M (with "" (instance (export "g" (func $g))))))
+        (func (export "f") (canon lift (core func $m "f"))))
+      (component $Outer
+        (import "mid" (instance $mid (export "f" (func))))
+        (import "refuse" (func $refuse))
+        (core module $Table (table (export "__indirect_function_table") 1 funcref))
+        (core instance $table (instantiate $Table))
+        (core module $M
+          (import "" "task.return" (func $task-return))
+          (import "" "f" (func $f))
+          (import "" "refuse" (func $refuse))
+          (import "" "thread.new-indirect" (func $thread-new (param i32 i32) (result i32)))
+          (import "" "thread.resume-later" (func $resume-later (param i32)))
+          (import "" "__indirect_function_table" (table $tbl 1 funcref))
+          (func $second (param i32) (call $refuse))
+          (elem (table $tbl) (i32.const 0) func $second)
+          (func (export "run") (result i32)
+            (call $resume-later (call $thread-new (i32.const 0) (i32.const 0)))
+            (call $f)
+            (call $task-return)
+            (i32.const 0))
+          (func (export "cb") (param i32 i32 i32) (result i32) unreachable))
+        (core type $start-func-ty (func (param i32)))
+        (alias core export $table "__indirect_function_table" (core table $indirect))
+        (core func $thread-new (canon thread.new-indirect $start-func-ty (core table $indirect)))
+        (core func $resume-later (canon thread.resume-later))
+        (canon task.return (core func $task-return))
+        (canon lower (func $mid "f") (core func $f))
+        (canon lower (func $refuse) (core func $refuse))
+        (core instance $m (instantiate $M
+          (with "" (instance
+            (export "task.return" (func $task-return))
+            (export "f" (func $f))
+            (export "refuse" (func $refuse))
+            (export "thread.new-indirect" (func $thread-new))
+            (export "thread.resume-later" (func $resume-later))
+            (export "__indirect_function_table" (table $indirect))))))
+        (func (export "run") async
+          (canon lift (core func $m "run") async (callback (core func $m "cb")))))
+      (instance $inner (instantiate $Inner))
+      (instance $mid (instantiate $Mid (with "inner" (instance $inner))))
+      (instance $outer (instantiate $Outer
+        (with "mid" (instance $mid))
+        (with "refuse" (func $refuse))))
+      (func (export "run") (alias export $outer "run")))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_fails_the_caller_with_the_host_error_of_a_nested_start_in_its_first_stretch() {
+    // The host-suspension provider starts the second thread in place
+    // inside a host function, which cannot wait for the browser to
+    // settle the call. The host import's error is the backend's before
+    // the first stretch returns, so the caller fails with it whole, as
+    // it does over the stack-switching provider.
+    const REFUSAL: &str = "the host refused the thread started in place";
+    for engine in [suspending_engine(), engine(true)] {
+        let mut linker: Linker<()> = Linker::new(&engine);
+        linker
+            .root()
+            .func_wrap(
+                "refuse",
+                |_: HostCall<'_, ()>, (): ()| -> Result<(), Error> {
+                    Err(Error::from(AbiError {
+                        position: AbiPosition::Argument(0),
+                        valtype: None,
+                        cause: AbiCause::InvalidEncoding {
+                            message: REFUSAL.to_owned(),
+                        },
+                    }))
+                },
+            )
+            .expect("the registration");
+        let (mut store, instance) = instantiate(&engine, &linker, REFUSES_IN_A_NESTED_START).await;
+        let err = func(&instance, "run")
+            .call(&mut store, &[])
+            .await
+            .expect_err("the host import fails the call");
+        assert!(
+            matches!(
+                &err,
+                Error::Abi(abi) if matches!(
+                    &abi.cause,
+                    AbiCause::InvalidEncoding { message } if message == REFUSAL
+                )
+            ),
+            "the caller fails with the host's own error, got {}",
+            chain(&err)
+        );
     }
 }
 

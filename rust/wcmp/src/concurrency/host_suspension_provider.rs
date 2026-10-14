@@ -671,10 +671,20 @@ impl<T: 'static> SuspendProvider<T> for HostSuspensionProvider {
         let mut threads = self.threads();
         threads.leave(index);
         match outcome {
+            // A call that suspends or finishes in its first stretch ends
+            // on the first poll, and so does one whose host import failed
+            // there: the backend has the host function's error before the
+            // stretch returns, and the caller fails with it whole.
             Some(outcome) => threads.stopped(&self.finished, index, outcome),
             // The call's future ends only once the backend settles it,
             // which a host function cannot wait for. The entry wrapper
-            // handed over the results of an entry that finished.
+            // handed over the results of an entry that finished. What is
+            // left is a guest trap: the browser reports its reason only
+            // through the rejection of the call's promise, on a microtask.
+            // A JavaScript frame that caught the trap at once would sit
+            // between the stack and its suspender, where JavaScript
+            // Promise Integration refuses to suspend, and WebAssembly
+            // cannot catch a trap.
             None => match lock(&self.finished).remove(&index) {
                 Some(results) => finished_with(Some(results)),
                 None => Err(call_failure(crate::runtime_layer::RuntimeError::Trap(
