@@ -795,6 +795,14 @@ mod tests {
             copy.run(op, &args, results)
                 .unwrap_or_else(|error| panic!("{op:?}: {error}"));
         }
+        // Ranges that touch share no byte: every op's source is the 16
+        // bytes at 0, and the destination starts where it ends.
+        for (op, args, results) in every_op(16) {
+            let mut copy = TwoMemories::one_memory();
+            copy.put(0, &text);
+            copy.run(op, &args, results)
+                .unwrap_or_else(|error| panic!("{op:?} at the source's end: {error}"));
+        }
         // Two memories never overlap, at any offsets.
         for (op, args, results) in every_op(4) {
             let mut copy = TwoMemories::new();
