@@ -270,11 +270,12 @@ needs a suspend provider to pause a guest and resume it later. When the engine
 is built, it picks a provider from the features that its backend declares.
 `Engine::suspend_provider()` returns the choice:
 
-| Backend                                                                                                         | Provider                           |
-| --------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Wasmtime on x86_64 Linux                                                                                        | Stack switching (`StackSwitching`) |
-| The browser backend, in a browser with JSPI (every current browser)                                             | Host suspension (`HostSuspension`) |
-| Wasmtime on other platforms, the browser backend without JSPI (such as Safari 26), or `suspend_provider(false)` | None (`None`)                      |
+| Backend                                                                                                          | Provider                           |
+| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| Wasmtime where it serves stack switching and the switch probe passes: x86_64 Linux (tested) and macOS (untested) | Stack switching (`StackSwitching`) |
+| The browser backend, in a browser with JSPI (every current browser)                                              | Host suspension (`HostSuspension`) |
+| Wasmi, on any platform                                                                                           | Host suspension (`HostSuspension`) |
+| Wasmtime on other platforms, the browser backend without JSPI (such as Safari 26), or `suspend_provider(false)`  | None (`None`)                      |
 
 Without a provider, a blocked guest runs the store's other work in nested turns
 until it can go on. That serves most blocks. A block that only a stack switch
@@ -315,33 +316,40 @@ for the browser and one for running without a suspend provider. The harness
 fails when a listed directive starts to pass or an unlisted one fails, so the
 lists stay current.
 
-Directives passed, with pass percentage, as of 2026-09-27. `tests conformance`
-prints the current numbers.
+Directives passed, with pass percentage, from the `tests all` run of 2026-10-13.
+The Baseline section of `rust/wcmp/tests/corpus/README.md` gives the same
+figures by failure category, and `tests conformance` prints the current numbers.
 
-| Corpus           | Directives | Native, stack switching | Browser, JSPI | Native, no provider | Browser, no provider |
-| ---------------- | ---------- | ----------------------- | ------------- | ------------------- | -------------------- |
-| `cm`             | 1126       | 1096 (97.3)             | 1095 (97.2)   | 1096 (97.3)         | 1095 (97.2)          |
-| `cm/async`       | 393        | 393 (100.0)             | 392 (99.7)    | 361 (91.9)          | 360 (91.6)           |
-| `fixtures`       | 65         | 59 (90.8)               | 59 (90.8)     | 59 (90.8)           | 59 (90.8)            |
-| `wasmtime`       | 469        | 441 (94.0)              | 434 (92.5)    | 441 (94.0)          | 434 (92.5)           |
-| `wasmtime/async` | 387        | 387 (100.0)             | 385 (99.5)    | 363 (93.8)          | 361 (93.3)           |
-| total            | 2440       | 2376 (97.4)             | 2365 (96.9)   | 2320 (95.1)         | 2309 (94.6)          |
+| Corpus           | Directives | Native, stack switching | Browser, JSPI | Native, no provider | Browser, no provider | Wasmi       |
+| ---------------- | ---------- | ----------------------- | ------------- | ------------------- | -------------------- | ----------- |
+| `cm`             | 1126       | 1106 (98.2)             | 1105 (98.1)   | 1106 (98.2)         | 1105 (98.1)          | 1092 (97.0) |
+| `cm/async`       | 393        | 393 (100.0)             | 393 (100.0)   | 361 (91.9)          | 361 (91.9)           | 393 (100.0) |
+| `fixtures`       | 71         | 65 (91.5)               | 65 (91.5)     | 65 (91.5)           | 65 (91.5)            | 65 (91.5)   |
+| `wasmtime`       | 469        | 464 (98.9)              | 460 (98.1)    | 464 (98.9)          | 460 (98.1)           | 433 (92.3)  |
+| `wasmtime/async` | 387        | 387 (100.0)             | 387 (100.0)   | 363 (93.8)          | 363 (93.8)           | 372 (96.1)  |
+| total            | 2446       | 2415 (98.7)             | 2410 (98.5)   | 2359 (96.4)         | 2354 (96.2)          | 2355 (96.3) |
 
-- With a suspend provider, the `async` corpora pass every directive natively and
-  all but three in the browser.
-- The browser fails eleven more directives than native. In those, V8 fails the
-  directive or gives a different trap message.
+- With a suspend provider, the `async` corpora pass every directive on both
+  targets.
+- The browser fails five more directives than native. One is V8's wording of a
+  validation error, three need memory past 4 GiB, and one is the trap without a
+  reason that [Host suspension](#host-suspension) describes
+  (`rust/wcmp/tests/corpus/expected-failures.web.txt`).
 - Without a provider, the extra failures are blocks that only a stack switch can
   serve, plus later directives in the same file that then meet a poisoned store.
+- On Wasmi, the extra failures are components that need a capability Wasmi
+  lacks, and the directives that fail after them.
 - The two WASI 0.3 HTTP fixtures stop at link, because the harness provides no
   `wasi:http/types` host.
 
 ## Targets and requirements
 
-- **Native.** Any target Wasmtime 49 supports. The runtime layer's Wasmtime
-  backend is the core engine. `tokio` supplies the executor in the tests, but
-  the library itself is executor-agnostic. The stack-switching suspend provider
-  runs on x86_64 Linux only; see
+- **Native.** Any target Wasmtime 49 or Wasmi 2.0 supports. The runtime layer's
+  Wasmtime backend or its Wasmi backend is the core engine, as the host chooses.
+  `tokio` supplies the executor in the tests, but the library itself is
+  executor-agnostic. The stack-switching suspend provider runs over Wasmtime,
+  tested on x86_64 Linux only, and the host-suspension provider over Wasmi on
+  any platform; see
   [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider).
 - **Web.** `wasm32-unknown-unknown` with `wasm-bindgen`. The browser's
   `WebAssembly` API is the core engine. The JSPI suspend provider runs in every
@@ -421,12 +429,12 @@ to pause a guest thread. The section
 [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider) explains
 how the engine picks a provider, and what happens without one.
 
-|                              | Browser                                                    | Wasmi                                           | Wasmtime                                                                                |
-| ---------------------------- | ---------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Mechanism                    | JSPI: `WebAssembly.promising` and `WebAssembly.Suspending` | Wasmi's resumable calls (`call_resumable`)      | None. The polyfill uses stack switching instead, where the backend declares it          |
-| Suspend provider             | Host suspension                                            | Host suspension                                 | Stack switching on x86_64 Linux, otherwise none                                         |
-| A resumption                 | Runs later, on a microtask                                 | Runs at once, to the next suspension or the end | Not applicable                                                                          |
-| Suspended calls in one store | Any number, resumed in any order                           | Any number, resumed in any order                | Not applicable. `Func::call_async` holds the store, so one store has one suspended call |
+|                              | Browser                                                    | Wasmi                                           | Wasmtime                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Mechanism                    | JSPI: `WebAssembly.promising` and `WebAssembly.Suspending` | Wasmi's resumable calls (`call_resumable`)      | None. The polyfill uses stack switching instead, where the backend declares it                                                  |
+| Suspend provider             | Host suspension                                            | Host suspension                                 | Stack switching where Wasmtime serves it and the switch probe passes: x86_64 Linux, tested, and macOS, untested. Otherwise none |
+| A resumption                 | Runs later, on a microtask                                 | Runs at once, to the next suspension or the end | Not applicable                                                                                                                  |
+| Suspended calls in one store | Any number, resumed in any order                           | Any number, resumed in any order                | Not applicable. `Func::call_async` holds the store, so one store has one suspended call                                         |
 
 Sources: the crate docs of each backend, and
 `rust/wcmp/src/suspend_provider_kind.rs` for the provider. The Wasmtime crate
@@ -488,9 +496,9 @@ change, on one machine (`rust/wcmp-bench/README.md`). The baseline `afc71435f`
 is the last commit before every browser call went through JSPI.
 
 **The browser's host-suspension path.** When every browser export call became a
-JSPI resumable call (card `7eb780`), each call cost about 3 µs more. Card
-`721eac` recorded these figures, with the benchmark names as the card gives
-them:
+JSPI resumable call (card `7eb780`), each call cost more: from about 1 µs for
+`u32-call` to about 42 µs for `list-u32/4096`. Card `721eac` recorded these
+figures, with the benchmark names as the card gives them:
 
 | Benchmark          | Before (µs) | After the change (µs) |
 | ------------------ | ----------- | --------------------- |
@@ -516,21 +524,27 @@ resumption (crate docs of `rust/wcmp-wasm-core-web`).
 which can change the bits of a NaN. So the backend calls each export whose type
 holds a float through a carrier: a small generated module that passes an `f64`
 as the `i64` of its bits, which JavaScript receives as a `BigInt`
-(`rust/wcmp-wasm-core-web/src/carrier.rs`). No benchmark measures this cost yet.
-Card `841af1` asks for one.
+(`rust/wcmp-wasm-core-web/src/carrier.rs`). The `f64-call` benchmarks measure
+the cost against the `u32` floor of the same shape. Two
+`bench web target-sample-ms=50` runs of 2026-10-13 put `u32-call` at 2.04 and
+2.06 µs and `f64-call` at 2.22 and 2.18 µs, and `u32-call-typed` at 1.99 and
+1.96 µs and `f64-call-typed` at 2.13 and 2.12 µs. So a float call costs about
+0.15 µs more in the browser, 6 to 9%. Natively the two are the same:
+`bench native` put `u32-call` at 1.36 µs and `f64-call` at 1.35 µs (card
+`276004`).
 
 ### Fidelity
 
 | Suite                          | Browser                      | Wasmi                 | Wasmtime              |
 | ------------------------------ | ---------------------------- | --------------------- | --------------------- |
-| Conformance, directives passed | 2407 of 2443 (98.5%)         | 2352 of 2443 (96.3%)  | 2412 of 2443 (98.7%)  |
+| Conformance, directives passed | 2410 of 2446 (98.5%)         | 2355 of 2446 (96.3%)  | 2415 of 2446 (98.7%)  |
 | Fidelity, script tests passed  | 264, with 83 listed failures | 264, with none listed | 267, with none listed |
 | Zena scenarios passed          | 18 of 18                     | 2 of 18               | 18 of 18              |
 
 - **Conformance** is the Component Model and Wasmtime `.wast` corpora under the
   [conformance](#conformance) harness, with the suspend provider on. The figures
   are the Baseline tables of `rust/wcmp/tests/corpus/README.md`, from the
-  `tests all` run of 2026-10-08. On Wasmi, the 60 lines of
+  `tests all` run of 2026-10-13. On Wasmi, the 60 lines of
   `expected-failures.wasmi.txt` are components that need a capability Wasmi
   lacks, and the directives that fail after them.
 - **Fidelity** is the WebAssembly specification test suite, run on one backend
@@ -646,7 +660,10 @@ command, never through bare `cargo`. Outside the shell, prefix a command with
 | `tests fidelity <backend>`   | The WebAssembly spec tests on one backend of the runtime layer: `wasmi`, `wasmtime`, or `web`. |
 | `tests smoke native` / `web` | The end-to-end smoke test as a binary or as a served page.                                     |
 | `tests all`                  | Every test archive, debug and release, native and web.                                         |
+| `tests native wasmi`         | The polyfill's tests on the Wasmi backend, from the native debug build.                        |
+| `tests zena` / `regenerate`  | The Zena scenarios on every subject, held to `rust/wcmp/tests/zena/record.txt`, or rewrite it. |
 | `bench native` / `web`       | The benchmark suite on one target.                                                             |
+| `bench wasmi`                | The benchmark suite over the Wasmi backend, with the binary `bench native` builds.             |
 | `lint`                       | Every check the flake declares (`nix flake check`).                                            |
 | `api list` / `update`        | Print or record the crate's public API snapshot.                                               |
 
