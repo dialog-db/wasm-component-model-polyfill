@@ -9,6 +9,10 @@
 // WIT: the glue that the demo's helper writes around the author's
 // source exports the element interface through a `Registry`, which
 // keeps one object of the author's class for each element of the tag.
+//
+// A new `Map` or `GrowableArray` given straight to a parameter's default
+// or a field of type `Map` or `Array` is cast to that type with `as`.
+// Zena's code generator refuses the value otherwise.
 import { Future, Completer } from 'zena:async';
 import { Option, Some, Outcome, Ok, Err, some, none, u32ToString } from 'zena:core';
 import { console } from 'zena:console';
@@ -71,7 +75,8 @@ function unit(): void {}
  */
 export async function request(method: String, path: String,
     body: String = '',
-    headers: Map<String, String> = new Map<String, String>()): Future<HttpResponse> {
+    headers: Map<String, String> =
+        new Map<String, String>() as Map<String, String>): Future<HttpResponse> {
   let fields = Fields.create();
   for (let name in headers.keys()) {
     fields.append(name, headers[name].toBytes());
@@ -138,16 +143,20 @@ export final class View {
  * time its height changes, with the height as the event's value.
  */
 export let h = (tag: String,
-    attributes: Map<String, String> = new Map<String, String>(),
-    children: Array<View | String> = new GrowableArray<View | String>(),
-    events: Map<String, String> = new Map<String, String>()): View => {
+    attributes: Map<String, String> =
+        new Map<String, String>() as Map<String, String>,
+    children: Array<View | String> =
+        new GrowableArray<View | String>() as Array<View | String>,
+    events: Map<String, String> =
+        new Map<String, String>() as Map<String, String>): View => {
   return new View(tag, attributes, children, events);
 };
 
 /** The base of an element's definition. */
 export class Element {
   var _id: u32 = 0 as u32;
-  var _attributes: Map<String, String> = new Map<String, String>();
+  var _attributes: Map<String, String> =
+      new Map<String, String>() as Map<String, String>;
 
   new() {}
 
@@ -278,7 +287,7 @@ export final class Registry {
   #make: () => Element;
   #prototype: Element;
   var #next: u32 = 1 as u32;
-  #elements: Map<u32, Element> = new Map<u32, Element>();
+  #elements: Map<u32, Element> = new Map<u32, Element>() as Map<u32, Element>;
 
   new(make: () => Element) : #make = make, #prototype = make() {}
 
