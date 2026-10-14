@@ -594,7 +594,10 @@ pub fn build_transcoder<T: 'static>(
                 results,
                 &result_widths,
             )
-            .map_err(|err| anyhow!("string transcoder failed: {err}"))
+            // The error itself traps the guest, as every built-in's
+            // does, so the call into the guest gets it back as an
+            // `Error` (see `call_failure`).
+            .map_err(anyhow::Error::from)
         },
     )
 }
@@ -630,8 +633,10 @@ mod tests {
     use super::*;
     use crate::concurrency::{Item, ItemKind};
     use crate::engine::Engine;
+    use crate::error::AbiCause;
     use crate::internal::ResourceTypeIdInternal;
     use crate::resource::{ResourceTypeId, TableId};
+    use crate::runtime_layer::{AsContextMut, Memory, MemoryType};
     use crate::store::Store;
     use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
@@ -1267,6 +1272,61 @@ mod tests {
             counter(&tables, first),
             2,
             "and leaves the first instance's where it was"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_hands_back_an_overlapping_transcode_as_its_structured_error() {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+        let memory = Memory::new(
+            store.internal().inner_mut().as_context_mut(),
+            MemoryType::new(1, None),
+        )
+        .expect("a guest memory");
+        let abi_state = Arc::new(Mutex::new(AbiRuntimeState::with_slabs(
+            1,
+            0,
+            0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )));
+        abi_state.lock().expect("runtime state").memories[0] = Some(memory);
+        // A UTF-8 copy within memory 0, of the 16 bytes at 0 to 4.
+        let signature = CoreSignature {
+            params: vec![CoreParameter::Value(FlatType::I32); 3],
+            results: Vec::new(),
+        };
+        let transcoder = build_transcoder(
+            &mut store.internal().context(),
+            TranscodeOp::CopyUtf8,
+            0,
+            0,
+            &signature,
+            abi_state,
+        )
+        .expect("the transcoder builds");
+
+        let failure = transcoder
+            .call(
+                store.internal().inner_mut(),
+                &[RuntimeVal::I32(0), RuntimeVal::I32(16), RuntimeVal::I32(4)],
+                &mut [],
+            )
+            .expect_err("an overlapping transcode traps");
+
+        let error = crate::runtime_layer::call_failure(failure);
+        assert!(
+            matches!(
+                &error,
+                Error::Abi(abi) if matches!(
+                    abi.cause,
+                    AbiCause::OverlappingTranscode { source_offset: 0, destination_offset: 4, .. }
+                )
+            ),
+            "the call fails with the transcode's own error, not a trap's text: {error:?}"
         );
     }
 

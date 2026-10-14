@@ -355,13 +355,15 @@ provider:
 The browser runs its guest threads through the host-suspension provider, so its
 summary is the native one, and the five lines of
 `expected-failures.web.txt` move five passing directives into
-`substrate`: `cm` passes 1105 (98.1%) with substrate 1, `wasmtime` 460
-(98.1%) with substrate 5, and the total is 2410 (98.5%) with substrate
-6. The `async` rows do not change. One line is V8's wording for a core
-validation error that Wasmtime words differently. Three, in
-`wasmtime/memory64.wast`, need allocations past 4 GiB, which the
-polyfill cannot address in the browser: it is 32-bit code there, and
-its canonical ABI addresses guest memory with `usize`. The last,
+`substrate` and `cascade`: `cm` passes 1105 (98.1%) with substrate 1,
+`wasmtime` 460 (98.1%) with substrate 3 and cascade 5, and the total is
+2410 (98.5%) with substrate 4 and cascade 9. The `async` rows do not
+change. One line is V8's wording for a core validation error that
+Wasmtime words differently. Three are in `wasmtime/memory64.wast`. The
+first needs an allocation past 4 GiB, which the polyfill cannot address
+in the browser: it is 32-bit code there, and its canonical ABI addresses
+guest memory with `usize`. Its trap poisons the store, so the file's two
+later calls fail as `cascade`. The last,
 `wasmtime/thread-transparency/reentrancy.wast:114`, is a trap in the
 first stretch of a thread started in place inside a host function,
 which the browser reports only to a caller that awaits the call. So
@@ -410,8 +412,8 @@ the provider turned off:
 
 No line of the web delta names a directive of the overlay, so the
 browser without a provider moves the same five directives into
-`substrate`: `cm` passes 1105 (98.1%), `wasmtime` 460 (98.1%), and the
-total is 2354 (96.2%) with substrate 6.
+`substrate` and `cascade`: `cm` passes 1105 (98.1%), `wasmtime` 460
+(98.1%), and the total is 2354 (96.2%) with substrate 4 and cascade 27.
 
 Without a provider the `async` rows still hold the pass rate down, and
 the stack-switch reason covers what those directories still exercise. A directive that

@@ -332,8 +332,9 @@ figures by failure category, and `tests conformance` prints the current numbers.
 - With a suspend provider, the `async` corpora pass every directive on both
   targets.
 - The browser fails five more directives than native. One is V8's wording of a
-  validation error, three need memory past 4 GiB, and one is the trap without a
-  reason that [Host suspension](#host-suspension) describes
+  validation error. One needs memory past 4 GiB, and its trap poisons the store
+  for the file's next two. One is the trap without a reason that
+  [Host suspension](#host-suspension) describes
   (`rust/wcmp/tests/corpus/expected-failures.web.txt`).
 - Without a provider, the extra failures are blocks that only a stack switch can
   serve, plus later directives in the same file that then meet a poisoned store.
