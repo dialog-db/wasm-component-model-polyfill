@@ -18,6 +18,19 @@ From the 2026-10-13 review of fbe4df. Corrections to `project/research/Wasm Core
 - **Activity counts** ("48 commits since 2026-07-01", release counts) cite no source. Cite them or drop them.
 
 ## Acceptance criteria
-- [ ] Each point above is fixed or answered in the note.
-- [ ] `markdown format` and `lint` pass.
+- [x] Each point above is fixed or answered in the note.
+- [x] `markdown format` and `lint` pass.
 
+## Implementation notes
+
+- 2026-10-13 (`docs(research): Correct the engine survey's memory64, ranking
+  and counts`):
+  - JSC memory64: the summary, the JSC verdict and the ranking each say the
+    flag gives `testable`, IPInt-only memory64.
+  - Ranking: retitled "Ranked", and it states fidelity first, then cost.
+  - Contract: four rules, with the store-drop rule (PDD025 434-444).
+  - Lines: 12,813 with tests at the note's commit, 9,540 in `src/`.
+  - V8: one isolate per thread is a cost bullet and part of the ranking.
+  - Activity counts: no source was at hand, and checking would mean
+    cloning each upstream, so every uncited commit and release count is
+    dropped (V8, JSC, SpiderMonkey, WasmEdge, Wasmer, WAMR, Wizard, Wasm3).

@@ -28,7 +28,7 @@ Smaller gap: the test of a host function returning another store's error context
 ## Acceptance criteria
 - [x] Every container branch of the untyped walker, of the typed `check_store` overrides and of `holds_error_context` has a test that fails when that branch is removed. Show this by mutation for at least the two branches above.
 - [x] A typed host function (`func_wrap`) that returns another store's error context fails the guest's call with the wrong-store cause.
-- [ ] `lint` passes and `tests all` is green on both targets.
+- [x] `lint` passes and `tests all` is green on both targets.
 
 ## Implementation notes
 
@@ -49,3 +49,5 @@ Smaller gap: the test of a host function returning another store's error context
   Mutation, run together on 2026-10-13: `Option<T>::check_store` returning
   `Ok(())` failed the typed-container test, and dropping the walker's
   `Val::Option(Some(inner))` arm failed the walker test.
+
+- 2026-10-13 gate on the series tip: `tests all` green (native debug and release 1741/1741, no-provider 169, Wasmi 1458, web debug and release 1728/1728, fidelity 264/267/264, Zena Browser 18/18, Native 18/18, Wasmi 2/18, Wasmtime 18/18, demo 68/68), no `unexpected:` or `stale expectation:` line, `tests regenerate --dry-run` current, and the full `lint` green.
