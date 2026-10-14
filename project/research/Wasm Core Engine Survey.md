@@ -19,9 +19,11 @@ The short answer:
   shipping engine turns on stack switching by default. Wasmtime has it off by
   default too, and the Wasmtime backend turns it on.
 - JavaScriptCore, Safari's engine, misses only `stack_switching` in WebKitGTK
-  2.54, once `JSC_useWasmMemory64=1` turns memory64 on. It is the only candidate
-  that gives a native lane with Safari's semantics. It is also the cheapest to
-  build, because the flake already holds it.
+  2.54, once `JSC_useWasmMemory64=1` turns memory64 on. That memory64 is not
+  stable: the option's status is `testable`, and it runs only in the IPInt
+  interpreter tier. It is the only candidate that gives a native lane with
+  Safari's semantics. It is also the cheapest to build, because the flake
+  already holds it.
 - SpiderMonkey also misses only `stack_switching`. It has Firefox's semantics,
   which the project weighs low.
 - WasmEdge also misses only `stack_switching`, but its GC never collects, and it
@@ -93,14 +95,17 @@ backend implements five traits. The contract tests (36 test functions in
 tests at testsuite `0dc0343`, the `spec-testsuite` input of
 [`flake.nix`][wcmp-testsuite]) are the bar.
 
-The host suspension contract has three rules ([PDD025 lines
-434-445][wcmp-pdd025-hs]):
+The host suspension contract has four rules ([PDD025 lines
+434-444][wcmp-pdd025-hs]):
 
 - A suspension succeeds only when WebAssembly frames alone lie between the start
   of the resumable call and the suspending host function.
 - Any number of handles can wait at once in one store, and the host can resume
   them in any order.
 - A handle does not hold the store. It borrows the store only while it resumes.
+- When a store drops, its waiting handles drop without a resumption. A
+  resumption that started before the drop runs to its next suspension or its end
+  first, and the backend keeps the store's state alive until then.
 
 The three lanes today:
 
@@ -227,12 +232,14 @@ lines 713-742][v8-traps]). The browser backend already maps these strings
 - nixpkgs builds `rusty_v8` 150.4.0 from source for Deno, as a `big-parallel`
   job ([`rusty-v8/default.nix` lines 74, 122, 190][nix-rusty-v8]). The project
   must not use that path, because it is a long C++ build.
-- Maintenance: 30 crate releases in 2026, and 48 commits on `main` since
-  2026-07-01.
 - Distance from the trait: large in code, small in design. The backend is a port
-  of the browser backend (12,813 lines today, much of it `wasm-bindgen`
-  specific) onto `v8` handle scopes, plus a microtask pump. The trap table, the
-  type registry over `wasmparser`, and the JSPI design carry over.
+  of the browser backend onto `v8` handle scopes, plus a microtask pump. The
+  browser backend was 12,813 lines with its tests at this note's commit, 9,540
+  of them in `src/`, much of it `wasm-bindgen` specific.
+- Threads: an isolate is single-threaded, so `threads` needs one isolate per
+  thread over a shared backing store. The browser backend has no counterpart,
+  since the browser makes a worker's isolate, so this is new code. The trap
+  table, the type registry over `wasmparser`, and the JSPI design carry over.
 
 **Verdict.** Full fidelity, with `--wasm-wasmfx`. All nine features and host
 suspension. Stack switching is experimental and compiles in one tier only.
@@ -393,15 +400,16 @@ exceptions.
   measured.
 - Nothing vendors C++. The binding crates link the system library through
   pkg-config.
-- Maintenance: WebKit `main` takes many commits a day. WebKitGTK had nine stable
-  releases in 2026.
 - Distance from the trait: the same as V8. The backend is a port of the browser
   backend onto a JSC binding, with declarations of the C API functions the 6.0
   headers omit.
 
 **Verdict.** Not full fidelity: `stack_switching` is missing in every version.
 With `JSC_useWasmMemory64=1`, WebKitGTK 2.54 has the other eight features and
-host suspension.
+host suspension. At 2.54.1 the `useWasmMemory64` option's status is `testable`,
+and memory64 is "only supported in the IPInt tier", JSC's interpreter. So the
+flag gives memory64 that is neither stable nor compiled, which weakens the case
+for this lane as Safari parity for memory64.
 
 [jsc-license]:
   https://github.com/WebKit/WebKit/blob/2808f5b4f299d92496145faa85f15d69a16eca49/Source/JavaScriptCore/COPYING.LIB
@@ -534,8 +542,7 @@ low.
 - nixpkgs has `spidermonkey_128` and `spidermonkey_140` only
   ([`all-packages.nix` lines 4586-4587][nix-sm]). `mozjs_sys` cannot link a
   system `libmozjs`, so these do not help.
-- Maintenance: 86 commits in 2026. Each ESR security release brings a new crate
-  release.
+- Each ESR security release brings a new crate release.
 - Distance from the trait: the same as V8, plus manual rooting.
 
 **Verdict.** Not full fidelity: `stack_switching` is partial and off. Eight
@@ -642,8 +649,7 @@ follow the spec-test wording ([`enum.inc` lines 1386-1443][we-traps]).
 **Cost.** nixpkgs ships WasmEdge 0.17.1 ([`package.nix` line 20][nix-we]). The
 `wasmedge-sys` crate links an installed library or downloads a release tarball
 ([`build.rs` lines 12-50][we-rs-build]). Under Nix, `WASMEDGE_DIR` must point at
-a Nix-built library. WasmEdge had 298 commits since 2026-07-01 and nine stable
-releases in 2026. Distance from the trait: large. The backend needs its own
+a Nix-built library. Distance from the trait: large. The backend needs its own
 `-sys` binding for tags, exceptions, and GC types, and the C API still lacks
 host tags and `exnref`.
 
@@ -752,9 +758,8 @@ cast, or array traps ([`trapcode.rs` lines 33-89][wr-traps]).
 **Cost.** nixpkgs ships Wasmer 7.4.2 ([`package.nix` line 64][nix-wr]). The
 Cranelift tier is pure Rust. LLVM needs a system LLVM 22. The `v8` feature
 downloads a prebuilt library at build time ([`build.rs` lines
-10-75][wr-v8-build]). Wasmer had 248 commits since 2026-07-01 and ten stable
-releases in 2026. Distance from the trait: medium for the API shape, but GC and
-`memory64` are absent from the engine itself.
+10-75][wr-v8-build]). Distance from the trait: medium for the API shape, but GC
+and `memory64` are absent from the engine itself.
 
 **Verdict.** Not full fidelity. Missing `memory64`, `gc`, `function_references`,
 and `stack_switching`. `tail_call` needs LLVM. Host suspension is partial.
@@ -812,7 +817,7 @@ WAMR (WebAssembly Micro Runtime) is a C engine for small devices, with two
 interpreters, AOT, and two JIT tiers. It moved to the `wasm-micro-runtime`
 GitHub organization in August 2026 ([README lines 14-19][wamr-readme]). It is
 Apache-2.0 with the LLVM exception ([LICENSE][wamr-license]). The latest release
-is 2.4.5, 2026-06-29, the only release in 2026.
+is 2.4.5, 2026-06-29.
 
 **Proposals.** Every feature is a compile-time CMake option, and the tiers
 support different sets ([`stability_wasm_proposals.md` lines
@@ -849,9 +854,7 @@ WAMR 2.3.1, and builds without GC, exceptions, or threads ([`build.rs` lines
 **Fit with the browsers.** None.
 
 **Cost.** nixpkgs ships WAMR 2.4.4 with SIMD off ([`package.nix` line
-22][nix-wamr]). The backend needs its own CMake build and `-sys` crate. 107
-commits since 2026-07-01, mostly CI and security fixes. No proposal work was
-found in 2026.
+22][nix-wamr]). The backend needs its own CMake build and `-sys` crate.
 
 **Verdict.** Not full fidelity. Missing `exceptions` (`exnref`), `relaxed_simd`,
 `stack_switching`, and host suspension. `gc` is partial.
@@ -885,7 +888,7 @@ found in 2026.
 
 Wizard is a research engine written in Virgil, a language by the same author.
 Both are Apache-2.0 ([LICENSE][wz-license]). Neither repository has a release or
-a tag. Wizard had 59 commits since 2026-07-01.
+a tag.
 
 **Proposals.** The default set is Wasm 3.0 ([`Extension.v3` lines
 25-38][wz-ext]). It turns on `multi_memory`, `memory64`, `tail_call`,
@@ -947,8 +950,8 @@ second test oracle for stack switching, not as a backend.
 ### Wasm3
 
 Wasm3 is a C interpreter, MIT licensed ([LICENSE][w3-license]). Its README still
-says it is in a "minimal maintenance phase" ([README lines 1-3][w3-readme]). In
-fact it had 84 commits since 2026-07-01, nearly all by one maintainer.
+says it is in a "minimal maintenance phase" ([README lines 1-3][w3-readme]), but
+its `main` still takes proposal work, as the next paragraph shows.
 
 **Proposals.** Upstream `main` added stack switching on 2026-09-23, in commit
 `d59778a` ([issue 583][w3-issue]). The instruction table covers all seven
@@ -1094,7 +1097,12 @@ The remaining points, side by side:
 The JSC pass count is computed from committed test expectations, not published
 by WebKit.
 
-## Full-Fidelity Verdict, Ranked by Cost
+## Full-Fidelity Verdict, Ranked
+
+The candidates are ordered by fidelity first, then by cost. So V8 comes first
+although its code cost is the highest, and WasmEdge comes after SpiderMonkey for
+its fidelity (a GC that never collects, and partial host suspension), not for
+its cost.
 
 Only one candidate reaches full fidelity:
 
@@ -1102,17 +1110,19 @@ Only one candidate reaches full fidelity:
    host suspension through JSPI. The build cost is low: one fixed-output fetch
    of a 38 MiB archive, and no C++ build. The code cost is high: a port of the
    browser backend from `wasm-bindgen` to `v8` handle scopes, plus a microtask
-   pump. The trap table, the `wasmparser` type registry, and the JSPI design
-   carry over. The risk is the flag. WasmFX is experimental in V8 and compiles
-   only in Turboshaft.
+   pump, plus one isolate per thread for `threads`. The trap table, the
+   `wasmparser` type registry, and the JSPI design carry over. The risk is the
+   flag. WasmFX is experimental in V8 and compiles only in Turboshaft.
 
-No other candidate reaches full fidelity. The closest, ranked by cost:
+No other candidate reaches full fidelity. The closest, by fidelity and then by
+cost:
 
 2. **JavaScriptCore, WebKitGTK 2.54.** Eight features, with
-   `JSC_useWasmMemory64=1`, plus host suspension. It misses `stack_switching`.
-   The build cost is zero, because the flake already holds `webkitgtk_6_0`
-   2.54.0. The code cost equals V8's, plus C API declarations the 6.0 headers
-   omit, and memory access by copy.
+   `JSC_useWasmMemory64=1`, plus host suspension. It misses `stack_switching`,
+   and its memory64 is `testable` and runs in the interpreter tier only. The
+   build cost is zero, because the flake already holds `webkitgtk_6_0` 2.54.0.
+   The code cost equals V8's, plus C API declarations the 6.0 headers omit, and
+   memory access by copy.
 3. **SpiderMonkey, through `mozjs`.** Eight features plus host suspension. It
    misses `stack_switching`, which is partial and off. The build cost is a
    prebuilt fetch or a long C++ build. The code cost is V8's plus manual rooting
