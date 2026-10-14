@@ -203,7 +203,10 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_marks_parameters_that_hold_an_error_context_at_any_depth() {
-        use crate::types::{ListType, OptionType, RecordField, RecordType, StreamType};
+        use crate::types::{
+            FixedLengthListType, ListType, MapType, OptionType, RecordField, RecordType,
+            ResultType, StreamType, TupleType, VariantCase, VariantType,
+        };
         let with = |ty: ValueType| {
             Signature::new(FunctionType {
                 parameters: vec![FunctionParameter {
@@ -223,6 +226,42 @@ mod tests {
         assert!(with(ValueType::Record(RecordType::new([
             RecordField::new("e", ValueType::ErrorContext)
         ]))));
+        let u32 = || ValueType::Primitive(PrimitiveType::U32);
+        let error = || ValueType::ErrorContext;
+        for (shape, ty) in [
+            (
+                "variant",
+                ValueType::Variant(VariantType::new([
+                    VariantCase::new("none", None),
+                    VariantCase::new("failed", Some(error())),
+                ])),
+            ),
+            ("map key", ValueType::Map(MapType::new(error(), u32()))),
+            ("map value", ValueType::Map(MapType::new(u32(), error()))),
+            (
+                "fixed-length list",
+                ValueType::FixedLengthList(FixedLengthListType::new(error(), 2)),
+            ),
+            ("option", ValueType::Option(OptionType::new(error()))),
+            (
+                "result ok",
+                ValueType::Result(ResultType::new(Some(error()), None)),
+            ),
+            (
+                "result err",
+                ValueType::Result(ResultType::new(Some(u32()), Some(error()))),
+            ),
+            ("tuple", ValueType::Tuple(TupleType::new([u32(), error()]))),
+        ] {
+            assert!(with(ty), "{shape}");
+        }
+        assert!(
+            !with(ValueType::Variant(VariantType::new([VariantCase::new(
+                "count",
+                Some(u32())
+            )]))),
+            "a variant of no error context"
+        );
         assert!(
             !with(ValueType::Stream(StreamType::new(Some(
                 ValueType::ErrorContext

@@ -182,3 +182,72 @@ pub fn result_pointer<T: 'static>(
     }
     Ok(ptr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::concurrency::{ErrorContextAny, ErrorContextId};
+    use crate::internal::StoreIdInternal;
+    use crate::value::ValField;
+
+    /// Every container shape the walk descends into, each holding
+    /// `inner` once.
+    fn shapes(inner: &Val) -> Vec<(&'static str, Val)> {
+        let boxed = || Some(Box::new(inner.clone()));
+        vec![
+            ("bare", inner.clone()),
+            ("list", Val::List(vec![Val::U32(1), inner.clone()].into())),
+            (
+                "fixed-length list",
+                Val::FixedLengthList(vec![inner.clone()].into()),
+            ),
+            ("tuple", Val::Tuple(vec![Val::U32(1), inner.clone()].into())),
+            (
+                "map key",
+                Val::Map(vec![(inner.clone(), Val::U32(1))].into()),
+            ),
+            (
+                "map value",
+                Val::Map(vec![(Val::U32(1), inner.clone())].into()),
+            ),
+            (
+                "record",
+                Val::Record(
+                    vec![ValField {
+                        name: "e".to_owned(),
+                        value: inner.clone(),
+                    }]
+                    .into(),
+                ),
+            ),
+            (
+                "variant",
+                Val::Variant {
+                    discriminant: "failed".to_owned(),
+                    payload: boxed(),
+                },
+            ),
+            ("option", Val::Option(boxed())),
+            ("result ok", Val::Result(Ok(boxed()))),
+            ("result err", Val::Result(Err(boxed()))),
+        ]
+    }
+
+    #[wcmp_macros::test]
+    fn it_finds_another_stores_error_context_in_every_container() {
+        let store = StoreId::fresh();
+        let id = ErrorContextId::new(0, 0);
+        let foreign = Val::ErrorContext(ErrorContextAny::new(StoreId::fresh(), id));
+        let own = Val::ErrorContext(ErrorContextAny::new(store, id));
+        for (shape, value) in shapes(&foreign) {
+            let error = check_store(&value, store).expect_err(shape);
+            assert!(
+                matches!(&error, Error::Instantiation(inner) if matches!(**inner, InstantiationError::WrongStore)),
+                "{shape}: {error:?}"
+            );
+        }
+        for (shape, value) in shapes(&own) {
+            check_store(&value, store).unwrap_or_else(|error| panic!("{shape}: {error:?}"));
+        }
+    }
+}

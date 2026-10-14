@@ -1440,22 +1440,51 @@ async fn it_refuses_an_error_context_declared_as_another_type_by_that_type() {
 
 #[wcmp_macros::test]
 async fn it_fails_the_guests_call_when_a_host_function_returns_another_stores_error_context() {
-    let (mut first, first_instance) = instantiate().await;
-    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
-    let foreign = Arc::new(Mutex::new(
-        leak(&mut first, &first_instance, first_handle).await,
-    ));
-    let give = Arc::clone(&foreign);
-    let (mut store, instance) = instantiate_with(RELAY, move |linker| {
+    let foreign = Arc::new(Mutex::new(foreign_error_context().await));
+    let (store, instance) = instantiate_with(RELAY, move |linker| {
         linker
             .root()
             .func_new("relay", relay_type(), move |_call, _args, results| {
-                results[0] = give.lock().expect("the value").clone();
+                results[0] = foreign.lock().expect("the value").clone();
                 Ok(())
             })
             .expect("relay registers");
     })
     .await;
+    assert_relay_fails_with_wrong_store(store, instance).await;
+}
+
+#[wcmp_macros::test]
+async fn it_fails_the_guests_call_when_a_typed_host_function_returns_another_stores_error_context()
+{
+    let foreign = foreign_error_context().await;
+    let (store, instance) = instantiate_with(RELAY, move |linker| {
+        linker
+            .root()
+            .func_wrap(
+                "relay",
+                move |_call: HostCall<'_, ()>, (_context,): (ErrorContext,)| {
+                    ErrorContext::from_val(&foreign)
+                },
+            )
+            .expect("relay registers");
+    })
+    .await;
+    assert_relay_fails_with_wrong_store(store, instance).await;
+}
+
+/// An error context a store of its own lifted to the host, naming that
+/// store's first record.
+async fn foreign_error_context() -> Val {
+    let (mut first, first_instance) = instantiate().await;
+    let first_handle = new_context(&mut first, &first_instance, "disk full").await;
+    leak(&mut first, &first_instance, first_handle).await
+}
+
+/// Call `relay`, whose host function answers another store's error
+/// context, and check that the guest's call traps with the wrong-store
+/// cause at the result and that the guest received no handle.
+async fn assert_relay_fails_with_wrong_store(mut store: Store<()>, instance: Instance) {
     // This store's first record has the identity the other store's value
     // names, so only the store identity tells them apart.
     let handle = new_context(&mut store, &instance, "local").await;

@@ -1084,4 +1084,46 @@ mod tests {
              found 1 value"
         );
     }
+
+    /// Each typed container hands the store to what it holds, so
+    /// another store's error context inside it is refused before a
+    /// call, and one of the call's own store passes.
+    #[wcmp_macros::test]
+    fn it_checks_the_store_of_an_error_context_in_every_typed_container() {
+        use crate::concurrency::ErrorContextId;
+        use crate::internal::StoreIdInternal;
+
+        let store = StoreId::fresh();
+        let foreign = StoreId::fresh();
+        let context = |owner: StoreId| ErrorContext::new(owner, ErrorContextId::new(0, 0));
+        let checks = |owner: StoreId| -> Vec<(&'static str, Result<()>)> {
+            vec![
+                ("bare", context(owner).check_store(store)),
+                ("option", Some(context(owner)).check_store(store)),
+                (
+                    "vec",
+                    vec![context(store), context(owner)].check_store(store),
+                ),
+                ("array", [context(store), context(owner)].check_store(store)),
+                (
+                    "map",
+                    HashMap::from([(1_u32, context(owner))]).check_store(store),
+                ),
+                (
+                    "tuple",
+                    ComponentParameters::check_store(&(1_u32, context(owner)), store),
+                ),
+            ]
+        };
+        for (container, checked) in checks(foreign) {
+            let error = checked.expect_err(container);
+            assert!(
+                matches!(&error, Error::Instantiation(inner) if matches!(**inner, InstantiationError::WrongStore)),
+                "{container}: {error:?}"
+            );
+        }
+        for (container, checked) in checks(store) {
+            checked.unwrap_or_else(|error| panic!("{container}: {error:?}"));
+        }
+    }
 }
