@@ -13,27 +13,27 @@
 // as Zena's language service does, so the standard library is parsed and
 // checked once rather than for every compile: see `Session`. The
 // component runtime memory module, whose source is fixed, compiles once
-// too.
+// too: Zena keeps its bytes for each standard library root.
 //
 // It reads no file system. The entry module and the declared world come
 // in as arguments. Every other file the compile reads, the standard
 // library and relative imports included, comes from the host's
 // `read-source`. A directory of WIT, such as the standard library's
 // `wit`, is read the same way: the host answers its path with the text
-// Zena's `joinWitFiles` makes of it, every `.wit` file in the
+// Zena's `readWitSource` makes of it, every `.wit` file in the
 // directory in name order, each followed by a newline. So the entry
 // lists no directory, and the WIT module synthesis reads the path as
 // one file through the same reader. A package
 // manifest, `zena-packages.json`, comes from the host too, when it has
 // one, as `zena build` reads it from the working directory.
 import { Future } from 'zena:async';
-import { ByteBuffer, Option, Outcome, Ok, Err, Some, StringBuilder, some, none } from 'zena:core';
+import { Option, Outcome, Ok, Err, Some, StringBuilder, some, none } from 'zena:core';
 import { readSource } from 'wcmp:zena-compiler/host';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { loadPackageMap } from 'zena-compiler:package-manifest';
 import {
-  Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult,
+  Compiler, createCompiler, CompileOptions, checkCompilation, ProgramCheckResult,
   withBuiltinPackages
 } from 'zena-compiler:compiler';
 import { DiagnosticSeverity, SourceSpan, SyntaxError } from 'zena-compiler:diagnostics';
@@ -174,9 +174,10 @@ let packagesWitOf = (packages: Map<String, PackageConfig>, worldSource: String):
  * not once for every compile.
  *
  * A session serves one configuration: one package manifest and one
- * declared world, or none. The options and the modules synthesized
- * from WIT then stay the same from one compile to the next, and only
- * the program changes: the entry module and the files it imports.
+ * declared world, or none. The compiler's options, the options of each
+ * compile but its entry, and the modules synthesized from WIT then stay
+ * the same from one compile to the next, and only the program changes:
+ * the entry module and the files it imports.
  *
  * Only the standard library and the modules synthesized from WIT carry
  * from one compile to the next, and neither imports a file of the
@@ -189,24 +190,16 @@ let packagesWitOf = (packages: Map<String, PackageConfig>, worldSource: String):
 final class Session {
   host: HostReader;
   compiler: Compiler;
-  packages: Map<String, PackageConfig>;
   packagesWit: String;
   /** The check of the last compile, whose standard library carries over. */
   var previous: ProgramCheckResult | null = null;
   /** Every file of the last compile that is the program's. */
   var paths = new GrowableArray<String>();
-  new(this.host, this.compiler, this.packages, this.packagesWit);
+  new(this.host, this.compiler, this.packagesWit);
 }
 
 /** The session of each configuration, by `sessionKey`. */
 let sessions = new Map<String, Session>();
-
-/**
- * The runtime memory module of each package manifest. Its source is the
- * standard library's, and its compile is deterministic, so one compile
- * serves every component.
- */
-let runtimeModules = new Map<String, ByteBuffer>();
 
 /** The key of the configuration a compile runs in. */
 let sessionKey = (manifest: String, witSource: String, worldName: String): String => {
@@ -231,23 +224,23 @@ let resumeSession = (kept: Session, key: String, source: String,
 
 /** A new session for the configuration a compile runs in. */
 /**
- * The packages of a configuration, the WIT text of those backed by WIT,
- * and the options a compiler of it takes.
+ * The packages of a configuration, which a compiler of it takes, and the
+ * WIT text of those backed by WIT.
  */
 final class Configuration {
   packages: Map<String, PackageConfig>;
   packagesWit: String;
-  options: CompilerOptions;
-  new(this.packages, this.packagesWit, this.options);
+  new(this.packages, this.packagesWit);
 }
 
 /**
- * The configuration of a compile against the world `worldName` of the
- * WIT document `witSource`, or the derived world when it is empty, with
- * the package manifest when there is one. `host` reads the manifest, and
- * learns the WIT text of the packages.
+ * The configuration of a compile against the WIT document `witSource`,
+ * or the derived world when it is empty, with the package manifest when
+ * there is one. `host` reads the manifest, and learns the WIT text of
+ * the packages. The declared world's export wrapper is not part of it:
+ * it is an option of each compile (`compileOptionsFor`).
  */
-let configure = (host: HostReader, witSource: String, worldName: String,
+let configure = (host: HostReader, witSource: String,
     hasManifest: boolean): Configuration => {
   let packages = if (hasManifest) {
     loadPackageMap(host, manifestPath)
@@ -265,23 +258,42 @@ let configure = (host: HostReader, witSource: String, worldName: String,
       packages[namespace] = config;
     }
   }
-  let options = new CompilerOptions(target, stdlibRoot, packages);
   let packagesWit = packagesWitOf(packages, witSource);
   host.packagesWit = packagesWit;
-  if (declared) {
-    options.componentWrapperSynth =
-        (path: String, ast: Module): ComponentEntryWrapper | null =>
-            synthesizeExportWrapper(witSource, worldName, path, ast, packagesWit);
-  }
-  return new Configuration(packages, packagesWit, options);
+  return new Configuration(packages, packagesWit);
+};
+
+/**
+ * The options of a compile of the module at `entryPath` against the
+ * world `worldName` of the WIT document `witSource`, or the derived
+ * world when it is empty. Against a declared world the entry wrapper
+ * also implements the world's async exports, which takes the WIT the
+ * compiler itself does not link, as `zena build --wit` passes it;
+ * without one the compiler writes its own.
+ */
+let compileOptionsFor = (entryPath: String, witSource: String, worldName: String,
+    packagesWit: String): CompileOptions => {
+  let options: CompileOptions = if (witSource != '') {
+    {
+      entry: entryPath,
+      target: target,
+      componentWrapperSynth:
+          (path: String, ast: Module): ComponentEntryWrapper | null =>
+              synthesizeExportWrapper(witSource, worldName, path, ast, packagesWit),
+    }
+  } else {
+    {entry: entryPath, target: target}
+  };
+  return options;
 };
 
 let openSession = (source: String, entryPath: String, witSource: String,
-    worldName: String, hasManifest: boolean): Session => {
+    hasManifest: boolean): Session => {
   let host = new HostReader(entryPath, source, witSource);
-  let config = configure(host, witSource, worldName, hasManifest);
-  return new Session(host, createCompiler(host, config.options), config.packages,
-      config.packagesWit);
+  let config = configure(host, witSource, hasManifest);
+  let compiler = createCompiler(host,
+      {stdlibRoot: stdlibRoot, packages: config.packages});
+  return new Session(host, compiler, config.packagesWit);
 };
 
 /**
@@ -307,12 +319,13 @@ let compileOnce = (source: String, entryPath: String, witSource: String,
   let session = if (sessions.has(key)) {
     resumeSession(sessions[key], key, source, entryPath)
   } else {
-    openSession(source, entryPath, witSource, worldName, hasManifest)
+    openSession(source, entryPath, witSource, hasManifest)
   };
   let declared = witSource != '';
 
-  let compResult = session.compiler.compile(entryPath);
-  let checkResults = checkCompilation(compResult, session.previous, false, false);
+  let compResult = session.compiler.compile(
+      compileOptionsFor(entryPath, witSource, worldName, session.packagesWit));
+  let checkResults = checkCompilation(compResult, session.previous);
   session.previous = checkResults;
   let paths = new GrowableArray<String>();
   for (let file in compResult.files) {
@@ -356,11 +369,16 @@ let compileOnce = (source: String, entryPath: String, witSource: String,
   }
   let program = new Program(units, entryUnit);
   let generator = new BinaryGenerator(target, false, false, 1);
-  if (!runtimeModules.has(manifestText)) {
-    runtimeModules[manifestText] =
-        compileComponentRuntimeModule(session.host, stdlibRoot, session.packages);
-  }
-  generator.runtimeMemoryModule = runtimeModules[manifestText];
+  // Codegen builds its unions through the checker's interner, as
+  // `compileFile` has it, so a union means one object across the
+  // whole compile.
+  generator.interner = checkResults.sharedState.interner;
+  // A nested compile on the session's compiler, at the `freestanding`
+  // target. Its source is the standard library's, and its compile is
+  // deterministic, so Zena keeps the bytes for each standard library
+  // root and one compile serves every component.
+  generator.runtimeMemoryModule =
+      compileComponentRuntimeModule(session.compiler, stdlibRoot);
   generator.importEncoder = if (declared) {
     makeImportEncoder(witSource, worldName, session.packagesWit)
   } else {
@@ -432,14 +450,19 @@ let analysisFor = (witSource: String, worldName: String): LanguageService => {
     return (current as Analysis).service;
   }
   let reader = new HostReader('', '', witSource);
-  let config = configure(reader, witSource, worldName, hasManifest);
-  config.options.recoverFromParseErrors = true;
+  let config = configure(reader, witSource, hasManifest);
   let read: FileReader = (path: String): String | null => {
     let text: String | null = try { reader.readFile(path) } catch (e) { null };
     return text;
   };
   let host = new DocumentHost(stdlibRoot, read);
-  let service = new LanguageService(host, createCompiler(host, config.options));
+  // The service names only the entry and the target of each compile, so
+  // against a declared world its entry wrapper is the compiler's own,
+  // not the world's: a fault in the world's exports is `compile`'s to
+  // report.
+  let compiler = createCompiler(host,
+      {stdlibRoot: stdlibRoot, packages: config.packages, recoverFromParseErrors: true});
+  let service = new LanguageService(host, compiler, target);
   analyses.current = new Analysis(key, service);
   return service;
 };

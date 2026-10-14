@@ -592,17 +592,17 @@
         "nixpkgs": "nixpkgs_4"
       },
       "locked": {
-        "lastModified": 1791243095,
-        "narHash": "sha256-eZh1CQPHAeBFaKr+ezhVW6VXC60OQCuCPwhROJzKVPE=",
+        "lastModified": 1791934786,
+        "narHash": "sha256-LKkVGTdRt50lBjjgixWYyam0WPu+MYOwHI924N6hk2U=",
         "owner": "elematic",
         "repo": "zena",
-        "rev": "1ac5684d6cbd97bff30c0657f307cd742c20d10b",
+        "rev": "43234db086afd2ae521415659b169db467b7d023",
         "type": "github"
       },
       "original": {
         "owner": "elematic",
         "repo": "zena",
-        "rev": "1ac5684d6cbd97bff30c0657f307cd742c20d10b",
+        "rev": "43234db086afd2ae521415659b169db467b7d023",
         "type": "github"
       }
     }

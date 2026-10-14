@@ -95,11 +95,10 @@
     #
     # To move the pin, change the revision below, run `nix flake update
     # zena`, then `tests zena regenerate` and `tests zena`. The pin is
-    # `1ac5684`. A later Zena changes its compile options (from `91c27df`),
-    # so moving past it needs the compiler entry module
-    # (`zena/compiler/compiler.zena`) ported to them. Zena's own flake also
-    # fails to build from `3891263` on, whose npm dependency hash is stale.
-    zena.url = "github:elematic/zena/1ac5684d6cbd97bff30c0657f307cd742c20d10b";
+    # `43234db`, Zena's `main` on 2026-10-13, unmodified. Zena's own flake
+    # fails to build there on a stale npm dependency hash, which
+    # `zenaPackage` below overrides.
+    zena.url = "github:elematic/zena/43234db086afd2ae521415659b169db467b7d023";
   };
 
   # The project's binary cache. CI pushes to it, so a shell or a build that
@@ -329,7 +328,19 @@
         # CPU it runs on and keeps the result for the rest of the build.
         # Zena writes that cache atomically under a lock, and the copy is
         # made atomically too, so parallel runs can share it.
-        zenaPackage = zena.packages.${system}.zena;
+        #
+        # Zena's own flake records a stale npm dependency hash at the pin:
+        # its lockfile changed in `9dd3aa7`, `4ac9f1d` and `de7264d`, after
+        # `73682b4` last updated the hash. The source stays Zena's,
+        # unmodified, and only the hash of its fixed-output npm fetch is
+        # overridden here, until Zena updates its own. Moving the pin past
+        # a lockfile change needs the new hash, which the failed build
+        # prints as `got:`.
+        zenaPackage = zena.packages.${system}.zena.overrideAttrs (old: {
+          npmDeps = old.npmDeps.overrideAttrs (_: {
+            outputHash = "sha256-XMNhONQk/gdWcr6XZrJNcUqkzrXEaq65a4NJOdZURms=";
+          });
+        });
         zenaToolchain = pkgs.writeShellApplication {
           name = "zena";
           runtimeInputs = [ pkgs.coreutils ];

@@ -558,7 +558,7 @@ the cost against the `u32` floor of the same shape. Two
   [known limits](#known-limits)).
 - **Zena** runs programs that the Zena toolchain compiles, as components
   (`rust/wcmp/tests/zena/README.md`). The counts are the passes per subject in
-  `rust/wcmp/tests/zena/record.txt`. The report of 2026-10-08 in the README
+  `rust/wcmp/tests/zena/record.txt`. The report of 2026-10-13 in the README
   gives the same counts. The Wasmtime column is the polyfill over the Wasmtime
   backend (`native` in the record). Wasmtime's own run (`wasmtime`) also passes
   18 of 18. On Wasmi, 16 scenarios stop at `Component::new` with
