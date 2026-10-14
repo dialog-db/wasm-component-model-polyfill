@@ -92,6 +92,23 @@ pub const ECHO: &[u8] = component!(
     "#
 );
 
+/// A component whose `half: func(x: f64) -> f64` halves its argument,
+/// lifted with neither a memory nor a realloc: the `u32` floor of the
+/// `guest` fixture with a float in place of the integer, so the two
+/// differ only in how the value crosses the core call. In the browser
+/// an `f64` crosses as a `BigInt` of its bits.
+pub const HALF: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (func (export "half") (param f64) (result f64)
+          (f64.mul (local.get 0) (f64.const 0.5))))
+      (core instance $i (instantiate $m))
+      (func (export "half") (param "x" f64) (result f64)
+        (canon lift (core func $i "half"))))
+    "#
+);
+
 /// A component with a resource type of its own, a destructor for it,
 /// and the two functions a handle's life needs: `make` mints one and
 /// hands it out, `dispose` takes it back and drops it. The destructor

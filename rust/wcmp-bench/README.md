@@ -101,6 +101,8 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 | ---------------------------- | ---------------------------------------------------------------- |
 | `u32-call`                   | the floor: a call with no memory traffic under it                |
 | `u32-call-typed`             | the same call without the untyped `Val` path's allocation        |
+| `f64-call`                   | the floor with an `f64`, which the browser carries as a `BigInt` |
+| `f64-call-typed`             | the same float call through `TypedFunc`                          |
 | `string-roundtrip/N`         | a string lowered into guest memory and lifted back               |
 | `string-roundtrip-typed/N`   | the same string through `TypedFunc` rather than `Val`            |
 | `list-u8-roundtrip/N`        | the bytes of a string, as a list of `u8` values                  |

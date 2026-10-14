@@ -32,6 +32,8 @@ pub fn benchmarks() -> Vec<Benchmark> {
     [
         u32_call(),
         u32_call_typed(),
+        f64_call(),
+        f64_call_typed(),
         string_roundtrip(),
         string_roundtrip_typed(),
         list_u8_roundtrip(),
@@ -159,6 +161,33 @@ async fn u32_call_typed(run: &mut Run) -> Result<()> {
     let double = export(&instance, "double")?.typed::<(u32,), u32>()?;
     while run.iterate() {
         double.call(&mut store, (21,)).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `half` component: `half: func(x: f64) -> f64`, lifted with neither a memory nor a realloc",
+    payload = "one f64 in and one f64 out, as `Val`: the `u32` floor with a float, whose bits cross the browser's core call as a `BigInt`"
+)]
+async fn f64_call(run: &mut Run) -> Result<()> {
+    let (_engine, mut store, instance) = instantiate(run, guests::HALF).await?;
+    let half = export(&instance, "half")?;
+    let arguments = [Val::F64(21.0)];
+    while run.iterate() {
+        half.call(&mut store, &arguments).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `half` component: `half: func(x: f64) -> f64`, lifted with neither a memory nor a realloc",
+    payload = "the same f64 in and out through `TypedFunc`, the typed floor with a float"
+)]
+async fn f64_call_typed(run: &mut Run) -> Result<()> {
+    let (_engine, mut store, instance) = instantiate(run, guests::HALF).await?;
+    let half = export(&instance, "half")?.typed::<(f64,), f64>()?;
+    while run.iterate() {
+        half.call(&mut store, (21.0,)).await?;
     }
     Ok(())
 }
