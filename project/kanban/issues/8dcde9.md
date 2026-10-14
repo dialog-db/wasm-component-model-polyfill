@@ -26,7 +26,26 @@ The tests need no component. Call `abi::call_values::check_store` on each `Val` 
 Smaller gap: the test of a host function returning another store's error context uses `func_new` only. Add the `func_wrap` result path.
 
 ## Acceptance criteria
-- [ ] Every container branch of the untyped walker, of the typed `check_store` overrides and of `holds_error_context` has a test that fails when that branch is removed. Show this by mutation for at least the two branches above.
-- [ ] A typed host function (`func_wrap`) that returns another store's error context fails the guest's call with the wrong-store cause.
+- [x] Every container branch of the untyped walker, of the typed `check_store` overrides and of `holds_error_context` has a test that fails when that branch is removed. Show this by mutation for at least the two branches above.
+- [x] A typed host function (`func_wrap`) that returns another store's error context fails the guest's call with the wrong-store cause.
 - [ ] `lint` passes and `tests all` is green on both targets.
 
+## Implementation notes
+
+- 2026-10-13 (`test(concurrency): Cover every container branch of the
+  error-context store check`):
+  - `abi::call_values::tests::it_finds_another_stores_error_context_in_every_container`
+    covers bare, list, fixed-length list, tuple, map key, map value,
+    record, variant, option, result ok and result err, both refused and
+    passing.
+  - `linker::component_value::tests::it_checks_the_store_of_an_error_context_in_every_typed_container`
+    covers bare, `Option`, `Vec`, `[T; N]`, `HashMap` and a tuple.
+  - `holds_error_context`'s test adds variant, map key and value,
+    fixed-length list, option, result ok and err, tuple, and a variant with
+    none.
+  - `func_wrap` path:
+    `it_fails_the_guests_call_when_a_typed_host_function_returns_another_stores_error_context`
+    shares its assertions with the `func_new` test.
+  Mutation, run together on 2026-10-13: `Option<T>::check_store` returning
+  `Ok(())` failed the typed-container test, and dropping the walker's
+  `Val::Option(Some(inner))` arm failed the walker test.
