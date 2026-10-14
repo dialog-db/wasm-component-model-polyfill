@@ -58,10 +58,12 @@ interface language {
     column: u32,
   }
 
-  // Check a program as `compile` would compile it, with the files
-  // `files` beside its entry module, and answer the diagnostics of every
-  // file of the program that is not the standard library's. Each query
-  // below answers about the program of the last check.
+  // Check a program with the files `files` beside its entry module, and
+  // answer the diagnostics of every file of the program that is not the
+  // standard library's. Against a declared world, the check does not
+  // hold the program's exports to the world, as `compile` does, so a
+  // fault there is `compile`'s to report. Each query below answers about
+  // the program of the last check.
   check: async func(
     source: string,
     entry-path: string,

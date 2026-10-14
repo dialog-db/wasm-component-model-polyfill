@@ -409,7 +409,7 @@ export async function compile(source: String, entryPath: String,
 }
 
 // The language service: what Zena's own language service answers an
-// editor, for a program as `compile` would compile it. The service is
+// editor, for a program as `compile` would read it. The service is
 // Zena's (`language-service:service`), on a compiler of the same
 // configuration as a compile's, which recovers from parse errors as an
 // editor wants, and reads through the same host: the standard library
@@ -499,9 +499,11 @@ let lastAnalysis = (): LanguageService | null => {
 };
 
 /**
- * The `check` export: the diagnostics of the program `compile` would
- * compile, with `files` beside the entry module, in every file that is
- * not the standard library's.
+ * The `check` export: the diagnostics of the program, with `files`
+ * beside the entry module, in every file that is not the standard
+ * library's. Against a declared world, the language service does not
+ * hold the program's exports to the world (see `analysisFor`), so a
+ * fault there is `compile`'s to report.
  */
 export async function check(source: String, entryPath: String,
     files: Array<(String, String)>, witSource: String,
