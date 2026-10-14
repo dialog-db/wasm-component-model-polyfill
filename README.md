@@ -270,12 +270,12 @@ needs a suspend provider to pause a guest and resume it later. When the engine
 is built, it picks a provider from the features that its backend declares.
 `Engine::suspend_provider()` returns the choice:
 
-| Backend                                                                                                          | Provider                           |
-| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Wasmtime where it serves stack switching and the switch probe passes: x86_64 Linux (tested) and macOS (untested) | Stack switching (`StackSwitching`) |
-| The browser backend, in a browser with JSPI (every current browser)                                              | Host suspension (`HostSuspension`) |
-| Wasmi, on any platform                                                                                           | Host suspension (`HostSuspension`) |
-| Wasmtime on other platforms, the browser backend without JSPI (such as Safari 26), or `suspend_provider(false)`  | None (`None`)                      |
+| Backend                                                                                                                 | Provider                           |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| Wasmtime where it serves stack switching and the switch probe passes: x86_64 Linux (tested) and x86_64 macOS (untested) | Stack switching (`StackSwitching`) |
+| The browser backend, in a browser with JSPI (every current browser)                                                     | Host suspension (`HostSuspension`) |
+| Wasmi, on any platform                                                                                                  | Host suspension (`HostSuspension`) |
+| Wasmtime on other platforms, the browser backend without JSPI (such as Safari 26), or `suspend_provider(false)`         | None (`None`)                      |
 
 Without a provider, a blocked guest runs the store's other work in nested turns
 until it can go on. That serves most blocks. A block that only a stack switch
@@ -430,12 +430,12 @@ to pause a guest thread. The section
 [Blocking needs a suspend provider](#blocking-needs-a-suspend-provider) explains
 how the engine picks a provider, and what happens without one.
 
-|                              | Browser                                                    | Wasmi                                           | Wasmtime                                                                                                                        |
-| ---------------------------- | ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Mechanism                    | JSPI: `WebAssembly.promising` and `WebAssembly.Suspending` | Wasmi's resumable calls (`call_resumable`)      | None. The polyfill uses stack switching instead, where the backend declares it                                                  |
-| Suspend provider             | Host suspension                                            | Host suspension                                 | Stack switching where Wasmtime serves it and the switch probe passes: x86_64 Linux, tested, and macOS, untested. Otherwise none |
-| A resumption                 | Runs later, on a microtask                                 | Runs at once, to the next suspension or the end | Not applicable                                                                                                                  |
-| Suspended calls in one store | Any number, resumed in any order                           | Any number, resumed in any order                | Not applicable. `Func::call_async` holds the store, so one store has one suspended call                                         |
+|                              | Browser                                                    | Wasmi                                           | Wasmtime                                                                                                                               |
+| ---------------------------- | ---------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Mechanism                    | JSPI: `WebAssembly.promising` and `WebAssembly.Suspending` | Wasmi's resumable calls (`call_resumable`)      | None. The polyfill uses stack switching instead, where the backend declares it                                                         |
+| Suspend provider             | Host suspension                                            | Host suspension                                 | Stack switching where Wasmtime serves it and the switch probe passes: x86_64 Linux, tested, and x86_64 macOS, untested. Otherwise none |
+| A resumption                 | Runs later, on a microtask                                 | Runs at once, to the next suspension or the end | Not applicable                                                                                                                         |
+| Suspended calls in one store | Any number, resumed in any order                           | Any number, resumed in any order                | Not applicable. `Func::call_async` holds the store, so one store has one suspended call                                                |
 
 Sources: the crate docs of each backend, and
 `rust/wcmp/src/suspend_provider_kind.rs` for the provider. The Wasmtime crate
