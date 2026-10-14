@@ -1214,7 +1214,7 @@ demo inside `tests all`, and a failure in the lane fails `tests all`.
 [Zena WASI 0.3 move]:
   https://github.com/elematic/zena/commit/04926ae40dc24ec56d2e25b091119c55d75a8ee7
 [Zena WIT reader change]:
-  https://github.com/cdata/zena/commit/1bbe472f4c34d3faf12c74f9876afcfe541c4ac3
+  https://github.com/elematic/zena/commit/1ac5684d6cbd97bff30c0657f307cd742c20d10b
 [Zena component emission]:
   https://github.com/elematic/zena/blob/b2237f7e65847eda43ef1f4094eea77fe225ce0d/docs/design/component-emission.md
 [Zena async exports]:
