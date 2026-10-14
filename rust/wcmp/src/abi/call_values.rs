@@ -29,11 +29,11 @@ use crate::store::StoreId;
 use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
-/// Refuse `args` with the wrong-store cause when one of them holds,
-/// at any depth, an error context lifted in a store other than
-/// `store`. An error context is the one host value that carries its
-/// store's identity.
-pub fn check_store(args: &[Val], store: StoreId) -> Result<()> {
+/// Refuse `arg` with the wrong-store cause when it holds, at any
+/// depth, an error context lifted in a store other than `store`. An
+/// error context is the one host value that carries its store's
+/// identity.
+pub fn check_store(arg: &Val, store: StoreId) -> Result<()> {
     fn walk(val: &Val, store: StoreId) -> Result<()> {
         match val {
             Val::ErrorContext(context) if context.store_id() != store => {
@@ -58,7 +58,7 @@ pub fn check_store(args: &[Val], store: StoreId) -> Result<()> {
             _ => Ok(()),
         }
     }
-    args.iter().try_for_each(|arg| walk(arg, store))
+    walk(arg, store)
 }
 
 /// Lower `args` as the parameter tuple of `signature` and answer the

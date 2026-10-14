@@ -45,9 +45,10 @@ pub struct Signature {
     result_spills: bool,
     /// The number of core result slots a synchronous lift returns.
     core_result_arity: usize,
-    /// Whether a parameter's type holds an `error-context` at any
-    /// depth, so a host value of another store can reach the call.
-    params_hold_error_context: bool,
+    /// The indices of the parameters whose type holds an
+    /// `error-context` at any depth, so a host value of another store
+    /// can reach the call through them.
+    error_context_params: Vec<usize>,
 }
 
 impl Signature {
@@ -63,7 +64,12 @@ impl Signature {
         };
         Self {
             flat_param_count: flat_param_count(&ty),
-            params_hold_error_context: types.iter().any(holds_error_context),
+            error_context_params: types
+                .iter()
+                .enumerate()
+                .filter(|(_, ty)| holds_error_context(ty))
+                .map(|(index, _)| index)
+                .collect(),
             ty,
             parameter_layout,
             result_spills,
@@ -93,7 +99,15 @@ impl Signature {
     /// depth. A call checks the store of its arguments' error contexts
     /// only then.
     pub fn params_hold_error_context(&self) -> bool {
-        self.params_hold_error_context
+        !self.error_context_params.is_empty()
+    }
+
+    /// The indices of the parameters whose type holds an
+    /// `error-context` at any depth, in order. An untyped call walks
+    /// only these arguments for another store's error context, so a
+    /// `list<u8>` beside one is not walked.
+    pub fn error_context_params(&self) -> &[usize] {
+        &self.error_context_params
     }
 
     /// The layout of the parameter tuple when it spills to memory.

@@ -19,6 +19,7 @@ pub wcmp::AbiCause::SubstrateFailure(anyhow::Error)
 pub wcmp::AbiCause::Unimplemented
 pub wcmp::AbiCause::UnregisteredResourceType
 pub wcmp::AbiCause::UnsupportedDataModel
+pub wcmp::AbiCause::WrongStore
 impl core::error::Error for wcmp::AbiCause
 pub fn wcmp::AbiCause::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for wcmp::AbiCause

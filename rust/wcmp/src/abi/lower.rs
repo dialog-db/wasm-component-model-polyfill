@@ -16,7 +16,7 @@ use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::lift::declared_resource_index;
 use crate::abi::strings;
 use crate::concurrency::{EndId, EndKind, ErrorContextAny};
-use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, InstantiationError, Result};
+use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
 use crate::internal::{
     ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceHandleInternal,
     StreamAnyInternal,
@@ -221,8 +221,14 @@ pub fn lower<T: 'static>(
 /// A value the host holds came from a lift to the host, which marked
 /// its record host-held, so the record is still in the store however
 /// many guest handles have dropped since. A value lifted in another
-/// store names a record of that store, so it fails with the
-/// wrong-store cause before anything changes.
+/// store names a record of that store, so it fails with
+/// [`AbiCause::WrongStore`], at `position` and `ty`, before anything
+/// changes. A call refuses such an argument before it starts, with
+/// [`InstantiationError::WrongStore`]; this cause is the one a value
+/// meets once the call runs, from a host function's result or a host
+/// stream's write, where the trap names which value it was.
+///
+/// [`InstantiationError::WrongStore`]: crate::InstantiationError::WrongStore
 pub fn lower_error_context<T: 'static>(
     ctx: &BoundaryContext<'_, T>,
     context: &ErrorContextAny,
@@ -230,7 +236,11 @@ pub fn lower_error_context<T: 'static>(
     position: AbiPosition,
 ) -> Result<u32> {
     if context.store_id() != ctx.store_id() {
-        return Err(Error::from(InstantiationError::WrongStore));
+        return Err(Error::from(AbiError {
+            position,
+            valtype: Some(ty.clone()),
+            cause: AbiCause::WrongStore,
+        }));
     }
     let (Some(tables), Some(table)) = (ctx.instance().tables(), ctx.instance().handle_table())
     else {

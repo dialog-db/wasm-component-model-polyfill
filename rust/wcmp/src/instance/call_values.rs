@@ -97,11 +97,14 @@ impl CallValues for Vec<Val> {
         }))
     }
 
+    /// Only the arguments whose parameter type holds an error context
+    /// are walked.
     fn check_store(&self, signature: &Signature, store: StoreId) -> Result<()> {
-        if !signature.params_hold_error_context() {
-            return Ok(());
-        }
-        check_store(self, store)
+        signature
+            .error_context_params()
+            .iter()
+            .filter_map(|&index| self.get(index))
+            .try_for_each(|arg| check_store(arg, store))
     }
 
     fn lower<T: 'static>(
@@ -128,5 +131,61 @@ impl CallValues for Vec<Val> {
 
     fn from_resolution(value: Option<Val>) -> Result<Box<[Val]>> {
         Ok(value.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::FunctionParameter;
+    use crate::concurrency::{ErrorContextAny, ErrorContextId};
+    use crate::error::InstantiationError;
+    use crate::internal::{ErrorContextAnyInternal, StoreIdInternal};
+    use crate::types::{ListType, PrimitiveType, ValueType};
+
+    fn parameter(name: &str, ty: ValueType) -> FunctionParameter {
+        FunctionParameter {
+            name: name.to_owned(),
+            ty,
+        }
+    }
+
+    #[wcmp_macros::test]
+    fn it_walks_only_the_arguments_whose_type_holds_an_error_context() {
+        let store = StoreId::fresh();
+        let foreign = Val::ErrorContext(ErrorContextAny::new(
+            StoreId::fresh(),
+            ErrorContextId::new(0, 0),
+        ));
+        let local = Val::ErrorContext(ErrorContextAny::new(store, ErrorContextId::new(0, 0)));
+        let signature = Signature::new(FunctionType {
+            parameters: vec![
+                parameter(
+                    "bytes",
+                    ValueType::List(ListType::new(ValueType::Primitive(PrimitiveType::U8))),
+                ),
+                parameter("error", ValueType::ErrorContext),
+            ],
+            result: None,
+            async_: false,
+        });
+        assert_eq!(signature.error_context_params(), &[1]);
+
+        // The first argument does not match its `list<u8>` type, and the
+        // lower would refuse it; the pre-check does not look at it, so the
+        // foreign error context inside it passes.
+        let unwalked = vec![Val::List(vec![foreign.clone()].into()), local.clone()];
+        unwalked
+            .check_store(&signature, store)
+            .expect("the list<u8> argument is not walked");
+
+        let walked = vec![Val::List(Vec::new().into()), foreign];
+        let error = walked
+            .check_store(&signature, store)
+            .expect_err("the error-context argument is walked");
+        assert!(
+            matches!(&error, Error::Instantiation(inner) if matches!(**inner, InstantiationError::WrongStore)),
+            "{error:?}"
+        );
     }
 }

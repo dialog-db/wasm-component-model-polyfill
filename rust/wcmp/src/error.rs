@@ -565,8 +565,8 @@ pub enum InstantiationError {
 
     /// A function handle was called with a [`Store`] other than the
     /// one its [`Instance`] was created in, a core item from one
-    /// store was supplied as an import into another, or an error
-    /// context lifted in one store was lowered into another. An
+    /// store was supplied as an import into another, or a call's
+    /// arguments held an error context lifted in another store. An
     /// instance's core state lives in exactly one store; the runtime
     /// substrate cannot address it through another, and an error
     /// context names a record of its own store only.
@@ -903,6 +903,14 @@ pub enum AbiCause {
         "too much data is being copied between the host and the guest: fuel allocated for hostcalls has been exhausted"
     )]
     CopyBudgetSpent,
+
+    /// A value lowered into a running call holds an error context
+    /// lifted in another store, whose record this store cannot name.
+    /// A host function's result or a host stream's write meets it once
+    /// the call runs; a call's own arguments are refused before it
+    /// starts, with [`InstantiationError::WrongStore`].
+    #[error("the value holds an error context lifted in a different store")]
+    WrongStore,
 
     /// A failure surfaced by a lower-level component (e.g. the
     /// runtime substrate) while reading or writing memory. The

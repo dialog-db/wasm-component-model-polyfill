@@ -1463,8 +1463,11 @@ async fn it_fails_the_guests_call_when_a_host_function_returns_another_stores_er
 
     let message = call_trap(&mut store, &instance, "relay", &[handle]).await;
     assert!(
-        message.contains(&InstantiationError::WrongStore.to_string()),
-        "{message}"
+        message.contains(&format!(
+            "at result (type ErrorContext): {}",
+            AbiCause::WrongStore
+        )),
+        "the trap names the value's position and type: {message}"
     );
     assert_eq!(
         handle_count(&mut store, context),
@@ -1493,8 +1496,8 @@ async fn it_fails_the_guests_read_when_a_host_stream_writes_another_stores_error
 
     let message = call_trap(&mut store, &instance, "read", &[readable, 100, 1]).await;
     assert!(
-        message.contains(&InstantiationError::WrongStore.to_string()),
-        "{message}"
+        message.contains(&format!("(type ErrorContext): {}", AbiCause::WrongStore)),
+        "the trap names the value's type: {message}"
     );
     assert_eq!(handle_count(&mut store, context), Some(1));
 }

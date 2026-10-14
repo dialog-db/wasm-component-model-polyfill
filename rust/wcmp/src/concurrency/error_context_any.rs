@@ -38,8 +38,10 @@ use super::error_context_id::ErrorContextId;
 /// [`InstantiationError::WrongStore`](crate::InstantiationError::WrongStore)
 /// before the call changes anything, so that store stays usable. A
 /// host function or a host stream that hands it to a guest of another
-/// store fails the guest's call or built-in with the same cause, as
-/// any failure of the host's there does. Wasmtime checks neither, and
+/// store fails the guest's call or built-in with
+/// [`AbiCause::WrongStore`](crate::AbiCause::WrongStore), which names
+/// the value's position and type, as any failure of the host's there
+/// does. Wasmtime checks neither, and
 /// hands the guest whatever record of that store has the same index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ErrorContextAny {
