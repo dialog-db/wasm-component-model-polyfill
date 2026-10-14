@@ -5,6 +5,8 @@ type: chore
 blocked_by: []
 labels: [bench, api, backlog-burndown-001-q3]
 created: 2026-09-22T10:18:02Z
+disposition: accepted
+disposition_at: 2026-10-16T06:30:36Z
 ---
 
 ## What to build
@@ -62,4 +64,3 @@ This card's own findings are the ones above, filed as "The benchmark suite's num
   - Gate so far: native 1712/1712, web 1697/1697, `lint clippy clippy-wasm32
     rustfmt public-api doctests markdown smoke-web bench-native bench-web`
     green. `tests all` and full `lint` run on the composed series tip.
-

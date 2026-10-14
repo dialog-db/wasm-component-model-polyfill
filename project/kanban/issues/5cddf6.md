@@ -5,6 +5,8 @@ type: bug
 blocked_by: []
 labels: [concurrency, backlog-burndown-001-q3]
 created: 2026-09-27T03:16:16Z
+disposition: accepted
+disposition_at: 2026-10-16T06:30:36Z
 ---
 
 ## What to build

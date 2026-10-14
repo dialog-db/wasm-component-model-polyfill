@@ -5,6 +5,8 @@ type: bug
 blocked_by: [994479]
 labels: [runtime-layer, backlog-burndown-001-q4]
 created: 2026-10-02T04:37:52Z
+disposition: accepted
+disposition_at: 2026-10-16T06:31:48Z
 ---
 
 ## What to build

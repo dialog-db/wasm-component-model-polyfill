@@ -5,6 +5,8 @@ type: docs
 blocked_by: [fbe4df]
 labels: [runtime-layer, backlog-burndown-002]
 created: 2026-10-13T18:44:17Z
+disposition: accepted
+disposition_at: 2026-10-16T06:34:16Z
 ---
 
 ## What to build

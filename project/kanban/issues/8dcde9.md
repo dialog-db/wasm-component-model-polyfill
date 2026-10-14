@@ -5,6 +5,8 @@ type: chore
 blocked_by: [1bbe43]
 labels: [concurrency, backlog-burndown-002]
 created: 2026-10-13T18:44:16Z
+disposition: accepted
+disposition_at: 2026-10-16T06:33:12Z
 ---
 
 ## What to build

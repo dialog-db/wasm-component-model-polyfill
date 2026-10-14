@@ -5,6 +5,8 @@ type: docs
 blocked_by: []
 labels: [runtime-layer, backlog-burndown-001-q4]
 created: 2026-09-30T19:38:03Z
+disposition: accepted
+disposition_at: 2026-10-16T06:31:58Z
 ---
 
 ## What to build

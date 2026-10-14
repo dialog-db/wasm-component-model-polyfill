@@ -5,6 +5,8 @@ type: bug
 blocked_by: []
 labels: [zena, backlog-burndown-001-q4]
 created: 2026-09-28T05:22:00Z
+disposition: accepted
+disposition_at: 2026-10-16T06:31:48Z
 ---
 
 ## What to build

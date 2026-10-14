@@ -5,6 +5,8 @@ type: chore
 blocked_by: [215523]
 labels: [runtime-layer, backlog-burndown-001-q3]
 created: 2026-09-29T13:36:41Z
+disposition: accepted
+disposition_at: 2026-10-16T06:30:36Z
 ---
 
 ## What to build
