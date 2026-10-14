@@ -31,8 +31,7 @@ use crate::internal::StoreIdInternal;
 /// Minting one is the crate's own:
 ///
 /// ```compile_fail
-/// use wcmp::internal::StoreIdInternal;
-/// let _ = <wcmp::StoreId as StoreIdInternal>::fresh();
+/// let _ = wcmp::StoreId::fresh();
 /// ```
 ///
 /// [`Store`]: crate::Store
