@@ -9,6 +9,7 @@
 //! function.
 
 use crate::abi::call_values::{parameter_spill, result_pointer};
+use crate::abi::check_spilled_address;
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::take_i32;
 use crate::abi::layout::result_spills;
@@ -17,7 +18,7 @@ use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::{LiftContextInternal, LowerContextInternal, TypeCheckerInternal};
 use crate::runtime_layer::Val as CoreVal;
-use crate::types::{PrimitiveType, ResourceType, ValueType};
+use crate::types::{PrimitiveType, ResourceType, TupleType, ValueType};
 
 use super::component_named_list::ComponentNamedList;
 use super::lift::Lift;
@@ -107,6 +108,14 @@ pub fn lift_returned<D: 'static, R: Lift>(
     let mut cursor = 0;
     if spilled {
         let ptr = pointer(args, &mut cursor, AbiPosition::Result)?;
+        check_spilled_address(
+            cx,
+            ptr,
+            R::SIZE32,
+            R::ALIGN32 as usize,
+            AbiPosition::Result,
+            || ty.result.clone(),
+        )?;
         return R::lift_memory(&mut LiftContext::named(cx, named), LIST, ptr);
     }
     R::lift_flat(&mut LiftContext::named(cx, named), LIST, args, &mut cursor)
@@ -125,6 +134,17 @@ pub fn lift_parameters<D: 'static, P: Lift>(
     let named = NamedTypes::parameters(ty);
     if spilled {
         let ptr = pointer(args, cursor, AbiPosition::Argument(0))?;
+        check_spilled_address(
+            cx,
+            ptr,
+            P::SIZE32,
+            P::ALIGN32 as usize,
+            AbiPosition::Argument(0),
+            || {
+                let types = ty.parameters.iter().map(|p| p.ty.clone());
+                Some(ValueType::Tuple(TupleType::new(types)))
+            },
+        )?;
         return P::lift_memory(&mut LiftContext::named(cx, named), LIST, ptr);
     }
     P::lift_flat(&mut LiftContext::named(cx, named), LIST, args, cursor)

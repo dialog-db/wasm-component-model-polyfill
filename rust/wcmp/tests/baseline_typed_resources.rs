@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use wcmp::{
     AbiCause, Component, Engine, Error, HostCall, Instance, InterfaceIdentifier, Linker, Resource,
-    ResourceAny, ResourceDynamic, ResourceType, Store, StoreContext, TypedFunc,
+    ResourceAny, ResourceDynamic, ResourceType, Store, StoreContext, TypedFunc, ValueType,
 };
 use wcmp_macros::component;
 
@@ -41,6 +41,7 @@ struct Other;
 ///
 /// - `keep` hands the host's `inspect` a borrow of the `thing` it
 ///   receives, then drops it.
+/// - `peek` does the same with a borrow of a `thing`.
 /// - `echo` returns the `thing` it receives.
 /// - `make-doc` makes a `doc` of the next rep, from 1.
 /// - `take-doc` returns the rep of the `doc` it receives, then drops
@@ -97,6 +98,8 @@ const RESOURCES: &[u8] = component!(
           (export "doc-drop" (func $doc-drop))))))
       (export $doc' "doc" (type $doc))
       (func (export "keep") (param "h" (own $thing))
+        (canon lift (core func $c "keep")))
+      (func (export "peek") (param "h" (borrow $thing))
         (canon lift (core func $c "keep")))
       (func (export "echo") (param "h" (own $thing)) (result (own $thing))
         (canon lift (core func $c "echo")))
@@ -209,6 +212,61 @@ async fn it_crosses_a_resource_as_a_typed_handle_and_refuses_a_second_own() {
         "host resource already consumed",
         "{refused}"
     );
+}
+
+#[wcmp_macros::test]
+async fn it_lends_an_owned_handle_then_moves_it_then_finds_its_entry_freed() {
+    let (mut store, instance) = instance().await;
+    // The handle is shared so that the test can lower it three times.
+    let peek = typed::<(Arc<Resource<Thing>>,), ()>(&instance, "peek");
+    let keep = typed::<(Arc<Resource<Thing>>,), ()>(&instance, "keep");
+    let thing = Arc::new(Resource::<Thing>::new_own(5));
+
+    // Lowered as a `borrow`, the handle, in no table yet, takes an
+    // entry in the host's table and lends it for the call. The guest's
+    // borrow names the rep, and its drop of the borrow runs no
+    // destructor.
+    peek.call(&mut store, (thing.clone(),))
+        .await
+        .expect("the guest borrows the handle");
+    assert_eq!(store.data().inspected, vec![5], "the guest's borrow");
+    assert!(store.data().things_dropped.is_empty(), "the host owns it");
+    assert!(thing.owned(), "a borrow leaves the handle owned");
+
+    // Lowered as an `own`, the entry moves out of the host's table and
+    // into the guest's, whose drop runs the destructor.
+    keep.call(&mut store, (thing.clone(),))
+        .await
+        .expect("the guest takes the handle");
+    assert_eq!(store.data().inspected, vec![5, 5], "the guest's own");
+    assert_eq!(store.data().things_dropped, vec![5], "the guest's drop");
+
+    // The handle keeps the index of the entry that moved, as Wasmtime's
+    // does, so a second `own` finds the entry freed. It is not taken
+    // the way a handle in no table is.
+    let refused = keep
+        .call(&mut store, (thing,))
+        .await
+        .expect_err("the handle's entry moved into the guest");
+    assert_eq!(
+        invalid_handle(&refused),
+        "handle index 1 is not live in the host's resource table",
+        "{refused}"
+    );
+    assert_eq!(store.data().inspected, vec![5, 5], "the guest never ran");
+}
+
+#[wcmp_macros::test]
+async fn it_names_the_identity_the_host_registered_in_an_exports_type() {
+    let (_store, instance) = instance().await;
+    let thing = ResourceType::host::<Thing>();
+    let keep = instance.get_func("keep").expect("the export").ty();
+    assert_eq!(keep.parameters[0].ty, ValueType::Own(thing));
+    let peek = instance.get_func("peek").expect("the export").ty();
+    assert_eq!(peek.parameters[0].ty, ValueType::Borrow(thing));
+    let echo = instance.get_func("echo").expect("the export").ty();
+    assert_eq!(echo.parameters[0].ty, ValueType::Own(thing));
+    assert_eq!(echo.result, Some(ValueType::Own(thing)));
 }
 
 #[wcmp_macros::test]

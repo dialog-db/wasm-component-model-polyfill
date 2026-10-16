@@ -845,6 +845,39 @@ pub fn read_pointer_pair<T: 'static>(
     ))
 }
 
+/// Gate the address of a value that does not fit in flat values, as
+/// the canonical ABI's `lift_flat_values` and `lift_async_value` do
+/// before the first byte is read: `base` must be aligned to `align`,
+/// and address a region of `size` bytes that the memory owns. The
+/// value is gated as a whole, so a value whose first part is in bounds
+/// and whose last is not is never lifted half-way. `valtype` labels a
+/// refusal and nothing else, so it is built only for one.
+pub fn check_spilled_address<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    base: usize,
+    size: usize,
+    align: usize,
+    position: AbiPosition,
+    valtype: impl FnOnce() -> Option<ValueType>,
+) -> Result<()> {
+    let message = if !base.is_multiple_of(align.max(1)) {
+        "pointer not aligned"
+    } else if base.checked_add(size).is_none() {
+        "pointer size overflow"
+    } else if !ctx.in_bounds(base, size) {
+        "pointer out of bounds"
+    } else {
+        return Ok(());
+    };
+    Err(Error::from(AbiError {
+        position,
+        valtype: valtype(),
+        cause: AbiCause::InvalidEncoding {
+            message: message.to_owned(),
+        },
+    }))
+}
+
 /// Read a discriminant `width` bytes wide at `offset`.
 pub fn read_discriminant<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
@@ -868,7 +901,7 @@ pub fn read_discriminant<T: 'static>(
 /// tables: the polyfill keeps one table per component instance,
 /// shared by every handle kind that instance uses, and one table per
 /// resource type for the handles the host holds, keyed by
-/// [`ResourceType`](crate::resource::ResourceType). For an
+/// [`ResourceType`](crate::ResourceType). For an
 /// `own<T>` lift the entry is removed from the instance's table and
 /// inserted into the host's table for the resource type — ownership
 /// transfers to the host. For `borrow<T>` the instance's entry is

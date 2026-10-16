@@ -103,7 +103,7 @@ use crate::abi::layout::{
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::signature::Signature;
-use crate::abi::{lift, lower};
+use crate::abi::{check_spilled_address, lift, lower};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
@@ -1279,28 +1279,17 @@ fn lift_spilled_arguments<T: 'static>(
     let u32_ty = ValueType::Primitive(PrimitiveType::U32);
     let first = parameters.first().map(|p| &p.ty).unwrap_or(&u32_ty);
     let base = pointer_argument(args, cursor, first, AbiPosition::Argument(0))?;
-    // The tuple type labels a refusal and nothing else, so it is
-    // built where the refusal is raised rather than on every call
-    // that passes the gate.
-    let fail = |message: &str| {
-        let types = parameters.iter().map(|p| p.ty.clone());
-        Error::from(AbiError {
-            position: AbiPosition::Argument(0),
-            valtype: Some(ValueType::Tuple(TupleType::new(types))),
-            cause: AbiCause::InvalidEncoding {
-                message: message.to_owned(),
-            },
-        })
-    };
-    if !base.is_multiple_of(layout.alignment) {
-        return Err(fail("pointer not aligned"));
-    }
-    if base.checked_add(layout.size).is_none() {
-        return Err(fail("pointer size overflow"));
-    }
-    if !ctx.in_bounds(base, layout.size) {
-        return Err(fail("pointer out of bounds"));
-    }
+    check_spilled_address(
+        ctx,
+        base,
+        layout.size,
+        layout.alignment,
+        AbiPosition::Argument(0),
+        || {
+            let types = parameters.iter().map(|p| p.ty.clone());
+            Some(ValueType::Tuple(TupleType::new(types)))
+        },
+    )?;
     let mut lifted = Vec::with_capacity(parameters.len());
     for (i, (param, offset)) in parameters.iter().zip(layout.offsets.iter()).enumerate() {
         lifted.push(lift(

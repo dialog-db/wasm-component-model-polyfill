@@ -88,9 +88,12 @@ macro_rules! reader {
                 types: &TypeChecker<'_>,
             ) -> core::result::Result<(), TypeCheckError> {
                 match ty {
+                    // A stream or a future with no payload is one of
+                    // `()`, as Wasmtime's `typecheck_payload` reads it.
                     ValueType::$declared(declared) => match declared.payload() {
                         Some(payload) => T::typecheck(payload, types)
                             .map_err(|error| error.at(TypePathStep::$step)),
+                        None if T::IS_RUST_UNIT_TYPE => Ok(()),
                         None => Err(TypeCheckError::mismatch::<Self>(ty)),
                     },
                     _ => Err(TypeCheckError::mismatch::<Self>(ty)),

@@ -144,7 +144,7 @@ pub fn format_flags(
             .is_some_and(|word| word & (1 << (index % 32)) != 0)
         {
             if wrote {
-                f.write_str(" | ")?;
+                f.write_str("|")?;
             }
             f.write_str(name)?;
             wrote = true;

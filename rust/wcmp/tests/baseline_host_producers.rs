@@ -1648,5 +1648,59 @@ async fn it_fails_a_synchronous_read_against_a_pending_producer_in_a_synchronous
     );
 }
 
+/// A component whose `take-unit` takes a `future` with no payload and
+/// returns the index the end took in its table, and whose `unit-read`
+/// reads the future at an index asynchronously and returns the packed
+/// result.
+const READS_A_UNIT_FUTURE: &[u8] = component!(
+    r#"
+    (component
+      (type $u (future))
+      (core func $read (canon future.read $u async))
+      (core module $m
+        (import "" "future.read" (func $read (param i32 i32) (result i32)))
+        (func (export "take") (param i32) (result i32) (local.get 0))
+        (func (export "unit-read") (param i32) (result i32)
+          (call $read (local.get 0) (i32.const 0))))
+      (core instance $m (instantiate $m (with "" (instance
+        (export "future.read" (func $read))))))
+      (func (export "take-unit") (param "f" $u) (result u32) (canon lift (core func $m "take")))
+      (func (export "unit-read") (param "e" u32) (result u32)
+        (canon lift (core func $m "unit-read"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_gives_a_guest_a_future_reader_of_unit_as_a_future_with_no_payload() {
+    let (mut store, instance) = instantiate(READS_A_UNIT_FUTURE).await;
+    let produced = Arc::new(AtomicBool::new(false));
+    let producing = produced.clone();
+    let reader = FutureReader::<()>::new(&mut store.as_context_mut(), async move {
+        producing.store(true, Ordering::SeqCst);
+        Ok::<(), Error>(())
+    })
+    .expect("a future of `()`");
+    let end = instance
+        .get_func("take-unit")
+        .expect("the component exports `take-unit`")
+        .typed::<(FutureReader<()>,), (u32,)>()
+        .expect("a `FutureReader<()>` is a `future` with no payload")
+        .call(&mut store, (reader,))
+        .await
+        .expect("the reader crosses into the guest")
+        .0;
+    assert!(
+        !produced.load(Ordering::SeqCst),
+        "nothing polled the producer before the read"
+    );
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "unit-read", &[end]).await,
+        packed(COMPLETED, 0),
+        "the read polled the producer and took its value"
+    );
+    assert!(produced.load(Ordering::SeqCst));
+}
+
 #[path = "support/backend.rs"]
 mod test_backend;

@@ -39,8 +39,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use wcmp::{
-    Component, Engine, Error, FunctionParameter, FunctionType, HostCall, Instance, Linker,
-    ListType, PrimitiveType, Store, Val, ValueType,
+    AbiCause, AbiError, Component, Engine, Error, FunctionParameter, FunctionType, HostCall,
+    Instance, Linker, ListType, PrimitiveType, Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -506,6 +506,258 @@ async fn it_bounds_a_spilled_argument_tuple_as_a_whole() {
         reached.load(Ordering::Relaxed),
         0,
         "the host was not reached with a half-lifted tuple"
+    );
+}
+
+/// The seventeen `u32`s the wide host function of
+/// [`SPILLED_ARGUMENTS`] takes, as the Rust tuple a typed registration
+/// names.
+type Seventeen = (
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+);
+
+/// The sum of the seventeen words. Rust gives no tuple of seventeen
+/// values `PartialEq` or `Default`, so a test compares the sum.
+fn sum((a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q): Seventeen) -> u32 {
+    a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q
+}
+
+/// Instantiate [`SPILLED_ARGUMENTS`] with a typed host function for
+/// the wide import. A typed registration lifts the tuple straight into
+/// its Rust parameters, by a path of its own, so the gate is proved
+/// there as well. The body counts the calls that reach it.
+async fn typed_spilled_arguments(reached: std::sync::Arc<AtomicUsize>) -> (Store<()>, Instance) {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, SPILLED_ARGUMENTS)
+        .await
+        .expect("a component with a spilled parameter tuple parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap("wide", move |_: HostCall<'_, ()>, args: Seventeen| {
+            assert_eq!(
+                sum(args),
+                0,
+                "the aligned tuple reads the zeros the page holds"
+            );
+            reached.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+        .expect("the registration");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    (store, instance)
+}
+
+/// The cause of the canonical ABI failure in the source chain of
+/// `error`, wherever the trap of the guest's call put it.
+fn abi_cause(error: &Error) -> Option<&AbiCause> {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(link) = current {
+        if let Some(Error::Abi(abi)) = link.downcast_ref::<Error>() {
+            return Some(&abi.cause);
+        }
+        if let Some(abi) = link.downcast_ref::<AbiError>() {
+            return Some(&abi.cause);
+        }
+        current = link.source();
+    }
+    None
+}
+
+/// Whether `error` carries the invalid-encoding cause with `message`.
+fn invalid_encoding(error: &Error, message: &str) -> bool {
+    matches!(
+        abi_cause(error),
+        Some(AbiCause::InvalidEncoding { message: m }) if m == message
+    )
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_misaligned_spilled_argument_tuple_of_a_typed_host_function() {
+    let reached = std::sync::Arc::new(AtomicUsize::new(0));
+    let (mut store, instance) = typed_spilled_arguments(reached.clone()).await;
+
+    // The same tuple at an aligned address inside the page lifts, so
+    // the refusal below is the alignment alone.
+    instance
+        .get_func("aligned")
+        .expect("`aligned` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect("an aligned tuple inside the page lifts");
+    assert_eq!(reached.load(Ordering::Relaxed), 1);
+
+    // An address two bytes in is inside the page, and a typed lift of
+    // the words one by one would read them there. The gate refuses the
+    // address before the first word.
+    let err = instance
+        .get_func("misaligned")
+        .expect("`misaligned` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("a tuple of words does not start two bytes in");
+    assert!(
+        invalid_encoding(&err, "pointer not aligned"),
+        "expected the invalid-encoding cause, \"pointer not aligned\", got {}",
+        chain(&err)
+    );
+    assert_eq!(
+        reached.load(Ordering::Relaxed),
+        1,
+        "the typed host function never ran with the misaligned tuple"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_bounds_a_spilled_argument_tuple_of_a_typed_host_function_as_a_whole() {
+    // Sixteen bytes short of the end of the page, four of the
+    // seventeen words fit. A lift word by word would read those four
+    // and fail at the fifth with another cause; the gate measures the
+    // tuple as one thing first.
+    let reached = std::sync::Arc::new(AtomicUsize::new(0));
+    let (mut store, instance) = typed_spilled_arguments(reached.clone()).await;
+    let err = instance
+        .get_func("far")
+        .expect("`far` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("the tuple runs off the end of the page");
+    assert!(
+        invalid_encoding(&err, "pointer out of bounds"),
+        "expected the invalid-encoding cause, \"pointer out of bounds\", got {}",
+        chain(&err)
+    );
+    assert_eq!(
+        reached.load(Ordering::Relaxed),
+        0,
+        "the typed host function never ran with the tuple"
+    );
+}
+
+/// A guest with exports lifted `async` whose result, a tuple of
+/// seventeen `u32`s, is one flat value more than `task.return` takes,
+/// so `task.return` takes its address instead. `aligned` passes an
+/// address the page holds the tuple at, and `misaligned` passes an odd
+/// one. The callback is never reached: each export returns its result
+/// before it waits.
+const SPILLED_RETURNS: &[u8] = component!(
+    r#"
+    (component
+      (type $wide (tuple u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32 u32))
+      (core module $mem (memory (export "memory") 1))
+      (core instance $mi (instantiate $mem))
+      (core func $task-return
+        (canon task.return (result $wide) (memory (core memory $mi "memory"))))
+      (core module $m
+        (import "" "task.return" (func $task-return (param i32)))
+        (func (export "aligned") (result i32)
+          (call $task-return (i32.const 8))
+          (i32.const 0))
+        (func (export "misaligned") (result i32)
+          (call $task-return (i32.const 3))
+          (i32.const 0))
+        (func (export "callback") (param i32 i32 i32) (result i32) unreachable))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "task.return" (func $task-return))))))
+      (func (export "aligned") async (result $wide)
+        (canon lift (core func $i "aligned") async
+          (memory (core memory $mi "memory"))
+          (callback (core func $i "callback"))))
+      (func (export "misaligned") async (result $wide)
+        (canon lift (core func $i "misaligned") async
+          (memory (core memory $mi "memory"))
+          (callback (core func $i "callback")))))
+    "#
+);
+
+/// Instantiate [`SPILLED_RETURNS`], which imports nothing.
+async fn spilled_returns() -> (Store<()>, Instance) {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, SPILLED_RETURNS)
+        .await
+        .expect("a component with a spilled `task.return` parses");
+    let linker: Linker<()> = Linker::new(&engine);
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    (store, instance)
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_misaligned_spilled_task_return_of_a_typed_call() {
+    // The aligned export returns the tuple the page holds, so the
+    // refusal below is the alignment alone. The refused call traps, so
+    // it runs in a store of its own.
+    let (mut store, instance) = spilled_returns().await;
+    let typed = |name: &str| {
+        instance
+            .get_func(name)
+            .expect("the export")
+            .typed::<(), (Seventeen,)>()
+            .expect("the result is a tuple of seventeen `u32`s")
+    };
+    let (zeros,) = typed("aligned")
+        .call(&mut store, ())
+        .await
+        .expect("an aligned result inside the page lifts");
+    assert_eq!(sum(zeros), 0, "the page holds zeros");
+
+    let Err(err) = typed("misaligned").call(&mut store, ()).await else {
+        panic!("a tuple of words does not start at an odd address");
+    };
+    assert!(
+        invalid_encoding(&err, "pointer not aligned"),
+        "expected the invalid-encoding cause, \"pointer not aligned\", got {}",
+        chain(&err)
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_misaligned_spilled_task_return_of_an_untyped_call() {
+    let (mut store, instance) = spilled_returns().await;
+    let ok = instance
+        .get_func("aligned")
+        .expect("`aligned` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect("an aligned result inside the page lifts");
+    assert_eq!(
+        ok.as_ref(),
+        &[Val::Tuple(vec![Val::U32(0); 17].into_boxed_slice())]
+    );
+
+    let err = instance
+        .get_func("misaligned")
+        .expect("`misaligned` is exported")
+        .call(&mut store, &[])
+        .await
+        .expect_err("a tuple of words does not start at an odd address");
+    assert!(
+        invalid_encoding(&err, "pointer not aligned"),
+        "expected the invalid-encoding cause, \"pointer not aligned\", got {}",
+        chain(&err)
     );
 }
 

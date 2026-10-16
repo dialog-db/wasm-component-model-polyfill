@@ -60,6 +60,10 @@ pub trait StoreIdInternal {
 
 /// The crate-internal face of [`ResourceType`](crate::ResourceType).
 pub trait ResourceTypeInternal {
+    /// Record `name` as the name a component declares this resource
+    /// type by, for a type of a component that is not instantiated,
+    /// so that its rendering names it.
+    fn declare_name(&self, name: &str);
     /// A fresh identity for a resource type that one instantiation of
     /// a component defines.
     fn fresh_guest() -> Self;
@@ -430,9 +434,12 @@ pub trait ResourceAnyInternal: Sized {
 pub trait ResourceInternal {
     /// The shared host handle, which the crossing reads and moves on.
     fn handle(&self) -> &HostHandle;
-    /// The handle a lift made, of the type `identity`, which the type
-    /// check admitted.
-    fn from_lift(handle: HostHandle, identity: ResourceType) -> Self;
+    /// The handle a lift made, of the type `identity`. An identity the
+    /// handle does not stand for, which only a lift the type check did
+    /// not admit can meet, fails with "resource type mismatch".
+    fn from_lift(handle: HostHandle, identity: ResourceType) -> Result<Self>
+    where
+        Self: Sized;
 }
 
 /// The crate-internal face of [`LowerContext`](crate::__private::LowerContext).

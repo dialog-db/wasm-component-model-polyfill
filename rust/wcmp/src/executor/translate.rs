@@ -39,7 +39,9 @@ use crate::abi::layout::FlatType;
 use crate::abi::signature::Signature;
 use crate::internal::{EngineConfigInternal, EngineInternal, ErrorInternal, ModuleInternal};
 
-use crate::component::{ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector};
+use crate::component::{
+    ComponentExport, ComponentImport, ExternType, ExternalName, TypeProjector, declare,
+};
 use crate::concurrency::{EndKind, LowerKind};
 use crate::engine::Engine;
 use crate::error::{Error, Result};
@@ -926,6 +928,7 @@ fn project_imports(
     let mut imports = Vec::with_capacity(translation.component.import_types.len());
     for (_, (name, extern_)) in translation.component.import_types.iter() {
         let ty = projector.extern_type(extern_)?;
+        declare(name, &ty);
         imports.push(ComponentImport {
             name: ExternalName::from_raw(name),
             ty,
@@ -974,6 +977,7 @@ fn project_exports(
                 ExternType::Module(projector.module(*ty)?)
             }
         };
+        declare(name, &ty);
         exports.push(ComponentExport {
             name: ExternalName::from_raw(name),
             ty,

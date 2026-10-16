@@ -65,9 +65,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::abi::context::BoundaryContext;
 use crate::abi::flatten::lift_from_flat_slots;
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::{FlatType, MAX_FLAT_PARAMS, flat_count};
-use crate::abi::lift;
+use crate::abi::layout::{FlatType, MAX_FLAT_PARAMS, alignment_of, flat_count, size_of};
 use crate::abi::runtime_state::AbiRuntimeState;
+use crate::abi::{check_spilled_address, lift};
 use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
@@ -193,6 +193,14 @@ fn task_return<T: 'static>(
         None => None,
         Some(ty) if spills(ty) => {
             let pointer = pointer_argument(args)?;
+            check_spilled_address(
+                &mut context,
+                pointer,
+                size_of(ty),
+                alignment_of(ty),
+                AbiPosition::Result,
+                || Some(ty.clone()),
+            )?;
             Some(lift(&mut context, pointer, ty, AbiPosition::Result)?)
         }
         Some(ty) => {

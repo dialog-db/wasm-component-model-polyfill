@@ -44,6 +44,15 @@ use crate::types::{
     ValueType, VariantCase, VariantType,
 };
 
+/// Record `name` as the name of the resource type `ty` declares, when
+/// it declares one, so that an error at a position of the type names
+/// it as the component does.
+pub fn declare(name: &str, ty: &ExternType) {
+    if let ExternType::Resource(resource) = ty {
+        resource.declare_name(name);
+    }
+}
+
 /// Projects translator types onto polyfill shapes.
 pub struct TypeProjector<'a> {
     types: &'a ComponentTypes,
@@ -243,9 +252,11 @@ impl<'a> TypeProjector<'a> {
     pub fn instance(&self, index: TypeComponentInstanceIndex) -> Result<InstanceType> {
         let mut items = Vec::new();
         for (name, extern_) in self.types[index].exports.iter() {
+            let ty = self.extern_type(extern_)?;
+            declare(name, &ty);
             items.push(InstanceItem {
                 name: name.clone(),
-                ty: self.extern_type(extern_)?,
+                ty,
             });
         }
         Ok(InstanceType { items })

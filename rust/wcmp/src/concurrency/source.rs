@@ -14,6 +14,7 @@ use crate::internal::{ErrorInternal, LiftContextInternal, SourceInternal};
 use crate::runtime_layer::AsContextMut;
 use crate::store::{StoreContext, StoreContextInternalExt};
 use crate::typed::{Lift, LiftContext};
+use crate::types::{TupleType, ValueType};
 
 use super::copy_buffer::CopyBuffer;
 
@@ -143,10 +144,24 @@ fn lift_items<D: 'static, T: Lift>(
     buffer: &mut Vec<T>,
     count: usize,
 ) -> Result<()> {
-    let ty = write
-        .payload
-        .as_ref()
-        .ok_or_else(|| Error::internal("a typed source read a stream that carries no values"))?;
+    // A stream or a future with no payload carries values of `()`, as
+    // Wasmtime's `typecheck_payload` reads it, and the type check
+    // admits only `()` for one. The unit value crosses as nothing
+    // whatever the type says, so it lifts against the empty tuple and
+    // takes no bytes of the guest's memory.
+    let unit;
+    let ty = match write.payload.as_ref() {
+        Some(ty) => ty,
+        None if T::IS_RUST_UNIT_TYPE => {
+            unit = ValueType::Tuple(TupleType::new([]));
+            &unit
+        }
+        None => {
+            return Err(Error::internal(
+                "a typed source of values read a stream that carries no values",
+            ));
+        }
+    };
     let tables = store.internal().tables_handle();
     let (options, instance) = BoundaryInstance::resolve(&write.options, &write.abi_state, &tables)?;
     let mut cx = BoundaryContext::new(

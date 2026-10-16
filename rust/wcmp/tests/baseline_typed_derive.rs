@@ -189,6 +189,35 @@ flags! {
     }
 }
 
+// Two flags, as many as `permissions` has, named otherwise.
+flags! {
+    ReadExec {
+        #[component(name = "read")]
+        const READ;
+        #[component(name = "exec")]
+        const EXEC;
+    }
+}
+
+flags! {
+    Three {
+        const A; const B; const C;
+    }
+}
+
+/// `record flagged { perms: permissions, nine: nine, wide: thirty-two,
+/// rest: list<u32, 14> }`: three flags words of each width, and
+/// seventeen flat values in all, one more than a call's parameters
+/// take, so the record crosses into the guest in memory.
+#[derive(ComponentType, Lift, Lower, Clone, Copy, Debug, PartialEq)]
+#[component(record)]
+struct Flagged {
+    perms: Permissions,
+    nine: Nine,
+    wide: ThirtyTwo,
+    rest: [u32; 14],
+}
+
 /// The interface the guest of [`DERIVED`] imports.
 const HOST: &str = "wcmp-tests:derive/host@0.1.0";
 
@@ -199,9 +228,15 @@ const HOST: &str = "wcmp-tests:derive/host@0.1.0";
 ///   returns the `point` the host answers.
 /// - `echo-points` and `count-points` return the list of points they
 ///   receive, or its length.
-/// - `echo-renamed`, and the `echo-…` exports of each flags type of
-///   1, 8, 9, and 32 flags and of `permissions`, return what they
-///   receive.
+/// - `echo-renamed`, `echo-shape`, and the `echo-…` exports of each
+///   flags type of 1, 8, 9, and 32 flags and of `permissions`, return
+///   what they receive.
+/// - `echo-flagged` returns the `flagged` it receives, at the address
+///   the host lowered it to.
+/// - `padded-one` returns the flags word `0xff` for a type of one
+///   flag, and `padded-pair` returns a `tuple<one, nine>` whose words
+///   are all ones, in memory.
+/// - `peek` reads a word of memory.
 const DERIVED: &[u8] = component!(
     r#"
     (component
@@ -228,7 +263,8 @@ const DERIVED: &[u8] = component!(
                 (then unreachable))))
           local.get $end global.set $bump
           local.get $ptr)
-        (func (export "reset") i32.const 16 global.set $bump))
+        (func (export "reset") i32.const 16 global.set $bump)
+        (func (export "peek") (param i32) (result i32) (i32.load (local.get 0))))
       (core instance $libc (instantiate $libc))
       (import "wcmp-tests:derive/host@0.1.0" (instance $host
         (type $point' (record (field "x" u32) (field "y" u32)))
@@ -258,6 +294,10 @@ const DERIVED: &[u8] = component!(
       (export $thirty-two "thirty-two" (type $thirty-two'))
       (type $permissions' (flags "read" "write"))
       (export $permissions "permissions" (type $permissions'))
+      (type $flagged' (record
+        (field "perms" $permissions) (field "nine" $nine) (field "wide" $thirty-two)
+        (field "rest" (list u32 14))))
+      (export $flagged "flagged" (type $flagged'))
       (core module $m
         (import "libc" "memory" (memory 1))
         (import "libc" "cabi_realloc" (func $realloc (param i32 i32 i32 i32) (result i32)))
@@ -279,7 +319,11 @@ const DERIVED: &[u8] = component!(
           (call $two (local.get $a) (local.get $b)))
         (func (export "count") (param $ptr i32) (param $len i32) (result i32)
           (local.get $len))
-        (func (export "echo-one") (param i32) (result i32) local.get 0))
+        (func (export "echo-one") (param i32) (result i32) local.get 0)
+        (func (export "padded-one") (result i32) i32.const 0xff)
+        (func (export "padded-pair") (result i32)
+          (i32.store (i32.const 8) (i32.const -1))
+          (i32.const 8)))
       (core instance $i (instantiate $m
         (with "libc" (instance $libc))
         (with "host" (instance (export "describe" (func $describe-lower))))))
@@ -308,6 +352,16 @@ const DERIVED: &[u8] = component!(
         (canon lift (core func $i "echo-one")))
       (func (export "echo-permissions") (param "f" $permissions) (result $permissions)
         (canon lift (core func $i "echo-one")))
+      (func (export "echo-shape") (param "s" $shape) (result $shape)
+        (canon lift (core func $i "echo-pair")
+          (memory (core memory $libc "memory")) (realloc (core func $libc "cabi_realloc"))))
+      (func (export "echo-flagged") (param "f" $flagged) (result $flagged)
+        (canon lift (core func $i "echo-one")
+          (memory (core memory $libc "memory")) (realloc (core func $libc "cabi_realloc"))))
+      (func (export "padded-one") (result $one) (canon lift (core func $i "padded-one")))
+      (func (export "padded-pair") (result (tuple $one $nine))
+        (canon lift (core func $i "padded-pair") (memory (core memory $libc "memory"))))
+      (func (export "peek") (param "p" u32) (result u32) (canon lift (core func $libc "peek")))
       (func (export "reset") (canon lift (core func $libc "reset"))))
     "#
 );
@@ -582,7 +636,7 @@ fn it_gives_a_flags_type_wasmtimes_api() {
     flags ^= Permissions::READ;
     assert_eq!(flags, both);
     assert_eq!(Permissions::WRITE.as_array(), [0b10]);
-    assert_eq!(format!("{:?}", both), "(READ | WRITE)");
+    assert_eq!(format!("{:?}", both), "(READ|WRITE)");
 }
 
 #[wcmp_macros::test]
@@ -600,6 +654,106 @@ async fn it_refuses_a_flags_type_whose_names_or_count_differ() {
         .typed::<(Permissions,), (Eight,)>()
         .expect_err("flags named `A` to `H` are not `read` and `write`");
     assert_eq!(path(names), [TypePathStep::Result(0)]);
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_a_flags_type_whose_names_differ_at_the_same_count() {
+    let (_store, instance) = derived().await;
+    let error = instance
+        .get_func("echo-permissions")
+        .expect("the export")
+        .typed::<(ReadExec,), (Permissions,)>()
+        .expect_err("flags named `read` and `exec` are not `read` and `write`");
+    let Error::TypeMismatch(mismatch) = &error else {
+        panic!("expected a type mismatch, got {error:?}");
+    };
+    assert_eq!(
+        mismatch.position,
+        TypeMismatchPosition::TypedConversion {
+            export: "echo-permissions".to_owned(),
+            path: vec![TypePathStep::Parameter(0)],
+        },
+        "{error}"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_lowers_and_lifts_back_each_case_of_a_derived_variant() {
+    // The variant lowers as the export's flat parameters and lifts
+    // back out of the memory its result spills to.
+    let (mut store, instance) = derived().await;
+    let echo = typed::<(Shape,), (Shape,)>(&instance, "echo-shape");
+    for shape in [Shape::Circle(9), Shape::Circle(u32::MAX), Shape::Nothing] {
+        let (echoed,) = echo
+            .call(&mut store, (shape,))
+            .await
+            .expect("the call returns");
+        assert_eq!(echoed, shape);
+    }
+}
+
+#[wcmp_macros::test]
+async fn it_lowers_flags_of_every_width_into_memory_inside_a_spilled_record() {
+    // The record's seventeen flat values spill, so the host writes it
+    // into the guest's memory: at 16, the first address the guest's
+    // allocator gives after `reset`. The guest returns that address,
+    // and the host lifts the record back out of it.
+    let (mut store, instance) = derived().await;
+    let flagged = Flagged {
+        perms: Permissions::WRITE,
+        nine: Nine::A | Nine::I,
+        wide: ThirtyTwo::F0 | ThirtyTwo::F31,
+        rest: core::array::from_fn(|index| index as u32 + 1),
+    };
+    typed::<(), ()>(&instance, "reset")
+        .call(&mut store, ())
+        .await
+        .expect("the reset");
+    let (echoed,) = typed::<(Flagged,), (Flagged,)>(&instance, "echo-flagged")
+        .call(&mut store, (flagged,))
+        .await
+        .expect("the call returns");
+    assert_eq!(echoed, flagged);
+
+    // The Canonical ABI's layout: the `u8` of `permissions` at 0, the
+    // `u16` of `nine` at 2, the `u32` of `thirty-two` at 4, and the
+    // list from 8. The byte at 1 is padding.
+    let peek = typed::<(u32,), (u32,)>(&instance, "peek");
+    let mut words = Vec::new();
+    for address in [16, 20, 24, 76] {
+        words.push(peek.call(&mut store, (address,)).await.expect("the peek").0);
+    }
+    assert_eq!(words[0] & 0xffff_00ff, 0x0101_0002);
+    assert_eq!(words[1..], [0x8000_0001, 1, 14]);
+}
+
+#[wcmp_macros::test]
+fn it_leaves_the_padding_bits_of_a_flags_type_clear() {
+    assert_eq!(Three::all().as_array(), [0b111]);
+    assert_eq!((!Three::empty()).as_array(), [0b111]);
+    assert_eq!((!Three::A).as_array(), [0b110]);
+    assert_eq!(Nine::all().as_array(), [0x1ff]);
+}
+
+#[wcmp_macros::test]
+async fn it_drops_the_padding_bits_a_guest_sets_when_flags_lift() {
+    let (mut store, instance) = derived().await;
+    // Flat: a core `i32` of `0xff` for a type of one flag.
+    let (one,) = typed::<(), (One,)>(&instance, "padded-one")
+        .call(&mut store, ())
+        .await
+        .expect("the call returns");
+    assert_eq!(one, One::all());
+    assert_eq!(one.as_array(), [1]);
+    // In memory: a byte of `0xff` for one flag and a `u16` of `0xffff`
+    // for nine.
+    let ((one, nine),) = typed::<(), ((One, Nine),)>(&instance, "padded-pair")
+        .call(&mut store, ())
+        .await
+        .expect("the call returns");
+    assert_eq!(one.as_array(), [1]);
+    assert_eq!(nine, Nine::all());
+    assert_eq!(nine.as_array(), [0x1ff]);
 }
 
 #[path = "support/backend.rs"]

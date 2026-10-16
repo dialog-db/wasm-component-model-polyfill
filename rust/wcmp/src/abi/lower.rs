@@ -703,9 +703,10 @@ pub fn lower_resource_any<T: 'static>(
 /// The declared table must hold `identity`, or the lowering fails
 /// with the unregistered-resource-type cause. As an `own<T>`, an
 /// owned handle in no table hands its rep to the guest's new owning
-/// entry, and one in the host's table moves its entry there; either
-/// way the handle is taken, and a second lowering fails with "host
-/// resource already consumed". A borrow never lowers as an `own<T>`.
+/// entry and is taken, so a second lowering fails with "host resource
+/// already consumed". One in the host's table moves its entry there
+/// and keeps its index, as in Wasmtime, so a second lowering finds the
+/// entry gone. A borrow never lowers as an `own<T>`.
 /// As a `borrow<T>`, a borrow hands its rep over as it is. An owned
 /// handle in no table first takes an owning entry in the host's
 /// table, so the borrows of it are tracked, and an owned handle in
@@ -752,17 +753,19 @@ pub fn lower_host_resource<T: 'static>(
         };
         return lower_borrowed_rep(ctx, &mut guard, table, rep, ty, position);
     }
+    // A handle in no table is taken, as Wasmtime's is; one in the
+    // host's table keeps its index, as Wasmtime's does, and a second
+    // lowering finds the entry gone.
     match state {
         HostHandleState::Borrow => return Err(invalid_handle(BORROW_INTO_OWN, ty, position)),
         HostHandleState::Taken => return Err(invalid_handle(CONSUMED, ty, position)),
-        HostHandleState::NotInTable => {}
+        HostHandleState::NotInTable => handle.set(HostHandleState::Taken),
         HostHandleState::Index { index, generation } => {
             guard
                 .remove_host_own(host_table, index, generation, rep, identity, false)
                 .map_err(|e| invalid_host_handle(e, ty, position))?;
         }
     }
-    handle.set(HostHandleState::Taken);
     Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
 }
 

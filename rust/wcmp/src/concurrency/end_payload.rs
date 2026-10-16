@@ -7,11 +7,11 @@
 //! What the values of a stream or a future are, as its record knows
 //! them.
 
-use core::any::TypeId;
-
 use crate::internal::TypeCheckerInternal;
 use crate::typed::{ComponentType, TypeChecker};
 use crate::types::{ResourceType, ValueType, payloads_match};
+
+use super::host_payload::HostPayload;
 
 /// What the values of a stream or a future are, as its shared record
 /// knows them, as Wasmtime's `PayloadType` does: the type a component
@@ -31,32 +31,11 @@ pub enum EndPayload {
     Host(HostPayload),
 }
 
-/// The Rust type of the values of a stream or a future the host
-/// created.
-#[derive(Clone, Copy, Debug)]
-pub struct HostPayload {
-    type_id: TypeId,
-    name: &'static str,
-    check: fn(&ValueType, &dyn Fn(ResourceType) -> ResourceType) -> bool,
-}
-
-impl PartialEq for HostPayload {
-    fn eq(&self, other: &Self) -> bool {
-        self.type_id == other.type_id
-    }
-}
-
-impl Eq for HostPayload {}
-
 impl EndPayload {
     /// The values of a stream or a future the host created with values
     /// of the Rust type `T`.
     pub fn host<T: ComponentType + 'static>() -> Self {
-        Self::Host(HostPayload {
-            type_id: TypeId::of::<T>(),
-            name: core::any::type_name::<T>(),
-            check: matches_declared::<T>,
-        })
+        Self::Host(HostPayload::of::<T>(matches_declared::<T>))
     }
 
     /// The type a component declares for the values, when one did.
@@ -81,8 +60,9 @@ impl EndPayload {
             (Self::Declared(carried), declared) => {
                 payloads_match(carried.as_ref(), declared, resources)
             }
-            (Self::Host(host), Some(declared)) => (host.check)(declared, resources),
-            (Self::Host(_), None) => false,
+            (Self::Host(host), Some(declared)) => host.check(declared, resources),
+            // A payload of `()` is no payload, as in Wasmtime.
+            (Self::Host(host), None) => host.is::<()>(),
         }
     }
 
@@ -94,8 +74,8 @@ impl EndPayload {
             // The record keeps a declared type with its resources'
             // identities, so they are read as they are.
             Self::Declared(Some(declared)) => matches_declared::<T>(declared, &|ty| ty),
-            Self::Declared(None) => false,
-            Self::Host(host) => host.type_id == TypeId::of::<T>(),
+            Self::Declared(None) => T::IS_RUST_UNIT_TYPE,
+            Self::Host(host) => host.is::<T>(),
         }
     }
 
@@ -103,7 +83,7 @@ impl EndPayload {
     /// created.
     pub fn host_name(&self) -> Option<&'static str> {
         match self {
-            Self::Host(host) => Some(host.name),
+            Self::Host(host) => Some(host.name()),
             Self::Declared(_) => None,
         }
     }

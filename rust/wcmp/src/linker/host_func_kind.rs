@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use super::host_func::{ConcurrentHostFuncBody, HostFuncBody, HostParams};
+use super::host_func::{ConcurrentHostFuncBody, HostFuncBody};
+use super::host_params::HostParams;
 
 /// Which of the two registration forms a host function came through,
 /// and the body that form carries, with how the call's arguments

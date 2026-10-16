@@ -26,9 +26,13 @@
 //! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 //! [`Error::Link`]: crate::Error::Link
 
+mod host_args;
 mod host_call;
 mod host_func;
 mod host_func_kind;
+mod host_params;
+mod host_results;
+mod host_signature;
 #[allow(clippy::module_inception)]
 mod linker;
 mod linker_instance;
@@ -36,10 +40,14 @@ mod module_matching;
 mod registration;
 mod resolve;
 mod resource_registration;
+mod typed_results;
 
+pub use host_args::HostArgs;
 pub use host_call::HostCall;
-pub use host_func::{HostArgs, HostFuncFuture, HostParams, HostResults};
+pub use host_func::HostFuncFuture;
 pub use host_func_kind::HostFuncKind;
+pub use host_params::HostParams;
+pub use host_results::HostResults;
 pub use linker::Linker;
 pub use linker_instance::LinkerInstance;
 pub use registration::InstanceRegistration;

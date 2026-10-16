@@ -29,23 +29,17 @@
 //! [`LinkerInstance::func_wrap_concurrent`]:
 //!     super::LinkerInstance::func_wrap_concurrent
 
-use core::any::Any;
 use core::future::Future;
 use core::pin::Pin;
-use std::sync::Arc;
 
-use crate::abi::context::BoundaryContext;
-use crate::component::FunctionType;
 use crate::concurrency::Accessor;
 use crate::error::Result;
-use crate::runtime_layer::Val as RuntimeVal;
-use crate::store::StoreData;
-use crate::typed::{Lower, TypeCheckError, lower_results};
-use crate::types::ResourceType;
-use crate::value::Val;
 
+use super::host_args::HostArgs;
 use super::host_call::HostCall;
 use super::host_func_kind::HostFuncKind;
+use super::host_results::HostResults;
+use super::host_signature::HostSignature;
 
 /// One registered host function inside an [`crate::LinkerInstance`].
 ///
@@ -66,117 +60,6 @@ pub struct HostFunc<T: 'static> {
     /// registration, the other to know whether a call runs a closure
     /// to completion or starts a host task.
     pub kind: HostFuncKind<T>,
-}
-
-/// What the resolver checks an import's declared function type
-/// against, for one registration.
-pub enum HostSignature {
-    /// The function type an untyped registration names, compared with
-    /// the declared one structurally.
-    Declared(FunctionType),
-    /// The type check of a typed registration's parameter and result
-    /// lists, which walks the declared type with the Rust types.
-    Typed(Arc<HostTypeCheck>),
-}
-
-/// The type check a typed registration carries: it compares the
-/// registration's Rust lists with a declared function type, reading
-/// each resource type the type declares as the identity the second
-/// argument gives it.
-pub type HostTypeCheck = dyn Fn(
-        &FunctionType,
-        &dyn Fn(ResourceType) -> ResourceType,
-    ) -> core::result::Result<(), TypeCheckError>
-    + Send
-    + Sync
-    + 'static;
-
-impl Clone for HostSignature {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Declared(ty) => Self::Declared(ty.clone()),
-            Self::Typed(check) => Self::Typed(check.clone()),
-        }
-    }
-}
-
-/// How the arguments of one call reach a registration's body.
-pub enum HostArgs {
-    /// One [`Val`] per parameter, for an untyped registration.
-    Vals(Vec<Val>),
-    /// The registration's own Rust parameter tuple, lifted straight
-    /// out of the guest, for a typed one.
-    Typed(Box<dyn Any + Send>),
-}
-
-/// What one call of a registration answers with, ready to cross into
-/// the guest.
-pub enum HostResults<T: 'static> {
-    /// One [`Val`] when the type declares a result and none otherwise,
-    /// from an untyped registration.
-    Vals(Vec<Val>),
-    /// A typed registration's result tuple, which lowers itself
-    /// straight into the guest.
-    Typed(Box<dyn TypedResults<T>>),
-}
-
-/// A typed registration's result tuple, as the trampoline holds it
-/// until it crosses into the guest.
-pub trait TypedResults<T: 'static>: Send {
-    /// Lower the results as the result list of `ty`: into the return
-    /// area the guest passed, or into the flat result values of the
-    /// call.
-    fn lower(
-        self: Box<Self>,
-        cx: &mut BoundaryContext<'_, StoreData<T>>,
-        ty: &FunctionType,
-        return_area: Option<usize>,
-        flat: &mut [RuntimeVal],
-    ) -> Result<()>;
-}
-
-impl<T: 'static, R: Lower + 'static> TypedResults<T> for R {
-    fn lower(
-        self: Box<Self>,
-        cx: &mut BoundaryContext<'_, StoreData<T>>,
-        ty: &FunctionType,
-        return_area: Option<usize>,
-        flat: &mut [RuntimeVal],
-    ) -> Result<()> {
-        lower_results(cx, ty, &*self, return_area, flat)
-    }
-}
-
-/// How a registration's arguments come out of the guest.
-pub enum HostParams<T: 'static> {
-    /// One [`Val`] per parameter, for an untyped registration.
-    Vals,
-    /// The registration's Rust parameter tuple, lifted straight out of
-    /// the guest by this function, for a typed one.
-    Typed(Arc<LiftParams<T>>),
-}
-
-/// The lift of a typed registration's parameter tuple out of the core
-/// arguments of one call, from the cursor: the flat values, or, when
-/// the flag is set, the address of the spilled tuple.
-pub type LiftParams<T> = dyn for<'a> Fn(
-        &mut BoundaryContext<'a, StoreData<T>>,
-        &FunctionType,
-        &[RuntimeVal],
-        &mut usize,
-        bool,
-    ) -> Result<Box<dyn Any + Send>>
-    + Send
-    + Sync
-    + 'static;
-
-impl<T: 'static> Clone for HostParams<T> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Vals => Self::Vals,
-            Self::Typed(lift) => Self::Typed(lift.clone()),
-        }
-    }
 }
 
 /// The closure a synchronous registration holds.

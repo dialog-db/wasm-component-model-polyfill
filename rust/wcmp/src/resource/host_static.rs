@@ -12,12 +12,12 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use crate::error::Result;
-use crate::internal::{ResourceAnyInternal, ResourceInternal};
+use crate::internal::{ResourceAnyInternal, ResourceInternal, ResourceTypeInternal};
 use crate::store::StoreContext;
 use crate::types::ResourceType;
 
 use super::host_handle::HostHandle;
-use super::resource_any::ResourceAny;
+use super::resource_any::{ResourceAny, resource_type_mismatch};
 
 /// A handle to a host resource of the identity
 /// [`ResourceType::host::<T>()`](ResourceType::host).
@@ -119,8 +119,12 @@ impl<T: 'static> ResourceInternal for Resource<T> {
         &self.handle
     }
 
-    fn from_lift(handle: HostHandle, _: ResourceType) -> Self {
-        Self::from_handle(handle)
+    fn from_lift(handle: HostHandle, identity: ResourceType) -> Result<Self> {
+        if identity.is_host::<T>() {
+            Ok(Self::from_handle(handle))
+        } else {
+            Err(resource_type_mismatch(identity))
+        }
     }
 }
 

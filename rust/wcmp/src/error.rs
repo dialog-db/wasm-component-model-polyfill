@@ -166,13 +166,15 @@ pub enum Error {
     #[error("{}{}", .0.prefix(), .0)]
     Scheduler(#[source] SchedulerCause),
 
-    /// The store's table of records refused a new record. The carried
-    /// [`ResourceTableError`] names why. The name and the message are
-    /// those of Wasmtime's `ResourceTableError`, which its store's table
-    /// raises when a task, a thread, or another record is created, with
-    /// no turn involved.
+    /// A table of records refused an operation: the store's own table
+    /// refused a new task, thread, or other record, with no turn
+    /// involved, or a host's [`ResourceTable`](crate::ResourceTable)
+    /// refused a push, a read, or a delete that a host function passed
+    /// on with `?`. The carried [`ResourceTableError`] names why. The
+    /// name and the messages are those of Wasmtime's
+    /// `ResourceTableError`.
     #[error(transparent)]
-    ResourceTable(ResourceTableError),
+    ResourceTable(#[from] ResourceTableError),
 
     /// A guest broke one of the rules that govern waitables and
     /// waitable sets. The carried [`WaitableCause`] names which rule.
@@ -926,30 +928,28 @@ pub enum AbiCause {
     #[error("lift/lower for this valtype is not yet implemented")]
     Unimplemented,
 
-    /// A handle index does not address a live entry in the handle
-    /// table it was presented against, or the host supplied a handle
-    /// whose resource-type identity does not match the declared
-    /// `own<T>` / `borrow<T>`.
+    /// A handle does not address a live entry of the table it was
+    /// presented against, or the host's handle cannot move as asked:
+    /// a typed handle already lowered as an `own`, a borrow lowered as
+    /// an `own`, a host handle whose entry was freed and reused, or a
+    /// conversion between handles of two resource types.
     #[error("invalid resource handle: {reason}")]
     InvalidHandle {
-        /// A short description of why the handle was rejected
-        /// (out-of-range index, type-id mismatch, etc.).
+        /// A short description of why the handle was rejected, in
+        /// Wasmtime's words where Wasmtime has them, such as "host
+        /// resource already consumed".
         reason: String,
     },
 
-    /// The component transferred ownership of a resource handle to
-    /// the host, but no host registration carries the matching
-    /// resource type identity. Typically observed when a host
-    /// receives an `own<T>` it never registered a destructor for.
+    /// A handle the host lowers is of another resource type than the
+    /// one the component declares where it is lowered: a
+    /// [`ResourceAny`](crate::ResourceAny) of another identity, or a
+    /// typed handle whose identity the instance holds no table for.
     ///
-    /// Every failure with this cause names the resource type at
-    /// issue in the error's `valtype`, and names it as an `own<T>`
-    /// or a `borrow<T>`: lowering a handle names the handle slot the
-    /// component declared, and a host mint against an identity the
-    /// calling instance holds no table for names the type the store
-    /// knows that identity by. It names nothing only when there is
-    /// no name to give — an identity no registration and no
-    /// instantiation of the store ever introduced.
+    /// Every failure with this cause names the handle slot the
+    /// component declared in the error's `valtype`, as an `own<T>` or
+    /// a `borrow<T>` of the resource type the component declares
+    /// there, which renders with the name the component gives it.
     #[error("no host registration matches the transferred resource type")]
     UnregisteredResourceType,
 

@@ -260,7 +260,7 @@ async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call
     let first = instance.get_func("run").expect("run export");
     let second = instance.get_func("run").expect("run export");
     assert!(
-        core::ptr::eq(first.ty(), second.ty()),
+        core::ptr::eq(first.signature(), second.signature()),
         "two lookups of one export hand out handles over one signature"
     );
     for run in [&first, &second] {
@@ -269,7 +269,7 @@ async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call
             .expect("call run");
     }
 
-    let signature = first.ty() as *const FunctionType as usize;
+    let signature = first.signature() as *const FunctionType as usize;
     let options = first.options() as *const CanonOptions as usize;
     assert_eq!(
         *seen.lock().expect("record"),

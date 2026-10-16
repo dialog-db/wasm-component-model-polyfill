@@ -106,10 +106,10 @@ impl ResourceInternal for ResourceDynamic {
         &self.handle
     }
 
-    fn from_lift(handle: HostHandle, identity: ResourceType) -> Self {
-        let ty = identity
-            .as_host_dynamic()
-            .unwrap_or_else(|| unreachable!("the type check admits only a dynamic host type"));
-        Self { handle, ty }
+    fn from_lift(handle: HostHandle, identity: ResourceType) -> Result<Self> {
+        match identity.as_host_dynamic() {
+            Some(ty) => Ok(Self { handle, ty }),
+            None => Err(resource_type_mismatch(identity)),
+        }
     }
 }

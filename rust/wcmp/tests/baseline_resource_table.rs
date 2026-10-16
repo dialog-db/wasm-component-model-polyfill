@@ -64,10 +64,7 @@ async fn instance<V: 'static>() -> (Store<ResourceTable>, Instance) {
             "thing",
             ResourceType::host::<V>(),
             |mut store: StoreContext<'_, ResourceTable>, rep| -> wcmp::Result<()> {
-                store
-                    .data_mut()
-                    .delete(Resource::<V>::new_own(rep))
-                    .map_err(wcmp::Error::ResourceTable)?;
+                store.data_mut().delete(Resource::<V>::new_own(rep))?;
                 Ok(())
             },
         )

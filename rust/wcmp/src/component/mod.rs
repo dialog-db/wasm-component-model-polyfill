@@ -34,4 +34,4 @@ pub use external_name::ExternalName;
 pub use function_type::{FunctionParameter, FunctionType};
 pub use instance_type::{InstanceItem, InstanceType};
 pub use module_type::ModuleType;
-pub use project::TypeProjector;
+pub use project::{TypeProjector, declare};

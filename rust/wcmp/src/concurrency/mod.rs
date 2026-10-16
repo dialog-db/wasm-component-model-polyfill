@@ -208,6 +208,7 @@ mod guarded_future_reader;
 mod guarded_stream_reader;
 mod host_consumer;
 mod host_future;
+mod host_payload;
 mod host_reader;
 mod host_result_lowering;
 mod host_suspension_provider;

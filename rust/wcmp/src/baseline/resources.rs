@@ -752,8 +752,14 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     assert_eq!(store.data(), &vec![9]);
 
     // The handle `b` received is the one live entry of the type in the
-    // host's table: the host releases it once, its destructor runs,
-    // and a second release finds nothing.
+    // host's table: the handle `make` minted under `a` moved out of it
+    // into the guest. The host releases it once, its destructor runs,
+    // and the table holds no entry of the type.
+    assert_eq!(
+        live_host_entries(&mut store, type_id),
+        1,
+        "one table and one entry behind both interfaces"
+    );
     let kept = kept
         .lock()
         .expect("the kept handle")
@@ -762,8 +768,21 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     kept.resource_drop(&mut store.as_context_mut())
         .expect("the one live entry releases");
     assert_eq!(store.data(), &vec![9, 9], "the destructor ran once for it");
-    kept.resource_drop(&mut store.as_context_mut())
-        .expect_err("no second entry of the type is live");
+    assert_eq!(live_host_entries(&mut store, type_id), 0);
+}
+
+/// How many live entries the host's table for the resource type `ty`
+/// holds. The tests that read it mint a few handles at most, so their
+/// entries sit at the first indices of the table.
+fn live_host_entries<T: 'static>(store: &mut Store<T>, ty: ResourceType) -> usize {
+    let mut tables = store.internal().lock_tables().expect("handle tables");
+    let table = tables.host_table(ty);
+    let Some(table) = tables.for_table(table) else {
+        return 0;
+    };
+    (1..=64)
+        .filter(|&index| table.entry(index).is_some())
+        .count()
 }
 
 /// A component that imports two interfaces, each of which declares a
@@ -948,14 +967,20 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
         Ok(_) => panic!("two identities for one declared resource type must not link"),
         Err(err) => err,
     };
-    assert!(
-        matches!(&err, Error::TypeMismatch(mismatch)
-            if matches!(mismatch.position, crate::TypeMismatchPosition::HostFunctionRegistration { ref item, .. } if item == "thing")),
-        "expected a type mismatch naming the `thing` registration, got {err:?}"
-    );
     let Error::TypeMismatch(mismatch) = &err else {
-        unreachable!("checked above");
+        panic!("expected a type mismatch naming the `thing` registration, got {err:?}");
     };
+    let crate::TypeMismatchPosition::HostFunctionRegistration {
+        interface, item, ..
+    } = &mismatch.position
+    else {
+        panic!("expected a host registration's position, got {err:?}");
+    };
+    assert_eq!(
+        (interface, item.as_str()),
+        (&b, "thing"),
+        "the mismatch names the second registration, under `b`: {err}"
+    );
     assert_eq!(
         mismatch.expected,
         crate::TypeRendering::Value(ValueType::Own(type_id)),
@@ -1104,10 +1129,36 @@ async fn it_refuses_a_returned_handle_of_a_type_the_instance_does_not_hold() {
     // lowering's refusal names the slot it refused; Wasmtime names no
     // type here ("mismatched resource types").
     assert_eq!(abi.position, AbiPosition::Result, "{err}");
-    assert!(
-        matches!(abi.valtype, Some(ValueType::Own(declared)) if declared != stranger),
+    assert_eq!(
+        abi.valtype,
+        Some(declared_own_thing(&component)),
         "the refusal names the declared slot, got {err:?}"
     );
+    assert_ne!(abi.valtype, Some(ValueType::Own(stranger)));
+    assert!(
+        err.to_string().contains("\"thing\""),
+        "the refusal renders the resource by the name the component declares, got {err}"
+    );
+}
+
+/// The `own` of the resource `thing` an import of `component`
+/// declares, as the component's reflection names it.
+fn declared_own_thing(component: &Component) -> ValueType {
+    component
+        .imports
+        .iter()
+        .find_map(|import| match &import.ty {
+            crate::ExternType::Instance(instance) => {
+                instance.items.iter().find_map(|item| match &item.ty {
+                    crate::ExternType::Resource(ty) if item.name == "thing" => {
+                        Some(ValueType::Own(*ty))
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .expect("an import declares `thing`")
 }
 
 #[wcmp_macros::test]
@@ -2639,9 +2690,15 @@ async fn it_refuses_a_returned_host_handle_of_another_registration() {
                 "expected the unregistered-resource-type cause, got {err:?}"
             );
             assert_eq!(abi.position, AbiPosition::Result, "{err}");
-            assert!(
-                matches!(abi.valtype, Some(ValueType::Own(declared)) if declared != gadget),
+            assert_eq!(
+                abi.valtype,
+                Some(declared_own_thing(&component)),
                 "the refusal names the declared slot, got {err:?}"
+            );
+            assert_ne!(abi.valtype, Some(ValueType::Own(gadget)));
+            assert!(
+                err.to_string().contains("\"thing\""),
+                "the refusal renders the resource by the name the component declares, got {err}"
             );
         }
         other => panic!("expected the unregistered-resource-type cause, got {other:?}"),

@@ -111,8 +111,8 @@ use crate::identifier::InterfaceIdentifier;
 use crate::internal::{LinkerInternal, ResourceTypeInternal, TypeCheckErrorInternal};
 use crate::types::{ResourceType, ValueType, value_types_match};
 
-use super::host_func::HostSignature;
 use super::host_func_kind::HostFuncKind;
+use super::host_signature::HostSignature;
 use super::linker::Linker;
 use super::module_matching::module_satisfies;
 use super::registration::InstanceRegistration;

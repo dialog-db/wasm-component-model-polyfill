@@ -22,11 +22,13 @@ use crate::typed::{ComponentNamedList, Lift, Lower, lift_parameters, typecheck_f
 use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
+use super::host_args::HostArgs;
 use super::host_call::HostCall;
-use super::host_func::{
-    HostArgs, HostFunc, HostFuncFuture, HostParams, HostResults, HostSignature,
-};
+use super::host_func::{HostFunc, HostFuncFuture};
 use super::host_func_kind::HostFuncKind;
+use super::host_params::HostParams;
+use super::host_results::HostResults;
+use super::host_signature::HostSignature;
 use super::registration::InstanceRegistration;
 use super::resource_registration::ResourceRegistration;
 use crate::internal::LinkerInstanceInternal;
@@ -200,9 +202,12 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// the same identity in each, usually [`ResourceType::host`] of
     /// one Rust type: a handle that a guest has through one of them
     /// lowers through the other, and the resolver accepts a component
-    /// that declares the two equal. The store keeps one destructor
-    /// for an identity, the one the first instantiation into the
-    /// store that imports the type registered.
+    /// that declares the two equal, so give the registrations one
+    /// destructor. A guest's drop runs the destructor registered under
+    /// the interface the guest imported the type through. The host's
+    /// release of a [`ResourceAny`](crate::ResourceAny) runs the
+    /// destructor of the first instantiation into the store that
+    /// imported the type.
     ///
     /// ```rust
     /// use wcmp::{Engine, InterfaceIdentifier, Linker, ResourceType};

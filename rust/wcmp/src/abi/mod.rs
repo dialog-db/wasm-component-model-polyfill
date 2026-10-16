@@ -64,10 +64,10 @@ pub mod strings;
 pub mod transcode;
 
 pub use lift::{
-    LIST_ELEMENT_COST, canonical_f32, canonical_f64, gate_list, gate_list_layout, lift,
-    lift_end_for_host, lift_end_id_for_host, lift_error_context, lift_error_context_id,
-    lift_host_resource, lift_list, lift_map, lift_readable_end, lift_resource_any, lift_string,
-    read_discriminant, read_pointer_pair,
+    LIST_ELEMENT_COST, canonical_f32, canonical_f64, check_spilled_address, gate_list,
+    gate_list_layout, lift, lift_end_for_host, lift_end_id_for_host, lift_error_context,
+    lift_error_context_id, lift_host_resource, lift_list, lift_map, lift_readable_end,
+    lift_resource_any, lift_string, read_discriminant, read_pointer_pair,
 };
 pub use lower::{
     lower, lower_error_context, lower_host_end, lower_host_resource, lower_list, lower_list_bytes,

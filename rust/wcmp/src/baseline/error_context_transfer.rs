@@ -1468,3 +1468,153 @@ async fn it_fails_the_guests_read_when_a_host_stream_writes_another_stores_error
     );
     assert_eq!(handle_count(&mut store, context), Some(1));
 }
+
+/// A component whose exports each take an error context inside a
+/// container: an `option`, a `list` of fixed length, a `tuple`, a
+/// `result`, and a `map`. Each export's core function takes the
+/// handles and does nothing with them. `make` creates an error context
+/// with an empty debug message and hands it to the host.
+const CONTAINERS: &[u8] = component!(
+    r#"
+    (component
+      (core module $libc
+        (memory (export "memory") 1)
+        (global $bump (mut i32) (i32.const 1024))
+        (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+          (local $ptr i32)
+          (local.set $ptr
+            (i32.and
+              (i32.add (global.get $bump) (i32.sub (local.get 2) (i32.const 1)))
+              (i32.sub (i32.const 0) (local.get 2))))
+          (global.set $bump (i32.add (local.get $ptr) (local.get 3)))
+          (local.get $ptr)))
+      (core instance $libc (instantiate $libc))
+      (core func $new (canon error-context.new (memory (core memory $libc "memory"))))
+      (core module $m
+        (import "" "new" (func $new (param i32 i32) (result i32)))
+        (func (export "make") (result i32) (call $new (i32.const 0) (i32.const 0)))
+        (func (export "take") (param i32 i32)))
+      (core instance $i (instantiate $m (with "" (instance (export "new" (func $new))))))
+      (func (export "make") (result error-context) (canon lift (core func $i "make")))
+      (func (export "take-option") (param "c" (option error-context))
+        (canon lift (core func $i "take")))
+      (func (export "take-array") (param "c" (list error-context 2))
+        (canon lift (core func $i "take")))
+      (func (export "take-tuple") (param "c" (tuple error-context u32))
+        (canon lift (core func $i "take")))
+      (func (export "take-result") (param "c" (result error-context (error error-context)))
+        (canon lift (core func $i "take")))
+      (func (export "take-map") (param "c" (map string error-context))
+        (canon lift (core func $i "take")
+          (memory (core memory $libc "memory"))
+          (realloc (core func $libc "realloc")))))
+    "#
+);
+
+/// The typed handle of the export `name` of `instance`.
+fn typed_func<P, R>(instance: &Instance, name: &str) -> crate::TypedFunc<P, R>
+where
+    P: crate::ComponentNamedList + crate::Lower,
+    R: crate::ComponentNamedList + crate::Lift,
+{
+    func(instance, name)
+        .typed::<P, R>()
+        .unwrap_or_else(|error| panic!("`{name}` is typed: {error}"))
+}
+
+#[wcmp_macros::test]
+async fn it_refuses_another_stores_error_context_inside_every_container_before_the_call() {
+    let foreign = foreign_error_context().await;
+    let (mut store, instance) = instantiate_with(CONTAINERS, |_| {}).await;
+    let own = match func(&instance, "make").call(&mut store, &[]).await {
+        Ok(values) => values.first().cloned().expect("`make` returns a value"),
+        Err(error) => panic!("make: {}", chain(&error)),
+    };
+    let context = typed(&own).context();
+    assert_eq!(handle_count(&mut store, context), Some(1), "the guest's");
+    let foreign = || typed(&foreign);
+    let own = || typed(&own);
+
+    // Each container holds the other store's value, and the `list` and
+    // the `map` hold one of this store's beside it. Each export's core
+    // function would take the handles, so a refusal that is not the
+    // wrong-store cause is one the call reached the guest for.
+    let refusals = [
+        (
+            "option",
+            typed_func::<(Option<ErrorContext>,), ()>(&instance, "take-option")
+                .call(&mut store, (Some(foreign()),))
+                .await,
+        ),
+        (
+            "list of fixed length",
+            typed_func::<([ErrorContext; 2],), ()>(&instance, "take-array")
+                .call(&mut store, ([own(), foreign()],))
+                .await,
+        ),
+        (
+            "tuple",
+            typed_func::<((ErrorContext, u32),), ()>(&instance, "take-tuple")
+                .call(&mut store, ((foreign(), 7),))
+                .await,
+        ),
+        (
+            "result, ok",
+            typed_func::<(Result<ErrorContext, ErrorContext>,), ()>(&instance, "take-result")
+                .call(&mut store, (Ok(foreign()),))
+                .await,
+        ),
+        (
+            "result, error",
+            typed_func::<(Result<ErrorContext, ErrorContext>,), ()>(&instance, "take-result")
+                .call(&mut store, (Err(foreign()),))
+                .await,
+        ),
+        (
+            "map",
+            typed_func::<(std::collections::HashMap<String, ErrorContext>,), ()>(
+                &instance, "take-map",
+            )
+            .call(
+                &mut store,
+                (
+                    [("own".to_owned(), own()), ("foreign".to_owned(), foreign())]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .await,
+        ),
+    ];
+    for (container, refused) in refusals {
+        let error = refused.expect_err("a value of another store does not cross");
+        assert!(
+            wrong_store(&error),
+            "{container}: refused before the call, not trapped inside it: {}",
+            chain(&error)
+        );
+    }
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(1),
+        "no refused call lowered this store's value"
+    );
+
+    // The store is not poisoned, and its own value crosses in each
+    // container.
+    typed_func::<(Option<ErrorContext>,), ()>(&instance, "take-option")
+        .call(&mut store, (Some(own()),))
+        .await
+        .map_err(|error| chain(&error))
+        .expect("an option of this store's value crosses");
+    typed_func::<([ErrorContext; 2],), ()>(&instance, "take-array")
+        .call(&mut store, ([own(), own()],))
+        .await
+        .map_err(|error| chain(&error))
+        .expect("a list of this store's values crosses");
+    assert_eq!(
+        handle_count(&mut store, context),
+        Some(4),
+        "the guest gained a handle for each value that crossed"
+    );
+}

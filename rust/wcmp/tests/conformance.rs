@@ -737,7 +737,7 @@ impl Runner {
         let func = instance
             .get_func(name)
             .ok_or_else(|| format!("no function export named `{name}`"))?;
-        let signature = func.ty().clone();
+        let signature = func.ty();
         let mut values = Vec::with_capacity(args.len());
         for (index, arg) in args.into_iter().enumerate() {
             match arg {

@@ -79,20 +79,24 @@ pub fn expand(flags: &Flags) -> Result<TokenStream> {
         .map(|index| format_ident!("__inner{}", index))
         .collect();
 
-    // The bits of each word that hold a flag: padding bits take no part
-    // in equality, as Wasmtime masks them.
-    let masks = (0..word_count).map(|index| {
-        let used = (count - index * width).min(width);
-        let mask: u64 = if used == 64 {
-            u64::MAX
-        } else {
-            (1u64 << used) - 1
-        };
-        quote!((#mask as #word))
-    });
+    // The bits of each word that hold a flag. Padding bits take no part
+    // in equality, as Wasmtime masks them, and `!` leaves them clear, so
+    // no value carries one into a guest: the Canonical ABI's
+    // `pack_flags_into_int` packs the labelled bits alone.
+    let masks: Vec<_> = (0..word_count)
+        .map(|index| {
+            let used = (count - index * width).min(width);
+            let mask: u64 = if used == 64 {
+                u64::MAX
+            } else {
+                (1u64 << used) - 1
+            };
+            quote!((#mask as #word))
+        })
+        .collect();
     let eq = fields
         .iter()
-        .zip(masks.clone())
+        .zip(masks.iter())
         .map(|(field, mask)| quote!((self.#field & #mask) == (rhs.#field & #mask)));
     let constants = flags.flags.iter().enumerate().map(|(index, flag)| {
         let flag_name = &flag.name;
@@ -131,7 +135,10 @@ pub fn expand(flags: &Flags) -> Result<TokenStream> {
     let bitand_assign = assign_ops(quote!(bitand_assign));
     let bitxor_assign = assign_ops(quote!(bitxor_assign));
     let not = {
-        let entries = fields.iter().map(|field| quote!(#field: !self.#field));
+        let entries = fields
+            .iter()
+            .zip(masks.iter())
+            .map(|(field, mask)| quote!(#field: !self.#field & #mask));
         quote!(Self { #(#entries),* })
     };
     let word_size = width / 8;
@@ -297,9 +304,11 @@ pub fn expand(flags: &Flags) -> Result<TokenStream> {
                 slots: &[#c::__private::CoreVal],
                 cursor: &mut usize,
             ) -> #c::Result<Self> {
+                // A guest's padding bits are not flags, as the
+                // Canonical ABI's `unpack_flags_from_int` reads them.
                 ::core::result::Result::Ok(Self {
                     #(#fields: <#word as #c::Lift>::lift_flat(cx, ty, slots, cursor)?,)*
-                })
+                } & Self::all())
             }
 
             #[doc(hidden)]
@@ -315,7 +324,7 @@ pub fn expand(flags: &Flags) -> Result<TokenStream> {
                         offset += #word_size;
                         word
                     },)*
-                })
+                } & Self::all())
             }
         }
     })

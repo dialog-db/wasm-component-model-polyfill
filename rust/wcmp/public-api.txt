@@ -189,6 +189,8 @@ impl core::convert::From<wcmp::InstantiationError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::InstantiationError) -> Self
 impl core::convert::From<wcmp::LinkError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::LinkError) -> Self
+impl core::convert::From<wcmp::ResourceTableError> for wcmp::Error
+pub fn wcmp::Error::from(wcmp::ResourceTableError) -> Self
 impl core::convert::From<wcmp::TypeMismatch> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::TypeMismatch) -> Self
 impl core::error::Error for wcmp::Error
@@ -342,6 +344,8 @@ pub wcmp::ResourceTableError::Full
 pub wcmp::ResourceTableError::HasChildren
 pub wcmp::ResourceTableError::NotPresent
 pub wcmp::ResourceTableError::WrongType
+impl core::convert::From<wcmp::ResourceTableError> for wcmp::Error
+pub fn wcmp::Error::from(wcmp::ResourceTableError) -> Self
 impl core::error::Error for wcmp::ResourceTableError
 impl core::fmt::Debug for wcmp::ResourceTableError
 pub fn wcmp::ResourceTableError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -741,7 +745,7 @@ pub struct wcmp::Func
 impl wcmp::Func
 pub async fn wcmp::Func::call<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
 pub async fn wcmp::Func::call_concurrent<T: 'static>(&self, &wcmp::Accessor<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
-pub fn wcmp::Func::ty(&self) -> &wcmp::FunctionType
+pub fn wcmp::Func::ty(&self) -> wcmp::FunctionType
 impl wcmp::Func
 pub fn wcmp::Func::typed<P, R>(self) -> wcmp::Result<wcmp::TypedFunc<P, R>> where P: wcmp::ComponentNamedList + wcmp::Lower, R: wcmp::ComponentNamedList + wcmp::Lift
 pub struct wcmp::FunctionParameter

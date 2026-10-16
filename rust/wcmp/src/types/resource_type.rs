@@ -118,6 +118,27 @@ impl ResourceType {
     }
 }
 
+/// The names the components of the process declare their resource
+/// types by, keyed by the identity of each before instantiation, so an
+/// error at a position whose type a component declares names the
+/// resource as that component does. The first name a component gives a
+/// resource is the one kept.
+fn declared_names() -> &'static RwLock<HashMap<(u32, u32), String>> {
+    static NAMES: OnceLock<RwLock<HashMap<(u32, u32), String>>> = OnceLock::new();
+    NAMES.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Write `, "name"` for a resource type a component declared by name.
+fn write_declared_name(f: &mut core::fmt::Formatter<'_>, ty: ResourceType) -> core::fmt::Result {
+    let names = declared_names()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match names.get(&(ty.kind, ty.first)) {
+        Some(name) => write!(f, ", {name:?}"),
+        None => Ok(()),
+    }
+}
+
 /// The Rust types that stand for host resource types, by the number
 /// each was given, with their names: the number is what an identity
 /// holds, and the name is what its rendering shows.
@@ -197,18 +218,26 @@ impl core::fmt::Debug for ResourceType {
                 "ResourceType::guest({})",
                 u64::from(self.first) | (u64::from(self.second) << 32)
             ),
-            UNINSTANTIATED => write!(
-                f,
-                "ResourceType::component({}, resource {})",
-                self.component(),
-                self.first
-            ),
-            _ => write!(
-                f,
-                "ResourceType::component({}, abstract {})",
-                self.component(),
-                self.first
-            ),
+            UNINSTANTIATED => {
+                write!(
+                    f,
+                    "ResourceType::component({}, resource {}",
+                    self.component(),
+                    self.first
+                )?;
+                write_declared_name(f, *self)?;
+                f.write_str(")")
+            }
+            _ => {
+                write!(
+                    f,
+                    "ResourceType::component({}, abstract {}",
+                    self.component(),
+                    self.first
+                )?;
+                write_declared_name(f, *self)?;
+                f.write_str(")")
+            }
         }
     }
 }
@@ -228,6 +257,18 @@ impl Hash for ResourceType {
 }
 
 impl ResourceTypeInternal for ResourceType {
+    fn declare_name(&self, name: &str) {
+        if !matches!(self.kind(), UNINSTANTIATED | ABSTRACT) {
+            return;
+        }
+        let mut names = declared_names()
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        names
+            .entry((self.kind, self.first))
+            .or_insert_with(|| name.to_owned());
+    }
+
     fn fresh_guest() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let number = COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -154,7 +154,7 @@ macro_rules! host_resource {
                 let position = cx.position();
                 let index = take_i32(slots, cursor, ty, position)? as u32;
                 let (handle, identity) = lift_host_resource(cx.boundary(), index, ty, position)?;
-                Ok(Self::from_lift(handle, identity))
+                Self::from_lift(handle, identity)
             }
 
             fn lift_memory<D: 'static>(
@@ -165,7 +165,7 @@ macro_rules! host_resource {
                 let position = cx.position();
                 let index = index_memory(cx, ty, offset)?;
                 let (handle, identity) = lift_host_resource(cx.boundary(), index, ty, position)?;
-                Ok(Self::from_lift(handle, identity))
+                Self::from_lift(handle, identity)
             }
         }
     };

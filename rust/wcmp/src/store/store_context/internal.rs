@@ -525,9 +525,9 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
 /// The workspace-internal entries of a [`StoreContext`] that need
 /// no mutable access, over a shared borrow of one.
 ///
-/// A host call reaches the store through a shared borrow while it
-/// mints a handle, so the entries that reading needs live here as
-/// well as on [`StoreContextInternal`].
+/// A caller that holds only a shared borrow of the store reaches the
+/// entries that reading needs here as well as on
+/// [`StoreContextInternal`].
 pub struct StoreContextRefInternal<'b, 'a, T: 'static> {
     context: &'b StoreContext<'a, T>,
 }

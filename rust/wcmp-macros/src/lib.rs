@@ -6,7 +6,7 @@
 
 //! Procedural macros for the Wasm Component Model Polyfill workspace.
 //!
-//! Four macros live here:
+//! The macros here:
 //!
 //! - [`macro@test`] — cross-target attribute that expands to `#[tokio::test]`
 //!   on native, or to the built-in `#[test]` for a synchronous body, and to
@@ -17,6 +17,10 @@
 //!   byte slice at compile time.
 //! - [`component!`] — assemble inline WebAssembly Text Format into a
 //!   component-format byte slice at compile time.
+//! - [`ComponentType`](derive@ComponentType), [`Lift`](derive@Lift), and
+//!   [`Lower`](derive@Lower) — derive the polyfill's typed value traits for a
+//!   record, a variant, or an enum, as Wasmtime's derives do.
+//! - [`flags!`] — declare a flags type with Wasmtime's syntax and API.
 
 mod component;
 mod flags;
@@ -387,7 +391,22 @@ fn error(span: Span, message: String) -> TokenStream2 {
 /// `#[component(variant)]`, or `#[component(enum)]` on the type,
 /// `#[component(name = "…")]` on a field or a case, and
 /// `#[component(wcmp_crate = path)]` for a crate that re-exports the
-/// polyfill. `wcmp` documents the shape rules.
+/// polyfill.
+///
+/// The shape rules are Wasmtime's:
+///
+/// - A record is a struct with named fields.
+/// - A variant is an enum with at least one case, each with no payload
+///   or one unnamed payload.
+/// - An enum is an enum of cases without payloads or explicit
+///   discriminants, whose `#[repr]` is `u8`, `u16`, or `u32` as its
+///   count of cases needs, as the Canonical ABI sizes its discriminant.
+/// - A field or a case is named by its Rust name, unless
+///   `#[component(name = "…")]` renames it, and the type check compares
+///   those names with the component's.
+///
+/// A flags type is declared with [`flags!`] instead, and
+/// `#[component(flags)]` is refused.
 #[proc_macro_derive(ComponentType, attributes(component))]
 pub fn derive_component_type(input: TokenStream) -> TokenStream {
     derive(component::Trait::ComponentType, input)
@@ -416,8 +435,24 @@ fn derive(which: component::Trait, input: TokenStream) -> TokenStream {
 
 /// Declare a flags type with Wasmtime's syntax and API: one constant
 /// for each flag, `empty`, `all`, `contains`, `intersects`, `as_array`,
-/// the bitwise operators, and the three typed value traits. `wcmp`
-/// documents it.
+/// the bitwise operators, and the three typed value traits.
+///
+/// ```ignore
+/// wcmp::flags! {
+///     Permissions {
+///         #[component(name = "read")]
+///         const READ;
+///         #[component(name = "write")]
+///         const WRITE;
+///     }
+/// }
+/// ```
+///
+/// The flags are stored as the Canonical ABI lays them out: in a `u8`
+/// for up to 8 flags, a `u16` for up to 16, and a run of `u32` words
+/// beyond. The bits past the last flag are always clear: `!` and
+/// `all()` leave them so, and a lift from a guest drops them, as the
+/// Canonical ABI's `unpack_flags_from_int` reads only the labelled bits.
 #[proc_macro]
 pub fn flags(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as flags::Flags);

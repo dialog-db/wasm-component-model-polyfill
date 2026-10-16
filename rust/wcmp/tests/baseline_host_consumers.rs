@@ -1804,5 +1804,126 @@ async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes(
     );
 }
 
+/// A component that creates a `future` with no payload and hands its
+/// readable end to the host. `make-unit` returns it, and
+/// `hand-over-unit` passes it to the imported host function
+/// `consume-unit`. Each keeps the writable end, which `unit-write`
+/// writes asynchronously, answering the packed result.
+const WRITES_A_UNIT_FUTURE: &[u8] = component!(
+    r#"
+    (component
+      (type $u (future))
+      (import "consume-unit" (func $consume-unit (param "f" $u)))
+      (core func $new (canon future.new $u))
+      (core func $write (canon future.write $u async))
+      (core func $consume-unit (canon lower (func $consume-unit)))
+      (core module $m
+        (import "" "future.new" (func $new (result i64)))
+        (import "" "future.write" (func $write (param i32 i32) (result i32)))
+        (import "" "consume-unit" (func $consume-unit (param i32)))
+        (global $w (mut i32) (i32.const 0))
+        (func $keep (param $pair i64) (result i32)
+          (global.set $w (i32.wrap_i64 (i64.shr_u (local.get $pair) (i64.const 32))))
+          (i32.wrap_i64 (local.get $pair)))
+        (func (export "make-unit") (result i32) (call $keep (call $new)))
+        (func (export "hand-over-unit") (call $consume-unit (call $keep (call $new))))
+        (func (export "unit-write") (result i32) (call $write (global.get $w) (i32.const 0))))
+      (core instance $m (instantiate $m (with "" (instance
+        (export "future.new" (func $new))
+        (export "future.write" (func $write))
+        (export "consume-unit" (func $consume-unit))))))
+      (func (export "make-unit") (result $u) (canon lift (core func $m "make-unit")))
+      (func (export "hand-over-unit") (canon lift (core func $m "hand-over-unit")))
+      (func (export "unit-write") (result u32) (canon lift (core func $m "unit-write"))))
+    "#
+);
+
+/// A consumer of a future with no payload that takes its value and
+/// counts the values it took.
+struct TakesUnit(Arc<Mutex<usize>>);
+
+impl FutureConsumer<()> for TakesUnit {
+    type Item = ();
+
+    fn poll_consume(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        store: &mut StoreContext<'_, ()>,
+        mut source: Source<'_, ()>,
+        _finish: bool,
+    ) -> Poll<Result<(), Error>> {
+        let mut values = Vec::new();
+        source.read(store, &mut values, 1)?;
+        *self.0.lock().expect("the count") += values.len();
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Instantiate [`WRITES_A_UNIT_FUTURE`] into a store of its own. Its
+/// import `consume-unit` is a typed host function that takes a
+/// `FutureReader<()>` and pipes it to a consumer that counts into
+/// `taken`.
+async fn unit_instance(taken: Arc<Mutex<usize>>) -> (Store<()>, Instance) {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, WRITES_A_UNIT_FUTURE)
+        .await
+        .expect("the component parses");
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap(
+            "consume-unit",
+            move |mut call: HostCall<'_, ()>, (reader,): (FutureReader<()>,)| {
+                reader.pipe(call.store(), TakesUnit(taken.clone()))
+            },
+        )
+        .expect("register `consume-unit`");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    (store, instance)
+}
+
+#[wcmp_macros::test]
+async fn it_returns_a_future_with_no_payload_as_a_future_reader_of_unit() {
+    let taken = Arc::new(Mutex::new(0));
+    let (mut store, instance) = unit_instance(taken.clone()).await;
+    let reader = instance
+        .get_func("make-unit")
+        .expect("the component exports `make-unit`")
+        .typed::<(), (FutureReader<()>,)>()
+        .expect("a `future` with no payload is a `FutureReader<()>`")
+        .call(&mut store, ())
+        .await
+        .expect("the readable end crosses to the host")
+        .0;
+    reader
+        .pipe(&mut store.as_context_mut(), TakesUnit(taken.clone()))
+        .expect("the host pipes the reader");
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "unit-write", &[]).await,
+        packed(COMPLETED, 0),
+        "the consumer took the value when the write polled it"
+    );
+    assert_eq!(*taken.lock().expect("the count"), 1, "one value of `()`");
+}
+
+#[wcmp_macros::test]
+async fn it_hands_a_typed_host_function_a_future_with_no_payload_as_a_future_reader_of_unit() {
+    let taken = Arc::new(Mutex::new(0));
+    let (mut store, instance) = unit_instance(taken.clone()).await;
+    call_ok(&mut store, &instance, "hand-over-unit", &[]).await;
+
+    assert_eq!(
+        call_u32(&mut store, &instance, "unit-write", &[]).await,
+        packed(COMPLETED, 0),
+        "the consumer took the value when the write polled it"
+    );
+    assert_eq!(*taken.lock().expect("the count"), 1, "one value of `()`");
+}
+
 #[path = "support/backend.rs"]
 mod test_backend;

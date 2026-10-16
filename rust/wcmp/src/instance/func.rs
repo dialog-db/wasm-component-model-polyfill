@@ -15,7 +15,7 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::component::FunctionType;
+use crate::component::{FunctionParameter, FunctionType};
 use crate::concurrency::{
     Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId, WakeSlot,
 };
@@ -30,6 +30,7 @@ use crate::resource::TableId;
 use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::{Store, StoreContext, StoreId};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
+use crate::types::resolve_resources;
 use crate::value::Val;
 
 use super::call_values::{CallValues, ErasedReturnLift};
@@ -114,9 +115,35 @@ impl FuncInternal for Func {
 
 impl Func {
     /// The component-level signature of the export: its parameters
-    /// and its result, as the component declares them.
-    pub fn ty(&self) -> &FunctionType {
-        self.export.signature.ty()
+    /// and its result, as the component declares them, with each
+    /// resource type the identity this instance gave it, as Wasmtime's
+    /// `Func::ty` resolves them. A handle type of the signature then
+    /// compares equal to the type of a handle that crosses it, such as
+    /// [`ResourceType::host`] for a resource the host registered.
+    ///
+    /// [`ResourceType::host`]: crate::ResourceType::host
+    pub fn ty(&self) -> FunctionType {
+        let declared = self.export.signature.ty();
+        let state = self
+            .abi_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolve = |declared| state.resource_identity(declared);
+        FunctionType {
+            parameters: declared
+                .parameters
+                .iter()
+                .map(|parameter| FunctionParameter {
+                    name: parameter.name.clone(),
+                    ty: resolve_resources(&parameter.ty, &resolve),
+                })
+                .collect(),
+            result: declared
+                .result
+                .as_ref()
+                .map(|result| resolve_resources(result, &resolve)),
+            async_: declared.async_,
+        }
     }
 
     /// Invoke the function with the given polyfill-typed arguments.
@@ -226,7 +253,7 @@ impl Func {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        values.check_arity(self.ty())?;
+        values.check_arity(self.signature())?;
         values.check_store(&self.export.signature, self.store_id)?;
 
         // A driver entered while another driver of the same store is
@@ -312,9 +339,13 @@ impl Func {
         // lift can carry. The exclusive flag is the reference's
         // `not opts.async or opts.callback`, which is true here; the
         // gate reads it only for a task that does wait at it.
-        store
-            .internal()
-            .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
+        store.internal().start_export_thread(
+            task,
+            instance_id,
+            self.signature().async_,
+            true,
+            item,
+        )?;
 
         Driver::run(store, move |_store, _waker| match outcome.lock() {
             Ok(mut slot) => slot.take().map(Ok),
@@ -467,7 +498,7 @@ impl Func {
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
         }
-        values.check_arity(self.ty())?;
+        values.check_arity(self.signature())?;
         values.check_store(&self.export.signature, self.store_id)?;
         store.internal().enter_guest()?;
 
@@ -556,9 +587,13 @@ impl Func {
         // The exclusive flag is the reference's `not opts.async or
         // opts.callback`, which is true here; the gate reads it only
         // for a task that does wait at it.
-        store
-            .internal()
-            .start_export_thread(task, instance_id, self.ty().async_, true, item)?;
+        store.internal().start_export_thread(
+            task,
+            instance_id,
+            self.signature().async_,
+            true,
+            item,
+        )?;
         Ok(Delivery::Returned(returned))
     }
 
@@ -811,7 +846,7 @@ impl Func {
         // lifted synchronously is allowed to block, and the flag
         // stays as it was: the reference lets such a callee give way
         // while its own caller waits.
-        let held = if self.ty().async_ {
+        let held = if self.signature().async_ {
             Ok(())
         } else {
             store.internal().hold_may_not_suspend(task)
@@ -881,7 +916,7 @@ impl Func {
             // and no type at all when it does not.
             Err(count) => Err(Error::from(AbiError {
                 position: AbiPosition::Result,
-                valtype: self.ty().result.clone(),
+                valtype: self.signature().result.clone(),
                 cause: AbiCause::OutstandingBorrows {
                     count: count as usize,
                 },
@@ -924,7 +959,7 @@ impl Func {
             instance.clone(),
             Some(Scope::Task(task)),
         );
-        let lifted = C::lift(&mut lift_ctx, core_results, self.ty())?;
+        let lifted = C::lift(&mut lift_ctx, core_results, self.signature())?;
         // The post-return's arguments are the core results: the flat
         // result slots, or the return-area pointer when the result
         // spilled to memory.

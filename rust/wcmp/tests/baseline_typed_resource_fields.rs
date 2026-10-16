@@ -249,6 +249,15 @@ async fn it_poisons_the_store_when_a_lift_fails_after_moving_an_own_field() {
         .call(&mut store, (Resource::new_own(3),))
         .await
         .expect_err("the string field is not UTF-8");
+    // The lift of the string is what failed, after the `own` field
+    // moved, and the call gets the failure back as the lift raised it.
+    let Error::Abi(abi) = &refused else {
+        panic!("expected an ABI failure, got {refused:?}");
+    };
+    assert!(
+        matches!(&abi.cause, AbiCause::InvalidEncoding { message } if message == "invalid utf-8"),
+        "expected the invalid-encoding cause of a string that is not UTF-8, got {refused}"
+    );
     assert!(!store.data().took_bad, "the host function never ran");
     assert!(
         store.data().dropped.is_empty(),
