@@ -49,17 +49,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wcmp::__private::{
-    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
-    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
-};
 use wcmp::{
     Accessor, Component, ComponentType, Destination, Engine, Error, FunctionParameter,
     FunctionType, FutureAny, FutureConsumer, FutureReader, FutureType, Instance,
     InterfaceIdentifier, Lift, Linker, Lower, OptionType, PrimitiveType, RecordField, RecordType,
-    ResourceHandle, ResourceType, ResultType, Source, Store, StoreContext, StreamAny,
-    StreamConsumer, StreamProducer, StreamReader, StreamResult, StreamType, TupleType,
-    TypePathStep, Val, ValueType, VariantCase, VariantType,
+    Resource, ResourceAny, ResourceType, ResultType, Source, Store, StoreContext, StreamAny,
+    StreamConsumer, StreamProducer, StreamReader, StreamResult, StreamType, TupleType, Val,
+    ValueType, VariantCase, VariantType,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -81,6 +77,10 @@ const HANDLER_INTERFACE: &str = "wasi:http/handler@0.3.0";
 
 /// The representation the host gives the request it hands `handle`.
 const REQUEST_REP: u32 = 1;
+
+/// The representation the host gives the trailers its request
+/// carries.
+const TRAILERS_REP: u32 = 2;
 
 /// The first representation the host gives a resource the guest asks
 /// it to create.
@@ -191,11 +191,10 @@ fn parameter(name: &str, ty: ValueType) -> FunctionParameter {
 /// The payload of a trailers future:
 /// `result<option<trailers>, error-code>`.
 ///
-/// A resource handle is not a typed value, so only trailers that are
-/// `none` cross. A crossing of `some` trailers fails. The error code
-/// crosses whole, payload and all.
-#[derive(Debug, PartialEq)]
-struct Trailers(Result<Option<ResourceHandle>, ErrorCode>);
+/// The trailers are an `own<fields>`, the host's own resource, so they
+/// cross as a typed [`Resource<Fields>`]. The error code crosses
+/// whole, payload and all.
+type Trailers = Result<Option<Resource<Fields>>, ErrorCode>;
 
 /// The payload of the future that reports how a body was handled:
 /// `result<_, error-code>`.
@@ -325,136 +324,6 @@ fn outcome_type() -> ValueType {
     ValueType::Result(ResultType::new(None, Some(error_code())))
 }
 
-/// The failure of a crossing of a resource handle, which the test's
-/// typed payloads cannot carry.
-fn not_typed() -> Error {
-    Error::Unsupported {
-        feature: "a resource handle in a typed `wasi:http` future payload".to_owned(),
-    }
-}
-
-impl ComponentType for Trailers {
-    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[
-        Some(CanonicalAbiInfo::variant_static(&[
-            None,
-            Some(CanonicalAbiInfo::SCALAR4),
-        ])),
-        Some(ErrorCode::ABI),
-    ]);
-
-    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let ValueType::Result(result) = ty else {
-            return Err(TypeCheckError::mismatch::<Self>(ty));
-        };
-        let fields = ResourceType::host::<Fields>();
-        match result.ok() {
-            Some(ValueType::Option(option)) => match option.payload() {
-                ValueType::Own(declared) if types.resource(*declared) == fields => {}
-                other => {
-                    return Err(TypeCheckError::mismatch::<ResourceHandle>(other)
-                        .at(TypePathStep::OptionPayload)
-                        .at(TypePathStep::ResultOk));
-                }
-            },
-            Some(other) => {
-                return Err(TypeCheckError::mismatch::<Option<ResourceHandle>>(other)
-                    .at(TypePathStep::ResultOk));
-            }
-            None => return Err(TypeCheckError::mismatch::<Self>(ty)),
-        }
-        match result.err() {
-            Some(err) => {
-                ErrorCode::typecheck(err, types).map_err(|error| error.at(TypePathStep::ResultErr))
-            }
-            None => Err(TypeCheckError::mismatch::<Self>(ty)),
-        }
-    }
-}
-
-impl Lower for Trailers {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> wcmp::Result<()> {
-        match &self.0 {
-            Ok(None) => lower_case_flat(cx, ty, 0, out, |cx, option, out| {
-                lower_case_flat(cx, option, 0, out, |_, _, _| Ok(()))
-            }),
-            Ok(Some(_)) => Err(not_typed()),
-            Err(code) => lower_case_flat(cx, ty, 1, out, |cx, code_ty, out| {
-                <ErrorCode as Lower>::lower_flat(code, cx, code_ty, out)
-            }),
-        }
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<()> {
-        match &self.0 {
-            Ok(None) => {
-                let (payload, option) = lower_case_memory(cx, ty, 0, offset)?;
-                let option = option.ok_or_else(|| cx.mismatch(ty))?;
-                lower_case_memory(cx, option, 0, payload).map(|_| ())
-            }
-            Ok(Some(_)) => Err(not_typed()),
-            Err(code) => {
-                let (payload, code_ty) = lower_case_memory(cx, ty, 1, offset)?;
-                let code_ty = code_ty.ok_or_else(|| cx.mismatch(ty))?;
-                <ErrorCode as Lower>::lower_memory(code, cx, code_ty, payload)
-            }
-        }
-    }
-}
-
-impl Lift for Trailers {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> wcmp::Result<Self> {
-        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
-            match (case, payload) {
-                (0, Some((option, slots))) => {
-                    let mut cursor = 0;
-                    lift_case_flat(cx, option, slots, &mut cursor, |_, case, _| match case {
-                        0 => Ok(Self(Ok(None))),
-                        _ => Err(not_typed()),
-                    })
-                }
-                (1, Some((code, slots))) => {
-                    let mut cursor = 0;
-                    <ErrorCode as Lift>::lift_flat(cx, code, slots, &mut cursor)
-                        .map(|code| Self(Err(code)))
-                }
-                _ => Err(cx.mismatch(ty)),
-            }
-        })
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<Self> {
-        match lift_case_memory(cx, ty, offset)? {
-            (0, payload, Some(option)) => match lift_case_memory(cx, option, payload)? {
-                (0, _, None) => Ok(Self(Ok(None))),
-                _ => Err(not_typed()),
-            },
-            (1, payload, Some(code)) => {
-                <ErrorCode as Lift>::lift_memory(cx, code, payload).map(|code| Self(Err(code)))
-            }
-            _ => Err(cx.mismatch(ty)),
-        }
-    }
-}
-
 /// A request the host holds until the guest consumes its body.
 struct Request {
     body: StreamReader<u8>,
@@ -463,7 +332,7 @@ struct Request {
 
 /// A response the guest built through `response.new`.
 struct Response {
-    headers: ResourceHandle,
+    headers: ResourceAny,
     body: Option<Val>,
     trailers: Val,
 }
@@ -477,7 +346,10 @@ struct Host {
     /// The responses the guest made, by representation.
     responses: HashMap<u32, Response>,
     /// The handles the guest gave the host with a request it consumed.
-    consumed: Vec<ResourceHandle>,
+    consumed: Vec<ResourceAny>,
+    /// The representation of each `fields` the guest made through the
+    /// `fields` constructor, in order.
+    fields_made: Vec<u32>,
     /// The next representation for a resource the guest creates.
     next_rep: u32,
     /// Every destructor that ran: the resource and its representation.
@@ -569,9 +441,11 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                 result: Some(fields()),
                 async_: false,
             },
-            move |call, _args, results| {
+            move |mut call, _args, results| {
                 let rep = next_rep(&fields_host);
-                results[0] = Val::Own(call.resource_new(resources.fields, rep)?);
+                lock(&fields_host).fields_made.push(rep);
+                let fields = Resource::<Fields>::new_own(rep);
+                results[0] = Val::Resource(ResourceAny::try_from_resource(fields, call.store())?);
                 Ok(())
             },
         )
@@ -593,14 +467,19 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                 async_: false,
             },
             move |mut call, args, results| {
-                let [Val::Own(request), Val::Future(outcome)] = args else {
+                let [Val::Resource(request), Val::Future(outcome)] = args else {
                     panic!("`request.consume-body` was given {args:?}");
                 };
+                assert!(request.owned(), "`this` is an `own<request>`");
+                // The host made one request. A handle the guest hands
+                // the host shows no rep, so the request's destructor,
+                // which the test runs at the end, is what checks that
+                // the guest consumed that one.
                 let Request { body, trailers } = {
                     let mut host = lock(&consume_host);
                     host.consumed.push(*request);
                     host.requests
-                        .remove(&request.rep())
+                        .remove(&REQUEST_REP)
                         .expect("the guest consumes a request the host made")
                 };
                 let keeps = {
@@ -642,7 +521,7 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                 async_: false,
             },
             move |mut call, args, results| {
-                let [Val::Own(headers), Val::Option(body), trailers] = args else {
+                let [Val::Resource(headers), Val::Option(body), trailers] = args else {
                     panic!("`response.new` was given {args:?}");
                 };
                 let rep = next_rep(&response_host);
@@ -656,8 +535,9 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                 );
                 let sent =
                     FutureReader::new(call.store(), async { Ok::<_, Error>(Outcome::Ok(())) })?;
+                let response = Resource::<Response>::new_own(rep);
                 results[0] = Val::Tuple(Box::new([
-                    Val::Own(call.resource_new(resources.response, rep)?),
+                    Val::Resource(ResourceAny::try_from_resource(response, call.store())?),
                     Val::Future(FutureAny::try_from_future_reader(call.store(), sent)?),
                 ]));
                 Ok(())
@@ -943,7 +823,7 @@ fn body(pended: Arc<AtomicUsize>, end: BodyEnd) -> impl StreamProducer<(), Item 
 }
 
 /// Call `handle` with `request` and answer the value it returned.
-async fn handle(store: &mut Store<()>, instance: &Instance, request: ResourceHandle) -> Val {
+async fn handle(store: &mut Store<()>, instance: &Instance, request: ResourceAny) -> Val {
     let handle = instance
         .exports()
         .instance(HANDLER_INTERFACE)
@@ -952,7 +832,9 @@ async fn handle(store: &mut Store<()>, instance: &Instance, request: ResourceHan
         .expect("`wasi:http/handler` exports `handle`");
     let returned = store
         .run_concurrent(async |accessor: &Accessor<()>| {
-            handle.call_concurrent(accessor, &[Val::Own(request)]).await
+            handle
+                .call_concurrent(accessor, &[Val::Resource(request)])
+                .await
         })
         .await
         .expect("the turns run")
@@ -984,7 +866,7 @@ async fn run_until(store: &mut Store<()>, signal: &Signal, mut done: impl FnMut(
 
 #[wcmp_macros::test]
 async fn it_answers_a_request_with_its_body_and_trailers() {
-    let (mut store, instance, host, resources) = instantiate(HANDLER).await;
+    let (mut store, instance, host, _) = instantiate(HANDLER).await;
     let pended = Arc::new(AtomicUsize::new(0));
     let end = BodyEnd::default();
     let body = StreamReader::new(
@@ -992,40 +874,65 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         body(pended.clone(), end.clone()),
     )
     .expect("a body stream");
-    // The request carries no trailers: a resource handle is not a
-    // typed value, so a typed future cannot carry one.
     let trailers = FutureReader::new(&mut store.as_context_mut(), async move {
         end.ended().await;
-        Ok::<_, Error>(Trailers(Ok(None)))
+        Ok::<_, Error>(Trailers::Ok(Some(Resource::new_own(TRAILERS_REP))))
     })
     .expect("a trailers future");
     lock(&host)
         .requests
         .insert(REQUEST_REP, Request { body, trailers });
-    let request = store
-        .resource_new(resources.request, REQUEST_REP)
-        .expect("the request");
+    let request = ResourceAny::try_from_resource(
+        Resource::<Request>::new_own(REQUEST_REP),
+        &mut store.as_context_mut(),
+    )
+    .expect("the request");
 
     let returned = handle(&mut store, &instance, request).await;
 
     let Val::Result(Ok(Some(response))) = &returned else {
         panic!("`handle` answered {returned:?}");
     };
-    let Val::Own(response) = **response else {
+    let Val::Resource(response) = **response else {
         panic!("`handle` answered {returned:?}");
     };
+    assert!(
+        response.owned() && response.ty() == ResourceType::host::<Response>(),
+        "`handle` answered with an `own<response>`, not {response:?}"
+    );
     assert!(
         lock(&host).requests.is_empty(),
         "the handler consumed the request's body"
     );
+    // A handle the guest hands the host shows no rep, so the response
+    // is the one the host made through `response.new`, and its
+    // destructor, which the test runs at the end, checks that the
+    // handle `handle` answered with names it.
+    let (response_rep, headers_rep, response_record) = {
+        let mut host = lock(&host);
+        let [headers_rep] = host.fields_made[..] else {
+            panic!(
+                "the handler made {} `fields`, not one for its headers",
+                host.fields_made.len()
+            );
+        };
+        assert_eq!(
+            host.responses.len(),
+            1,
+            "the handler made one response through `response.new`"
+        );
+        let (rep, record) = host
+            .responses
+            .drain()
+            .next()
+            .expect("the handler answered with a response it made through `response.new`");
+        (rep, headers_rep, record)
+    };
     let Response {
         headers,
         body,
         trailers,
-    } = lock(&host)
-        .responses
-        .remove(&response.rep())
-        .expect("the handler answered with a response it made through `response.new`");
+    } = response_record;
 
     let collected = Arc::new(Mutex::new(Collected::default()));
     let received = Arc::new(Mutex::new(Vec::<Arrival>::new()));
@@ -1090,10 +997,12 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         else {
             panic!("the response's trailers arrived {} times", received.len());
         };
-        assert_eq!(
-            *trailers,
-            Trailers(Ok(None)),
-            "the response's trailers were the request's"
+        let Ok(Some(received_trailers)) = trailers else {
+            panic!("the response's trailers are {trailers:?}, not the request's");
+        };
+        assert!(
+            received_trailers.owned() && received_trailers.rep() == TRAILERS_REP,
+            "the response's trailers were the request's, not {received_trailers:?}"
         );
         assert_eq!(
             String::from_utf8(body_before.clone()).expect("UTF-8"),
@@ -1110,16 +1019,19 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
 
     let consumed = lock(&host).consumed.clone();
     assert_eq!(consumed.len(), 1, "the handler consumed one request");
+    // The trailers came back as the `Resource<Fields>` the host sent,
+    // which the host owns: a host resource the host holds has no
+    // destructor to run, so only what the guest gave it is released.
     for handle in [response, headers, consumed[0]] {
-        store
-            .resource_drop(handle)
+        handle
+            .resource_drop(&mut store.as_context_mut())
             .expect("the host releases what the guest gave it");
     }
     assert_eq!(
         lock(&host).dropped,
         [
-            ("response", response.rep()),
-            ("fields", headers.rep()),
+            ("response", response_rep),
+            ("fields", headers_rep),
             ("request", REQUEST_REP),
         ],
         "each resource's destructor ran once, with the host's \

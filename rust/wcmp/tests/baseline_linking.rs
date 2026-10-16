@@ -15,8 +15,8 @@
 use std::sync::{Arc, Mutex};
 use wcmp::{
     Accessor, Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
-    HostCall, InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType, ResourceType, Store,
-    StoreContext, Val, ValueType,
+    HostCall, InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType, Resource, ResourceAny,
+    ResourceType, Store, StoreContext, Val, ValueType,
 };
 use wcmp_macros::{component, wasm};
 
@@ -505,11 +505,11 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
     // Mint a handle for a host-side resource (rep `42` is opaque to
     // the polyfill — it is whatever value the host wants the
     // destructor to receive) and pass ownership to the guest.
-    let handle = store
-        .resource_new(type_id, 42)
-        .expect("resource_new succeeds");
+    let handle =
+        ResourceAny::try_from_resource(Resource::<Thing>::new_own(42), &mut store.as_context_mut())
+            .expect("the handle takes an entry");
     let results = consume
-        .call(&mut store, &[Val::Own(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("call succeeds");
     assert!(results.is_empty(), "consume returns no values");
@@ -1774,19 +1774,8 @@ async fn it_links_a_resource_nested_two_levels() {
         Ok(())
     })
     .expect("the registration");
-    b.func_new(
-        "make",
-        FunctionType {
-            parameters: vec![],
-            result: Some(ValueType::Own(ResourceType::host::<R>())),
-            async_: false,
-        },
-        move |call, _, results| {
-            results[0] = Val::Own(call.resource_new(r, 42)?);
-            Ok(())
-        },
-    )
-    .expect("the registration");
+    b.func_wrap("make", |_, (): ()| Ok((Resource::<R>::new_own(42),)))
+        .expect("the registration");
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store construction succeeds");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1844,18 +1833,7 @@ fn register_types(linker: &mut Linker<u32>) {
         })
         .expect("the registration");
     types
-        .func_new(
-            "make",
-            FunctionType {
-                parameters: vec![],
-                result: Some(ValueType::Own(ResourceType::host::<Request>())),
-                async_: false,
-            },
-            move |call, _, results| {
-                results[0] = Val::Own(call.resource_new(request, 7)?);
-                Ok(())
-            },
-        )
+        .func_wrap("make", |_, (): ()| Ok((Resource::<Request>::new_own(7),)))
         .expect("the registration");
 }
 
@@ -2609,11 +2587,11 @@ async fn it_links_a_resource_import_under_an_interface_name_through_the_root_nam
         .await
         .expect("the root registration under the interface name satisfies the import");
     let consume = instance.get_func("consume").expect("`consume` is exported");
-    let handle = store
-        .resource_new(type_id, 7)
-        .expect("resource_new succeeds");
+    let handle =
+        ResourceAny::try_from_resource(Resource::<Thing>::new_own(7), &mut store.as_context_mut())
+            .expect("the handle takes an entry");
     let results = consume
-        .call(&mut store, &[Val::Own(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("call succeeds");
     assert!(results.is_empty(), "consume returns no values");

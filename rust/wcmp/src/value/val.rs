@@ -7,7 +7,7 @@
 //! The polyfill's component-level value enum.
 
 use crate::concurrency::{ErrorContextAny, FutureAny, StreamAny};
-use crate::resource::ResourceHandle;
+use crate::resource::ResourceAny;
 
 /// A single component-level value passed to or returned from an
 /// exported component function.
@@ -23,21 +23,20 @@ use crate::resource::ResourceHandle;
 /// so on — so a `Val` can be passed across an export call without
 /// borrowing into the runtime substrate's memory.
 ///
-/// The handle variants `Val::Own` and `Val::Borrow` carry a
-/// [`crate::ResourceHandle`] whose index names an entry in one table:
-/// the store's host table for a handle the host holds, or the guest's
-/// own table for a `Val::Borrow` lifted out of a guest, which keeps
-/// the guest's index.
+/// The handle variant `Val::Resource` carries a
+/// [`ResourceAny`], whose index names an entry of the store's host
+/// table for its resource type, and which is an `own` or a `borrow`.
 ///
 /// Lowering an `own` into a call moves the host's entry into the
 /// guest's table. Lowering a `borrow` lends the host's owning entry
-/// to the call, so only a borrow of a handle the host owns can be
-/// lowered. The instance that defines the resource then receives
+/// to the call. The instance that defines the resource then receives
 /// only the rep and gains no entry; any other instance receives a
 /// borrow entry of its own. Lifting an `own` out of a guest moves the
 /// guest's entry into the host table. Lifting a `borrow` out of a
 /// guest lends the guest's entry to the call when that entry owns the
-/// resource, and lends nothing when the entry is itself a borrow.
+/// resource, and lends nothing when the entry is itself a borrow; the
+/// host's handle names a borrow entry of the host table, which goes
+/// when the call ends.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Val {
@@ -113,10 +112,9 @@ pub enum Val {
     /// ABI lower walks the set against the declared `FlagsType` order
     /// and rejects unknown names.
     Flags(Box<[String]>),
-    /// An owning handle to a resource (`own<T>`).
-    Own(ResourceHandle),
-    /// A borrow handle to a resource (`borrow<T>`).
-    Borrow(ResourceHandle),
+    /// A handle to a resource (`own<T>` or `borrow<T>`), which
+    /// [`ResourceAny::owned`] tells apart.
+    Resource(ResourceAny),
     /// The readable end of a stream (`stream<T>`) the host holds.
     ///
     /// Lowering one into a guest enters the end in the guest's handle

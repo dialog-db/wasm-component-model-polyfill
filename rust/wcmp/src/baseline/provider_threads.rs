@@ -2088,6 +2088,11 @@ const REACHES_THE_STORE_AFTER_A_BLOCK: &[u8] = component!(
     "#
 );
 
+/// The marker for the identity of the `thing` resource type the sweep
+/// registers.
+#[cfg(target_arch = "wasm32")]
+struct Thing;
+
 /// What the host function `reach-store` tries its store with, past the
 /// context it was handed.
 #[cfg(target_arch = "wasm32")]
@@ -2097,8 +2102,7 @@ struct Sweep {
     module: crate::Module,
     func: Func,
     typed: crate::TypedFunc<(), (u32,)>,
-    resource: crate::ResourceType,
-    handle: crate::ResourceHandle,
+    handle: crate::ResourceAny,
     /// A stream the host made while the store was its own, which the
     /// sweep tries to close.
     reader: crate::StreamReader<u32>,
@@ -2135,10 +2139,15 @@ fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &mut Sweep) -> Swept 
     }
     let mut swept: Swept = vec![
         (
-            "Store::resource_new",
-            store.resource_new(sweep.resource, 2).map(drop),
+            "Resource::try_into_resource_any",
+            crate::Resource::<Thing>::new_own(2)
+                .try_into_resource_any(&mut store.as_context_mut())
+                .map(drop),
         ),
-        ("Store::resource_drop", store.resource_drop(sweep.handle)),
+        (
+            "ResourceAny::resource_drop",
+            sweep.handle.resource_drop(&mut store.as_context_mut()),
+        ),
         ("Func::call", first_poll(sweep.func.call(store, &[]))),
         ("TypedFunc::call", first_poll(sweep.typed.call(store, ()))),
         (
@@ -2156,8 +2165,10 @@ fn sweep_the_store(store: &mut Store<NotesItsDrop>, sweep: &mut Sweep) -> Swept 
     ];
     let mut context = store.as_context_mut();
     swept.push((
-        "StoreContext::resource_new",
-        context.resource_new(sweep.resource, 3).map(drop),
+        "ResourceDynamic::try_into_resource_any",
+        crate::ResourceDynamic::new_own(3, 0)
+            .try_into_resource_any(&mut context)
+            .map(drop),
     ));
     swept.push((
         "StreamReader::new",
@@ -2209,8 +2220,6 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
             },
         )
         .expect("the registration of `reach-store`");
-    // The marker for the identity of the `thing` resource type.
-    struct Thing;
     let resource = crate::ResourceType::host::<Thing>();
     linker
         .root()
@@ -2227,7 +2236,11 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    let handle = store.resource_new(resource, 1).expect("a host handle");
+    let handle = crate::ResourceAny::try_from_resource(
+        crate::Resource::<Thing>::new_own(1),
+        &mut store.as_context_mut(),
+    )
+    .expect("a host handle");
     let reader = crate::StreamReader::<u32>::new(&mut store.as_context_mut(), Vec::new())
         .expect("a host stream");
     {
@@ -2247,7 +2260,6 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
         typed: func(&instance, "reach-store-after-hold")
             .typed()
             .expect("the export takes nothing and returns a `u32`"),
-        resource,
         handle,
         reader,
     };
@@ -2269,8 +2281,8 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
         vec![1],
         "the thread ran on past `reach-store`"
     );
-    store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("the refused drop left the handle live");
     // The refused close left the reader its end, so this close is the
     // one that lets the stream's record go.

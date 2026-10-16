@@ -343,14 +343,14 @@ async fn resource_handle(run: &mut Run) -> Result<()> {
     while run.iterate() {
         let results = make.call(&mut store, &arguments).await?;
         let handle = match results.first() {
-            Some(Val::Own(handle)) => *handle,
+            Some(Val::Resource(handle)) if handle.owned() => *handle,
             _ => {
                 return Err(Error::Setup(
                     "`make` did not return an owned handle".to_owned(),
                 ));
             }
         };
-        dispose.call(&mut store, &[Val::Own(handle)]).await?;
+        dispose.call(&mut store, &[Val::Resource(handle)]).await?;
     }
     Ok(())
 }

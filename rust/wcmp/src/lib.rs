@@ -49,8 +49,10 @@
 //!   through [`Func::typed`], whose Rust parameter tuple and return
 //!   type are checked against the export's component-level
 //!   signature at acquisition.
-//! - [`Val`], [`ValField`], and [`ResourceHandle`] — the polyfill's
-//!   component-level value enum and its compound-variant payloads.
+//! - [`Val`] and [`ValField`] — the polyfill's component-level value
+//!   enum and its compound-variant payloads — and [`Resource`],
+//!   [`ResourceDynamic`], and [`ResourceAny`], the handles to a
+//!   resource.
 //! - [`Error`] and [`Result`] — the polyfill's single error enum and
 //!   the `Result` alias every public function returns.
 //!
@@ -301,7 +303,7 @@ pub use crate::linker::{HostCall, Linker, LinkerInstance};
 pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
-pub use crate::resource::ResourceHandle;
+pub use crate::resource::{Resource, ResourceAny, ResourceDynamic};
 pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;
 pub use crate::typed::{ComponentNamedList, ComponentType, Lift, Lower};

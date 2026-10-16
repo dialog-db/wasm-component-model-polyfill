@@ -12,6 +12,7 @@ mod handles;
 mod lists;
 mod maps;
 mod options;
+mod resources;
 mod results;
 mod scalars;
 mod strings;

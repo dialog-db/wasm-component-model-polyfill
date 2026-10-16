@@ -18,8 +18,9 @@
 //! - [`TaskEnd`] is what one attempt to end a task achieved, which
 //!   is what [`HandleTables`] answers the callers of its task exits
 //!   with.
-//! - [`ResourceHandle`] is the polyfill's opaque addressing surface
-//!   for handles that pass through [`Val::Own`] and [`Val::Borrow`].
+//! - [`Resource<T>`] and [`ResourceDynamic`] are the host's typed
+//!   handles to a host resource, and [`ResourceAny`] is the handle to
+//!   a resource of any type, which [`Val::Resource`] carries.
 //!
 //! Host-resource registration itself lives on
 //! [`LinkerInstance`]; the carrier type a [`Linker`] stores per
@@ -27,24 +28,29 @@
 //!
 //! [`Linker`]: crate::Linker
 //! [`LinkerInstance`]: crate::LinkerInstance
-//! [`Val::Own`]: crate::Val::Own
-//! [`Val::Borrow`]: crate::Val::Borrow
+//! [`Val::Resource`]: crate::Val::Resource
 //! [`ResourceType`]: crate::ResourceType
 
-mod handle;
 mod handle_kind;
 mod handle_lookup_error;
-mod handle_parts;
+mod host_dynamic;
+mod host_handle;
+mod host_handle_state;
+mod host_static;
+mod resource_any;
 mod table;
 mod table_id;
 mod table_runtime;
 mod tables;
 mod task_end;
 
-pub use handle::ResourceHandle;
 pub use handle_kind::HandleKind;
 pub use handle_lookup_error::HandleLookupError;
-pub use handle_parts::ResourceHandleParts;
+pub use host_dynamic::ResourceDynamic;
+pub use host_handle::HostHandle;
+pub use host_handle_state::HostHandleState;
+pub use host_static::Resource;
+pub use resource_any::{CONSUMED, ResourceAny, host_reason};
 pub use table_id::TableId;
 pub use table_runtime::ResourceTableRuntime;
 pub use tables::HandleTables;

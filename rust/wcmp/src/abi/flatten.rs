@@ -190,10 +190,8 @@ pub fn lower_into_flat_slots<T: 'static>(
             }
             Ok(())
         }
-        (ValueType::Own(_), Val::Own(handle))
-        | (ValueType::Borrow(_), Val::Borrow(handle))
-        | (ValueType::Borrow(_), Val::Own(handle)) => {
-            let index = lower::lower_handle(ctx, handle, ty, position)?;
+        (ValueType::Own(_) | ValueType::Borrow(_), Val::Resource(handle)) => {
+            let index = lower::lower_resource_any(ctx, handle, ty, position)?;
             out.push(RuntimeVal::I32(index as i32));
             Ok(())
         }
@@ -410,7 +408,7 @@ pub fn lift_from_flat_slots<T: 'static>(
         }
         ValueType::Own(_) | ValueType::Borrow(_) => {
             let index = take_i32(args, cursor, ty, position)? as u32;
-            crate::abi::lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
+            crate::abi::lift_resource_any(ctx, index, ty, position).map(Val::Resource)
         }
         ValueType::Stream(_) | ValueType::Future(_) => {
             let index = take_i32(args, cursor, ty, position)? as u32;

@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    Accessor, Component, Engine, Error, HostCall, Instance, Linker, ResourceHandle, Result,
+    Accessor, Component, Engine, Error, HostCall, Instance, Linker, ResourceAny, Result,
     SchedulerCause, Store, Val,
 };
 use wcmp_macros::component;
@@ -442,11 +442,14 @@ async fn it_runs_a_host_release_destructor_on_a_task_of_its_own() {
 
     let make = instance.get_func("make").expect("make export");
     let made = make.call(&mut store, &[]).await.expect("make returned");
-    let Some(Val::Own(handle)) = made.first().cloned() else {
-        panic!("make returns an owned handle, got {made:?}");
+    let handle = match made.first() {
+        Some(Val::Resource(handle)) if handle.owned() => *handle,
+        _ => panic!("make returns an owned handle, got {made:?}"),
     };
 
-    store.resource_drop(handle).expect("the host releases it");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("the host releases it");
 
     let mut after = seen!(store.internal().tables());
     after.context = [0; 2];
@@ -545,7 +548,7 @@ fn chain(error: &Error) -> String {
 struct Released {
     store: Store<()>,
     instance: Instance,
-    handle: ResourceHandle,
+    handle: ResourceAny,
     /// Whether a turn of the store was running while the destructor
     /// ran.
     in_turn: Arc<Mutex<Option<bool>>>,
@@ -604,8 +607,9 @@ where
 
     let make = instance.get_func("make").expect("make export");
     let made = make.call(&mut store, &[]).await.expect("make returned");
-    let Some(Val::Own(handle)) = made.first().cloned() else {
-        panic!("make returns an owned handle, got {made:?}");
+    let handle = match made.first() {
+        Some(Val::Resource(handle)) if handle.owned() => *handle,
+        _ => panic!("make returns an owned handle, got {made:?}"),
     };
     Released {
         store,
@@ -717,8 +721,9 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
     .await;
     let store = &mut released.store;
 
-    store
-        .resource_drop(released.handle)
+    released
+        .handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("the destructor's import resolved on its first poll");
 
     assert_eq!(
@@ -765,8 +770,8 @@ async fn it_fails_a_host_release_whose_destructor_blocks_on_a_pending_host_task(
         host_release_caller(HOST_RELEASE_CALLS_A_HOST_ASYNC_IMPORT, never_answers).await;
 
     let err = released
-        .store
-        .resource_drop(released.handle)
+        .handle
+        .resource_drop(&mut released.store.as_context_mut())
         .expect_err("a destructor may not block");
 
     assert_blocked_release(&mut released, &err);
@@ -872,8 +877,8 @@ async fn it_refuses_a_driver_entered_from_inside_a_destructor() {
     .await;
 
     released
-        .store
-        .resource_drop(released.handle)
+        .handle
+        .resource_drop(&mut released.store.as_context_mut())
         .expect("the destructor returned");
 
     assert_eq!(
@@ -957,8 +962,9 @@ async fn it_leaves_the_host_task_of_an_asynchronously_lowered_import_to_a_later_
     .await;
     let store = &mut released.store;
 
-    store
-        .resource_drop(released.handle)
+    released
+        .handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("an asynchronous lower does not block the destructor");
 
     assert_eq!(
@@ -1070,7 +1076,7 @@ async fn it_calls_a_host_import_again_from_inside_its_own_call() {
     let component = Component::new(&engine, RELEASE_CALLS_ITSELF_THROUGH_A_DESTRUCTOR)
         .await
         .expect("component parses");
-    let held: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let held: Arc<Mutex<Option<ResourceAny>>> = Arc::new(Mutex::new(None));
     // Each entry is the argument of a call and how many calls of
     // `release` were on the stack when it started.
     let calls: Arc<Mutex<Vec<(u32, u32)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1118,8 +1124,9 @@ async fn it_calls_a_host_import_again_from_inside_its_own_call() {
         .call(&mut store, &[])
         .await
         .expect("make returned");
-    let Some(Val::Own(handle)) = made.first().cloned() else {
-        panic!("make returns an owned handle, got {made:?}");
+    let handle = match made.first() {
+        Some(Val::Resource(handle)) if handle.owned() => *handle,
+        _ => panic!("make returns an owned handle, got {made:?}"),
     };
     *held.lock().expect("held") = Some(handle);
 

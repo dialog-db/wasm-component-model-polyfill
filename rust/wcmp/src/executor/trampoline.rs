@@ -729,10 +729,7 @@ fn invoke_trampoline<T: 'static>(
                 // trampoline reaches the scheduler, the suspend seam,
                 // and the host tasks from inside the guest call, with
                 // nothing captured.
-                let call = HostCall::new(
-                    StoreContext::new(store_ctx.as_context_mut()),
-                    instance.shared_resource_tables(),
-                );
+                let call = HostCall::new(StoreContext::new(store_ctx.as_context_mut()));
                 let host_results =
                     tracing::trace_span!("host function").in_scope(|| body(call, lifted))?;
                 // A body that reached the store and trapped there, in

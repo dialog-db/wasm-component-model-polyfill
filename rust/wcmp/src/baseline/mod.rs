@@ -53,3 +53,19 @@ mod thread_yield;
 mod typed_values;
 mod waitable_builtins;
 mod waitables;
+
+/// Mint an owned handle of `rep` in the host's table of `store` for
+/// `type_id`, whose release runs the resource's destructor, as a
+/// handle a guest hands the host does. The host has no public way to
+/// make such a handle of a type a component defines, so the baseline
+/// tests that probe the host's table make one through the crate's
+/// internals.
+fn mint<T: 'static>(
+    store: &mut crate::Store<T>,
+    type_id: crate::ResourceType,
+    rep: u32,
+) -> crate::Result<crate::ResourceAny> {
+    use crate::store::StoreContextInternalExt;
+
+    store.as_context_mut().internal().mint_own(type_id, rep)
+}

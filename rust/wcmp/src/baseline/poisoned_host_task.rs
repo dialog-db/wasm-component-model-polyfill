@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::store::StoreContextInternalExt;
 use crate::{
-    Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, ResourceHandle, Store,
+    Accessor, Component, Engine, Error, Func, HostCall, Instance, Linker, ResourceAny, Store,
     StoreContext, TaskCause, Val,
 };
 use wcmp_macros::component;
@@ -181,7 +181,7 @@ struct Plan {
     /// The poll, counted from 1, on which `boom` releases the handle.
     at: Arc<AtomicU32>,
     /// The guest's resource `boom` or `tick` releases.
-    handle: Arc<Mutex<Option<ResourceHandle>>>,
+    handle: Arc<Mutex<Option<ResourceAny>>>,
     /// What the release answered, once `boom` or `tick` made it.
     released: Arc<Mutex<Option<Result<(), String>>>>,
     /// Whether `boom` answers once it has released the handle, rather
@@ -298,8 +298,9 @@ impl Fixture {
             .expect("the caller component instantiates");
         let make = resource.get_func("make").expect("`make` is exported");
         let made = make.call(&mut store, &[]).await.expect("`make` mints one");
-        let Some(Val::Own(handle)) = made.first().cloned() else {
-            panic!("`make` answers with an owned handle, got {made:?}");
+        let handle = match made.first() {
+            Some(Val::Resource(handle)) if handle.owned() => *handle,
+            _ => panic!("`make` answers with an owned handle, got {made:?}"),
         };
         *plan.handle.lock().expect("the handle") = Some(handle);
         Self {

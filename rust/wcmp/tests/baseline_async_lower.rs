@@ -71,7 +71,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use wcmp::{
     Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, Instance, Linker,
-    PrimitiveType, ResourceType, SchedulerCause, Store, TaskCause, Val, ValueType,
+    PrimitiveType, Resource, ResourceType, SchedulerCause, Store, TaskCause, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -1168,24 +1168,9 @@ async fn lender() -> (Store<()>, Instance) {
         let thing = ResourceType::host::<Thing>();
         host.resource("thing", thing, |_, _| Ok(()))
             .expect("the registration");
-        host.func_new(
-            "[constructor]thing",
-            FunctionType {
-                parameters: vec![FunctionParameter {
-                    name: "rep".to_owned(),
-                    ty: ValueType::Primitive(PrimitiveType::U32),
-                }],
-                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
-                async_: false,
-            },
-            move |call, args, results| {
-                let Some(Val::U32(rep)) = args.first() else {
-                    panic!("`[constructor]thing` was given {args:?}");
-                };
-                results[0] = Val::Own(call.resource_new(thing, *rep)?);
-                Ok(())
-            },
-        )
+        host.func_wrap("[constructor]thing", |_, (rep,): (u32,)| {
+            Ok((Resource::<Thing>::new_own(rep),))
+        })
         .expect("the registration");
         host.func_new_concurrent(
             "hold",

@@ -24,7 +24,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::internal::ResourceTypeInternal;
+use crate::internal::{ResourceAnyInternal, ResourceTypeInternal};
 use crate::store::StoreInternalExt;
 use crate::{Component, Engine, HostCall, Linker, Store, Val};
 use wcmp_macros::component;
@@ -908,16 +908,16 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // is reused, never aliased while live.
     use crate::ResourceType;
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let store: Store<()> = Store::new(&engine, ()).expect("store");
+    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
     // Two distinct registered resource types live in the same
     // store; their indices must not collide.
     let type_a = ResourceType::fresh_guest();
     let type_b = ResourceType::fresh_guest();
 
-    let h0 = store.resource_new(type_a, 100).expect("mint a0");
-    let h1 = store.resource_new(type_a, 101).expect("mint a1");
-    let h2 = store.resource_new(type_a, 102).expect("mint a2");
+    let h0 = super::mint(&mut store, type_a, 100).expect("mint a0");
+    let h1 = super::mint(&mut store, type_a, 101).expect("mint a1");
+    let h2 = super::mint(&mut store, type_a, 102).expect("mint a2");
     assert_ne!(
         h0.index(),
         h1.index(),
@@ -927,7 +927,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     assert_ne!(h0.index(), h2.index());
 
     // A different resource type's table is independent.
-    let b0 = store.resource_new(type_b, 200).expect("mint b0");
+    let b0 = super::mint(&mut store, type_b, 200).expect("mint b0");
     assert_eq!(b0.index(), h0.index(), "tables are keyed by resource type");
 
     // Free the middle slot through the public surface: drop the
@@ -946,7 +946,7 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     );
     drop(tables);
 
-    let h3 = store.resource_new(type_a, 103).expect("mint a3 reuses h1");
+    let h3 = super::mint(&mut store, type_a, 103).expect("mint a3 reuses h1");
     assert_eq!(
         h3.index(),
         h1.index(),

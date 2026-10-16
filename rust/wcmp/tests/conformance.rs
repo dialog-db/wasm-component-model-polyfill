@@ -73,8 +73,8 @@ use wast::token::Span;
 use wast::{Wast, WastArg, WastDirective, WastExecute, WastRet};
 use wcmp::{
     Accessor, Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
-    FunctionType, Instance, Linker, Module, PrimitiveType, ResourceType, SchedulerCause, Store,
-    StoreContext, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
+    FunctionType, Instance, Linker, Module, PrimitiveType, Resource, ResourceType, SchedulerCause,
+    Store, StoreContext, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
 };
 
 use report::{Expectation, Failure, FileReport, Summary, parse_expectations, parse_overlay};
@@ -893,7 +893,6 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
 
     let own = || ValueType::Own(resource1_id);
     let borrow = || ValueType::Borrow(resource1_id);
-    let u32_ty = || ValueType::Primitive(PrimitiveType::U32);
     let signature = |params: &[(&str, ValueType)], result: Option<ValueType>| FunctionType {
         parameters: params
             .iter()
@@ -906,26 +905,15 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         async_: false,
     };
 
-    host.func_new(
-        "[constructor]resource1",
-        signature(&[("r", u32_ty())], Some(own())),
-        move |call, args, results| {
-            let Some(Val::U32(rep)) = args.first() else {
-                panic!("[constructor]resource1: expected a u32 rep, got {args:?}");
-            };
-            results[0] = Val::Own(call.resource_new(resource1_id, *rep)?);
-            Ok(())
-        },
-    )
+    host.func_wrap("[constructor]resource1", |_, (rep,): (u32,)| {
+        Ok((Resource::<Resource1>::new_own(rep),))
+    })
     .expect("the registration");
-    host.func_new(
+    host.func_wrap(
         "[static]resource1.assert",
-        signature(&[("r", own()), ("rep", u32_ty())], None),
-        |_, args, _| {
-            let (Some(Val::Own(handle)), Some(Val::U32(rep))) = (args.first(), args.get(1)) else {
-                panic!("[static]resource1.assert: expected (own, u32), got {args:?}");
-            };
-            assert_eq!(handle.rep(), *rep, "[static]resource1.assert: rep mismatch");
+        |_, (handle, rep): (Resource<Resource1>, u32)| {
+            assert!(handle.owned(), "[static]resource1.assert: expected an own");
+            assert_eq!(handle.rep(), rep, "[static]resource1.assert: rep mismatch");
             Ok(())
         },
     )
@@ -940,15 +928,14 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         move |_, (): ()| Ok((state.drops.load(Ordering::SeqCst),))
     })
     .expect("the registration");
-    host.func_new(
+    host.func_wrap(
         "[method]resource1.simple",
-        signature(&[("self", borrow()), ("rep", u32_ty())], None),
-        |_, args, _| {
-            let (Some(Val::Borrow(handle)), Some(Val::U32(rep))) = (args.first(), args.get(1))
-            else {
-                panic!("[method]resource1.simple: expected (borrow, u32), got {args:?}");
-            };
-            assert_eq!(handle.rep(), *rep, "[method]resource1.simple: rep mismatch");
+        |_, (handle, rep): (Resource<Resource1>, u32)| {
+            assert!(
+                !handle.owned(),
+                "[method]resource1.simple: expected a borrow"
+            );
+            assert_eq!(handle.rep(), rep, "[method]resource1.simple: rep mismatch");
             Ok(())
         },
     )
@@ -958,7 +945,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         signature(&[("self", borrow()), ("b", borrow())], None),
         |_, args, _| {
             assert!(
-                matches!(args, [Val::Borrow(_), Val::Borrow(_)]),
+                matches!(args, [Val::Resource(a), Val::Resource(b)] if !a.owned() && !b.owned()),
                 "[method]resource1.take-borrow: expected two borrows, got {args:?}"
             );
             Ok(())
@@ -970,7 +957,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         signature(&[("self", borrow()), ("b", own())], None),
         |_, args, _| {
             assert!(
-                matches!(args, [Val::Borrow(_), Val::Own(_)]),
+                matches!(args, [Val::Resource(a), Val::Resource(b)] if !a.owned() && b.owned()),
                 "[method]resource1.take-own: expected a borrow and an own, got {args:?}"
             );
             Ok(())

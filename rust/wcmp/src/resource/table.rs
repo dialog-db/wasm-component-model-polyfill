@@ -157,7 +157,7 @@ impl HandleTable {
         };
         *slot = Slot::Free {
             next: self.free_head,
-            generation: generation.wrapping_add(1),
+            generation: next_generation(generation),
         };
         self.free_head = Some(index);
         Some(entry)
@@ -168,6 +168,14 @@ impl Default for HandleTable {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The generation after `generation`. It stays below 2^30, so a
+/// `ResourceAny` packs it into one word with two flags, and so below
+/// the three largest values, which a typed host handle keeps for the
+/// states that are not an entry of the host's table.
+fn next_generation(generation: u32) -> u32 {
+    (generation + 1) % (1 << 30)
 }
 
 #[cfg(test)]

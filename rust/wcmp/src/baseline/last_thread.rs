@@ -368,14 +368,14 @@ async fn it_fails_a_callback_task_with_no_result_once_its_last_thread_has_run() 
 #[wcmp_macros::test]
 async fn it_checks_the_borrows_of_a_task_when_its_last_thread_ends() {
     let (mut store, instance, thing, _) = instantiate().await;
-    let handle = store.resource_new(thing, 5).expect("mint an own handle");
+    let handle = super::mint(&mut store, thing, 5).expect("mint an own handle");
 
     assert_eq!(
         call_u32(
             &mut store,
             &instance,
             "hand-borrow-on",
-            &[Val::Borrow(handle)]
+            &[Val::Resource(handle)]
         )
         .await,
         11,

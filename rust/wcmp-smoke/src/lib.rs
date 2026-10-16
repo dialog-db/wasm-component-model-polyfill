@@ -42,11 +42,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    Accessor, Component, CoreExternType, Destination, Engine, EngineConfig, Error,
-    FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
-    InterfaceIdentifier, Lift, LinkError, Linker, PrimitiveType, ResourceType, SchedulerCause,
-    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
-    SuspendProviderKind, TaskCause, Val, ValField, ValueType,
+    Accessor, Component, CoreExternType, Destination, Engine, EngineConfig, Error, FutureConsumer,
+    FutureReader, HostCall, Instance, InterfaceIdentifier, Lift, LinkError, Linker, Resource,
+    ResourceAny, ResourceType, SchedulerCause, Source, Store, StoreContext, StreamConsumer,
+    StreamProducer, StreamReader, StreamResult, SuspendProviderKind, TaskCause, Val, ValField,
+    ValueType,
 };
 use wcmp_macros::component;
 
@@ -496,7 +496,8 @@ const GREETER: &[u8] = component!(
 
 /// A component that imports a host resource type and exports a
 /// function that drops two owned handles, so the host can watch its
-/// destructor run once per handle, in order.
+/// destructor run once per handle, in order, and a function that hands
+/// back the owned handle it receives.
 const DROPPER: &[u8] = component!(
     r#"
     (component
@@ -508,11 +509,14 @@ const DROPPER: &[u8] = component!(
         (func (import "host" "drop") (param i32))
         (func (export "drop2") (param i32 i32)
           local.get 0 call 0
-          local.get 1 call 0))
+          local.get 1 call 0)
+        (func (export "echo") (param i32) (result i32) local.get 0))
       (core instance $core (instantiate $m
         (with "host" (instance (export "drop" (func $thing-drop))))))
       (func (export "drop2") (param "a" (own $thing)) (param "b" (own $thing))
-        (canon lift (core func $core "drop2"))))
+        (canon lift (core func $core "drop2")))
+      (func (export "echo") (param "h" (own $thing)) (result (own $thing))
+        (canon lift (core func $core "echo"))))
     "#
 );
 
@@ -1313,11 +1317,13 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
         .instantiate(&mut store, &component)
         .await
         .map_err(fail)?;
-    let first = store.resource_new(thing, 11).map_err(fail)?;
-    let second = store.resource_new(thing, 22).map_err(fail)?;
-    let drop2 = instance.get_func("drop2").ok_or("no `drop2` export")?;
+    let drop2 = instance
+        .get_func("drop2")
+        .ok_or("no `drop2` export")?
+        .typed::<(Resource<Thing>, Resource<Thing>), ()>()
+        .map_err(fail)?;
     drop2
-        .call(&mut store, &[Val::Own(first), Val::Own(second)])
+        .call(&mut store, (Resource::new_own(11), Resource::new_own(22)))
         .await
         .map_err(fail)?;
     expect(
@@ -1331,7 +1337,7 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
     ))
 }
 
-/// The host releases a handle it never handed to the guest, watches
+/// The host releases a handle the guest handed back to it, watches
 /// the destructor run, then drops the instance and the store.
 async fn disposal(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
@@ -1355,15 +1361,30 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
         .instantiate(&mut store, &component)
         .await
         .map_err(fail)?;
-    let kept = store.resource_new(thing, 33).map_err(fail)?;
-    let leaked = store.resource_new(thing, 44).map_err(fail)?;
-    store.resource_drop(kept).map_err(fail)?;
+    // A handle the host makes itself runs no destructor when the host
+    // releases it, as in Wasmtime, so the host takes back from the
+    // guest the handles whose release the scenario watches.
+    let echo = instance
+        .get_func("echo")
+        .ok_or("no `echo` export")?
+        .typed::<(Resource<Thing>,), (ResourceAny,)>()
+        .map_err(fail)?;
+    let (kept,) = echo
+        .call(&mut store, (Resource::new_own(33),))
+        .await
+        .map_err(fail)?;
+    let (leaked,) = echo
+        .call(&mut store, (Resource::new_own(44),))
+        .await
+        .map_err(fail)?;
+    kept.resource_drop(&mut store.as_context_mut())
+        .map_err(fail)?;
     expect(
         "destructor after release",
         store.data().dropped.as_slice(),
         &[33],
     )?;
-    let again = store.resource_drop(kept);
+    let again = kept.resource_drop(&mut store.as_context_mut());
     expect("a second release is refused", again.is_err(), true)?;
     // The instance can go before the store; the store keeps the
     // tables and the destructor.
@@ -2706,7 +2727,7 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
     let mut linker: Linker<HostState> = Linker::new(engine);
     let upstream_id: InterfaceIdentifier = "wcmp:deadline/upstream@0.1.0".parse().map_err(fail)?;
     let watch = Arc::new(Mutex::new(FetchWatch::default()));
-    let request = {
+    {
         let mut upstream = linker.instance(&upstream_id);
         let request = ResourceType::host::<Request>();
         upstream
@@ -2720,23 +2741,15 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
                 },
             )
             .map_err(fail)?;
-        let fetch_type = FunctionType {
-            parameters: vec![FunctionParameter {
-                name: "req".to_owned(),
-                ty: ValueType::Borrow(ResourceType::host::<Request>()),
-            }],
-            result: Some(ValueType::Primitive(PrimitiveType::String)),
-            async_: true,
-        };
         let watched = watch.clone();
         upstream
-            .func_new_concurrent(
+            .func_wrap_concurrent(
                 "fetch",
-                fetch_type,
-                move |accessor: &Accessor<HostState>, args: Vec<Val>| {
-                    let lent = match args.first() {
-                        Some(Val::Borrow(request)) => Some(request.rep()),
-                        _ => None,
+                move |accessor: &Accessor<HostState>, (request,): (Resource<Request>,)| {
+                    let lent = if request.owned() {
+                        None
+                    } else {
+                        Some(request.rep())
                     };
                     let guard = WatchDrop {
                         accessor: accessor.clone(),
@@ -2751,7 +2764,7 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
                         if let Ok(mut watch) = guard.watch.lock() {
                             watch.answered = true;
                         }
-                        Ok(vec![Val::String("the upstream body".to_owned())])
+                        Ok(("the upstream body".to_owned(),))
                     }
                 },
             )
@@ -2765,8 +2778,7 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
                 },
             )
             .map_err(fail)?;
-        request
-    };
+    }
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
         .instantiate(&mut store, &component)
@@ -2778,10 +2790,14 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
         .ok_or("no `wcmp:deadline/handler` export")?
         .func("handle")
         .ok_or("no `handle` export")?;
-    let request = store.resource_new(request, REQUEST_REP).map_err(fail)?;
+    let request = ResourceAny::try_from_resource(
+        Resource::<Request>::new_own(REQUEST_REP),
+        &mut store.as_context_mut(),
+    )
+    .map_err(fail)?;
 
     let answer = handle
-        .call(&mut store, &[Val::Own(request), Val::U32(WAIT_MILLIS)])
+        .call(&mut store, &[Val::Resource(request), Val::U32(WAIT_MILLIS)])
         .await
         .map_err(fail)?;
     expect(

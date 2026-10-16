@@ -25,8 +25,8 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::executor::release_subtask;
-use crate::internal::{AccessorInternal, ErrorInternal};
-use crate::resource::{HandleTables, ResourceHandle, TableId};
+use crate::internal::{AccessorInternal, ErrorInternal, ResourceAnyInternal};
+use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
     Val as RuntimeVal, call_failure, substrate_failure,
@@ -157,21 +157,6 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Where [`data`](StoreContext::data) does.
     pub fn data_mut(&mut self) -> &mut T {
         self.store_data_mut().host_mut()
-    }
-
-    /// Mint a fresh `own<T>` handle in this store's resource table for
-    /// the registered resource type `type_id`, with `rep` as its
-    /// representation, as [`Store::resource_new`] does.
-    ///
-    /// This is the way to mint a handle where the host reaches the store
-    /// only through a context: inside [`Accessor::with`], such as in the
-    /// body of a host `async` function that answers with a resource.
-    ///
-    /// [`Store::resource_new`]: super::Store::resource_new
-    /// [`Accessor::with`]: crate::Accessor::with
-    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
-        self.reachable()?;
-        self.store_data().resource_new(type_id, rep)
     }
 
     /// The copy budget each crossing of the store starts with. See
@@ -338,8 +323,13 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// else, so it runs outside a turn, as the host call that
     /// released the handle does.
     #[tracing::instrument(level = "trace", name = "host resource drop", skip_all)]
-    fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
-        let rep = self.store_data().remove_host_handle(handle)?;
+    fn resource_drop(&mut self, handle: ResourceAny) -> Result<()> {
+        let Some(rep) = self.store_data().remove_host_handle(handle)? else {
+            return Ok(());
+        };
+        if !handle.runs_destructor() {
+            return Ok(());
+        }
         let Some(destructor) = self.store_data().destructor(handle.ty()) else {
             return Ok(());
         };
@@ -3337,7 +3327,7 @@ mod tests {
     use crate::types::ValueType;
 
     use super::*;
-    use crate::store::StoreInternalExt;
+    use crate::store::{StoreContextInternalExt, StoreInternalExt};
 
     /// A future that resolves when the host resolves it: something
     /// outside the store for a `run_concurrent` closure to wait on.
@@ -5473,9 +5463,15 @@ mod tests {
                 Ok(())
             })),
         );
-        let handle = store.resource_new(type_id, 7).expect("mint a handle");
+        let handle = store
+            .as_context_mut()
+            .internal()
+            .mint_own(type_id, 7)
+            .expect("mint a handle");
 
-        store.resource_drop(handle).expect("the host releases it");
+        handle
+            .resource_drop(&mut store.as_context_mut())
+            .expect("the host releases it");
 
         assert_eq!(
             seen.lock().expect("record").clone(),
@@ -5514,9 +5510,13 @@ mod tests {
                 Err(Error::internal("the destructor failed"))
             })),
         );
-        let handle = store.resource_new(type_id, 7).expect("mint a handle");
+        let handle = store
+            .as_context_mut()
+            .internal()
+            .mint_own(type_id, 7)
+            .expect("mint a handle");
 
-        let released = store.resource_drop(handle);
+        let released = handle.resource_drop(&mut store.as_context_mut());
 
         assert!(
             released.is_err(),
@@ -5550,10 +5550,16 @@ mod tests {
             ResourceDestructor::Host(Arc::new(|_store: StoreContext<'_, ()>, _rep: u32| Ok(()))),
         );
 
-        let handle = store.resource_new(type_id, 1).expect("mint a handle");
-        store.resource_drop(handle).expect("the host releases it");
-        let err = store
-            .resource_drop(handle)
+        let handle = store
+            .as_context_mut()
+            .internal()
+            .mint_own(type_id, 1)
+            .expect("mint a handle");
+        handle
+            .resource_drop(&mut store.as_context_mut())
+            .expect("the host releases it");
+        let err = handle
+            .resource_drop(&mut store.as_context_mut())
             .expect_err("a released handle is not live");
 
         let Error::Abi(abi) = &err else {

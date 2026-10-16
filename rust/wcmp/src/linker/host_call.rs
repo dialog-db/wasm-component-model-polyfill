@@ -6,26 +6,19 @@
 
 //! The host's view of one guest call into a registered host function.
 
-use std::sync::Arc;
-
-use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::HostCallInternal;
-use crate::resource::{ResourceHandle, ResourceHandleParts, ResourceTableRuntime};
 use crate::store::StoreContext;
-use crate::store::StoreContextInternalExt;
-use crate::types::{ResourceType, ValueType};
 
 /// The context a registered host function runs against, scoped to
 /// one call from the guest.
 ///
-/// Three surfaces are reachable: the host data of the [`Store<T>`]
+/// Two surfaces are reachable: the host data of the [`Store<T>`]
 /// through [`Self::data`] and [`Self::data_mut`], which mirror
-/// [`Store::data`] and [`Store::data_mut`]; a mint entry point,
-/// [`Self::resource_new`], that creates a fresh handle for a resource
-/// type the calling instance knows; and the borrow of the store the
-/// call runs against, through [`Self::store`], which is the value
-/// the polyfill itself blocks a call on and starts a host `async`
-/// function's task from.
+/// [`Store::data`] and [`Store::data_mut`]; and the borrow of the
+/// store the call runs against, through [`Self::store`], which is the
+/// value the polyfill itself blocks a call on and starts a host
+/// `async` function's task from, and which the conversions of a
+/// [`ResourceAny`](crate::ResourceAny) take.
 ///
 /// The store surface is a [`StoreContext`], the polyfill's own view
 /// of the store. The whole store sits behind that view — the
@@ -71,21 +64,11 @@ use crate::types::{ResourceType, ValueType};
 /// [`Store::data_mut`]: crate::Store::data_mut
 pub struct HostCall<'a, T: 'static> {
     store: StoreContext<'a, T>,
-    /// The resource tables of the instance whose import is being
-    /// served. A mint against a resource type none of them holds is
-    /// refused.
-    resource_tables: Arc<[Option<ResourceTableRuntime>]>,
 }
 
 impl<'a, T: 'static> HostCallInternal<'a, T> for HostCall<'a, T> {
-    fn new(
-        store: StoreContext<'a, T>,
-        resource_tables: Arc<[Option<ResourceTableRuntime>]>,
-    ) -> Self {
-        HostCall {
-            store,
-            resource_tables,
-        }
+    fn new(store: StoreContext<'a, T>) -> Self {
+        HostCall { store }
     }
 }
 
@@ -114,39 +97,5 @@ impl<'a, T: 'static> HostCall<'a, T> {
     /// is not reachable through this value.
     pub fn store(&mut self) -> &mut StoreContext<'a, T> {
         &mut self.store
-    }
-
-    /// Mint a fresh handle for the resource type `type_id`, with
-    /// `rep` as its representation. The handle is live in the store's
-    /// table when the guest reads it, so the closure can return it
-    /// through an `own<T>` result. A `type_id` that is not one of the
-    /// calling instance's resource types is refused with the
-    /// unregistered-resource-type ABI cause.
-    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
-        let known = self
-            .resource_tables
-            .iter()
-            .flatten()
-            .find(|table| table.type_id == type_id)
-            .copied();
-        let Some(known) = known else {
-            // The refusal names the `own<T>` at issue, as every
-            // unregistered-resource-type failure does: the type the
-            // host asked to mint against.
-            return Err(Error::from(AbiError {
-                position: AbiPosition::Result,
-                valtype: Some(ValueType::Own(type_id)),
-                cause: AbiCause::UnregisteredResourceType,
-            }));
-        };
-        let mut guard = self.store.internal_ref().lock_tables()?;
-        let (index, generation) = guard.insert_host_own(type_id, known.guest_defined, rep);
-        Ok(ResourceHandleParts {
-            type_id,
-            index,
-            rep,
-            generation,
-        }
-        .into())
     }
 }

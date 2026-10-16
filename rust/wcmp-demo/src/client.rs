@@ -58,7 +58,7 @@ pub fn define<T: HttpHost>(linker: &mut Linker<T>, component: &Component) -> Res
                     Ok(rep) => {
                         let handle =
                             accessor.with(|store| http_types::response_handle(store, rep))??;
-                        Val::Result(Ok(Some(Box::new(Val::Own(handle)))))
+                        Val::Result(Ok(Some(Box::new(Val::Resource(handle)))))
                     }
                     Err(reason) => Val::Result(Err(Some(Box::new(internal_error(&reason))))),
                 };
@@ -72,10 +72,17 @@ pub fn define<T: HttpHost>(linker: &mut Linker<T>, component: &Component) -> Res
 /// representation of the response the host keeps, or why there is
 /// none.
 async fn send<T: HttpHost>(accessor: &Accessor<T>, args: Vec<Val>) -> Result<u32, String> {
-    let rep = match args.first() {
-        Some(Val::Own(handle)) => handle.rep(),
+    let handle = match args.first() {
+        Some(Val::Resource(handle)) if handle.owned() => *handle,
         other => return Err(format!("`send` was given {other:?}")),
     };
+    // The host takes the request over: its handle leaves the store's
+    // host table, and the host keeps the request by its representation.
+    let rep = accessor
+        .with(|store| handle.try_into_resource_dynamic(store))
+        .and_then(|request| request)
+        .map_err(|error| error.to_string())?
+        .rep();
     let (request, body) = accessor
         .with(|store| {
             let request =

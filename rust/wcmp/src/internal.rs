@@ -44,7 +44,7 @@ use crate::identifier::InterfaceIdentifier;
 use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFunc};
 use crate::linker::{InstanceRegistration, Resolution};
 use crate::module::{CoreExtern, CoreExternType, CoreValueType, Module};
-use crate::resource::ResourceTableRuntime;
+use crate::resource::HostHandle;
 use crate::runtime_layer::{
     Extern as RuntimeExtern, Instance as RuntimeInstance, Module as RuntimeModule,
 };
@@ -312,10 +312,7 @@ pub trait InstanceInternal {
 /// The crate-internal face of [`HostCall`](crate::HostCall).
 pub trait HostCallInternal<'a, T: 'static> {
     /// The context for one call of a host function.
-    fn new(
-        store: StoreContext<'a, T>,
-        resource_tables: Arc<[Option<ResourceTableRuntime>]>,
-    ) -> Self;
+    fn new(store: StoreContext<'a, T>) -> Self;
 }
 
 /// The crate-internal face of
@@ -395,12 +392,47 @@ pub trait CoreValueTypeInternal {
     fn from_translator(ty: &wasmtime_environ::WasmValType) -> Result<CoreValueType>;
 }
 
-/// The crate-internal face of
-/// [`ResourceHandle`](crate::ResourceHandle).
-pub trait ResourceHandleInternal {
+/// The crate-internal face of [`ResourceAny`](crate::ResourceAny).
+pub trait ResourceAnyInternal: Sized {
+    /// The handle of the host table's entry at `index` and
+    /// `generation`, which holds `rep` of the type `ty`. Its release
+    /// runs the resource's destructor.
+    fn new(ty: ResourceType, index: u32, rep: u32, generation: u32, owned: bool) -> Self;
+    /// The index of the host table's entry.
+    fn index(&self) -> u32;
+    /// The resource's rep, as the entry holds it.
+    fn rep(&self) -> u32;
     /// The generation of the host-table entry the handle was minted
     /// for, which tells it from an entry that reused the same index.
     fn generation(&self) -> u32;
+    /// Whether the release of an owned handle runs the resource's
+    /// destructor.
+    fn runs_destructor(&self) -> bool;
+    /// The handle of the typed host handle `handle`, of the type
+    /// `identity`, which takes an entry of the host table if it has
+    /// none.
+    fn from_host<D: 'static>(
+        store: &mut StoreContext<'_, D>,
+        handle: &HostHandle,
+        identity: ResourceType,
+    ) -> Result<Self>;
+    /// The typed host handle of this one, whose type must be
+    /// `identity`. An owned handle leaves the host table.
+    fn into_host<D: 'static>(
+        self,
+        store: &mut StoreContext<'_, D>,
+        identity: ResourceType,
+    ) -> Result<HostHandle>;
+}
+
+/// The crate-internal face of [`Resource<T>`](crate::Resource) and
+/// [`ResourceDynamic`](crate::ResourceDynamic).
+pub trait ResourceInternal {
+    /// The shared host handle, which the crossing reads and moves on.
+    fn handle(&self) -> &HostHandle;
+    /// The handle a lift made, of the type `identity`, which the type
+    /// check admitted.
+    fn from_lift(handle: HostHandle, identity: ResourceType) -> Self;
 }
 
 /// The crate-internal face of [`LowerContext`](crate::__private::LowerContext).

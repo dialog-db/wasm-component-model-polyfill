@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use futures::lock::Mutex;
-use wcmp::{Accessor, Engine, Func, Linker, Store, Val};
+use wcmp::{Accessor, Engine, Func, Linker, ResourceDynamic, Store, Val};
 
 use crate::compiler::{CompileError, Compiler};
 use crate::glue::Compile;
@@ -308,21 +308,20 @@ async fn serve<S: Storage + 'static>(
         },
         body: Body::Bytes(request.body),
     });
-    let handle_request = instance
-        .store
-        .resource_new(instance.types.request(), rep)
+    let handle_request = ResourceDynamic::new_own(rep, instance.types.request())
+        .try_into_resource_any(&mut instance.store.as_context_mut())
         .map_err(|error| error.to_string())?;
     let handle = &instance.handle;
     instance
         .store
         .run_concurrent(async |accessor: &Accessor<RouteHost<S>>| {
             let returned = handle
-                .call_concurrent(accessor, &[Val::Own(handle_request)])
+                .call_concurrent(accessor, &[Val::Resource(handle_request)])
                 .await
                 .map_err(|error| platform::describe(&error))?;
             let response = match returned.first() {
                 Some(Val::Result(Ok(Some(response)))) => match response.as_ref() {
-                    Val::Own(response) => response.rep(),
+                    Val::Resource(response) if response.owned() => *response,
                     other => return Err(format!("`handle` answered {other:?}")),
                 },
                 Some(Val::Result(Err(Some(code)))) => {
@@ -332,10 +331,17 @@ async fn serve<S: Storage + 'static>(
             };
             let (status, headers, body) = accessor
                 .with(|store| {
+                    // The host takes the response over: its handle leaves
+                    // the store's host table, and the host keeps the
+                    // response by its representation.
+                    let rep = response
+                        .try_into_resource_dynamic(store)
+                        .map_err(|error| error.to_string())?
+                        .rep();
                     let response = store
                         .data_mut()
                         .http()
-                        .take_response(response)
+                        .take_response(rep)
                         .ok_or("`handle` answered a response the host does not hold")?;
                     let body = http_types::read_body(store, response.body)
                         .map_err(|error| error.to_string())?;

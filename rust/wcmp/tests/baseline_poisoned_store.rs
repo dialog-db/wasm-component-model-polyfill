@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use wcmp::{
     AbiCause, Accessor, Component, Engine, Error, FunctionType, FutureConsumer, FutureReader,
-    HostCall, Instance, InstantiationError, Linker, Module, ResourceHandle, ResourceType,
+    HostCall, Instance, InstantiationError, Linker, Module, Resource, ResourceAny, ResourceType,
     SchedulerCause, Source, Store, StoreContext, TaskCause, Val,
 };
 use wcmp_macros::{component, wasm};
@@ -57,6 +57,8 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 ///   as the call lowers it.
 /// - `make` mints a resource of the component's own type `r`, whose
 ///   destructor traps for the rep 13 and returns for any other.
+/// - `echo-thing` hands back the host's `thing` it receives, so the
+///   host holds a handle of its own resource that a guest gave it.
 ///
 /// The component also imports the host's resource `thing`, so that
 /// the host's destructor for it is the store's to run.
@@ -84,7 +86,9 @@ const TRIGGERS: &[u8] = component!(
         (func (export "host-fail") (call $fail))
         (func (export "take") (param i32))
         (func (export "make") (param i32) (result i32)
-          (call $new (local.get 0))))
+          (call $new (local.get 0)))
+        (func (export "echo-thing") (param i32) (result i32)
+          (local.get 0)))
       (core instance $m (instantiate $M (with "" (instance
         (export "fail" (func $fail'))
         (export "new" (func $new))
@@ -101,7 +105,9 @@ const TRIGGERS: &[u8] = component!(
       (func (export "take") (param "x" u32)
         (canon lift (core func $m "take")))
       (func (export "make") (param "rep" u32) (result (own $t))
-        (canon lift (core func $m "make"))))
+        (canon lift (core func $m "make")))
+      (func (export "echo-thing") (param "h" (own $thing)) (result (own $thing))
+        (canon lift (core func $m "echo-thing"))))
     "#
 );
 
@@ -269,15 +275,15 @@ impl Fixture {
     }
 
     /// A resource of the component's own type, minted by `make`.
-    async fn make(&mut self, rep: u32) -> ResourceHandle {
+    async fn make(&mut self, rep: u32) -> ResourceAny {
         let made = self
             .call("make", &[Val::U32(rep)])
             .await
             .expect("`make` mints a resource");
-        let Some(Val::Own(handle)) = made.first().cloned() else {
-            panic!("`make` answers with an owned handle, got {made:?}");
-        };
-        handle
+        match made.first() {
+            Some(Val::Resource(handle)) if handle.owned() => *handle,
+            _ => panic!("`make` answers with an owned handle, got {made:?}"),
+        }
     }
 
     /// Assert that a call of `ok` answers 7, so the store is usable.
@@ -417,9 +423,8 @@ async fn it_poisons_the_store_on_a_trap_in_a_destructor() {
     let mut fixture = Fixture::new().await;
     let handle = fixture.make(13).await;
 
-    fixture
-        .store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut fixture.store.as_context_mut())
         .expect_err("the destructor traps for the rep 13");
 
     fixture.assert_poisoned("a trap in a destructor").await;
@@ -432,9 +437,8 @@ async fn it_leaves_the_store_usable_after_a_destructor_that_returns() {
     let mut fixture = Fixture::new().await;
     let handle = fixture.make(5).await;
 
-    fixture
-        .store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut fixture.store.as_context_mut())
         .expect("the destructor returns for the rep 5");
 
     fixture.assert_usable("a destructor that returned").await;
@@ -446,10 +450,22 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
     // A resource of each kind the host holds, minted while the store
     // is still usable.
     let guest_resource = fixture.make(5).await;
-    let host_resource = fixture
-        .store
-        .resource_new(fixture.thing, 42)
-        .expect("the host mints its own resource");
+    // The host's own resource comes back to it from the guest, as a
+    // handle whose release runs the host's destructor.
+    let minted = ResourceAny::try_from_resource(
+        Resource::<Thing>::new_own(42),
+        &mut fixture.store.as_context_mut(),
+    )
+    .expect("the host mints its own resource");
+    let echoed = fixture
+        .call("echo-thing", &[Val::Resource(minted)])
+        .await
+        .expect("`echo-thing` hands the resource back");
+    let host_resource = match echoed.first() {
+        Some(Val::Resource(handle)) if handle.owned() => *handle,
+        _ => panic!("`echo-thing` answers with an owned handle, got {echoed:?}"),
+    };
+    assert_eq!(host_resource.ty(), fixture.thing);
     let ok = fixture.instance.get_func("ok").expect("`ok` is exported");
     let typed = fixture
         .instance
@@ -516,15 +532,14 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
 
     // The release of a resource the guest defines runs guest code;
     // the release of the host's own runs the host's destructor.
-    let error = fixture
-        .store
-        .resource_drop(guest_resource)
+    let error = guest_resource
+        .resource_drop(&mut fixture.store.as_context_mut())
         .expect_err("a poisoned store refuses the release of a guest's resource");
-    assert_cannot_enter(&error, "`Store::resource_drop` of a guest's resource");
+    assert_cannot_enter(&error, "`ResourceAny::resource_drop` of a guest's resource");
     // The host's table let go of the handle before the entry into the
     // guest was refused, as in Wasmtime, so a second release finds no
     // handle.
-    match fixture.store.resource_drop(guest_resource) {
+    match guest_resource.resource_drop(&mut fixture.store.as_context_mut()) {
         Err(Error::Abi(error)) => assert!(
             matches!(
                 &error.cause,
@@ -534,9 +549,8 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
         ),
         other => panic!("the second release fails with the unknown-handle cause, got {other:?}"),
     }
-    fixture
-        .store
-        .resource_drop(host_resource)
+    host_resource
+        .resource_drop(&mut fixture.store.as_context_mut())
         .expect("the release of the host's resource runs no guest code");
     assert_eq!(
         fixture.drops.load(Ordering::Relaxed),

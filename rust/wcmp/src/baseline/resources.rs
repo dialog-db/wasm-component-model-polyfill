@@ -19,12 +19,12 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::internal::{ResourceHandleInternal, ResourceTypeInternal};
-use crate::resource::ResourceHandleParts;
+use crate::internal::{ResourceAnyInternal, ResourceTypeInternal};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, AbiPosition, Component, Engine, Error, FunctionParameter, FunctionType, HostCall,
-    InterfaceIdentifier, Linker, ResourceHandle, ResourceType, Store, StoreContext, Val, ValueType,
+    InterfaceIdentifier, Linker, Resource, ResourceAny, ResourceType, Store, StoreContext, Val,
+    ValueType,
 };
 use wcmp_macros::component;
 
@@ -97,10 +97,10 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
         .await
         .expect("instantiate");
     let drop2 = inst.get_func("drop2").expect("drop2 export");
-    let h1 = store.resource_new(type_id, 1).expect("mint h1");
-    let h2 = store.resource_new(type_id, 2).expect("mint h2");
+    let h1 = super::mint(&mut store, type_id, 1).expect("mint h1");
+    let h2 = super::mint(&mut store, type_id, 2).expect("mint h2");
     drop2
-        .call(&mut store, &[Val::Own(h1), Val::Own(h2)])
+        .call(&mut store, &[Val::Resource(h1), Val::Resource(h2)])
         .await
         .expect("call drop2");
     assert_eq!(*dropped.lock().expect("read"), vec![1, 2]);
@@ -113,12 +113,12 @@ async fn it_isolates_handle_tables_across_stores_with_the_same_engine() {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let linker: Linker<()> = Linker::new(&engine);
     let _ = linker; // unused but proves shareability of the linker
-    let store_a: Store<()> = Store::new(&engine, ()).expect("store a");
-    let store_b: Store<()> = Store::new(&engine, ()).expect("store b");
+    let mut store_a: Store<()> = Store::new(&engine, ()).expect("store a");
+    let mut store_b: Store<()> = Store::new(&engine, ()).expect("store b");
     let type_id = ResourceType::fresh_guest();
-    let a0 = store_a.resource_new(type_id, 1).expect("a0");
-    let a1 = store_a.resource_new(type_id, 2).expect("a1");
-    let b0 = store_b.resource_new(type_id, 100).expect("b0");
+    let a0 = super::mint(&mut store_a, type_id, 1).expect("a0");
+    let a1 = super::mint(&mut store_a, type_id, 2).expect("a1");
+    let b0 = super::mint(&mut store_b, type_id, 100).expect("b0");
     // Both stores allocate from index 0; the tables are
     // store-local.
     assert_eq!(a0.index(), 1, "index 0 is reserved");
@@ -168,15 +168,15 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
         .expect("the registration");
 
     let mut consumer: Store<()> = Store::new(&engine, ()).expect("consumer store");
-    let producer: Store<()> = Store::new(&engine, ()).expect("producer store");
-    let foreign_handle = producer.resource_new(type_id, 99).expect("mint foreign");
+    let mut producer: Store<()> = Store::new(&engine, ()).expect("producer store");
+    let foreign_handle = super::mint(&mut producer, type_id, 99).expect("mint foreign");
     let inst = linker
         .instantiate(&mut consumer, &component)
         .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume export");
     let outcome = consume
-        .call(&mut consumer, &[Val::Own(foreign_handle)])
+        .call(&mut consumer, &[Val::Resource(foreign_handle)])
         .await;
     assert!(
         matches!(outcome, Err(Error::Abi(_))),
@@ -186,7 +186,7 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
 
 #[wcmp_macros::test]
 async fn it_rejects_a_completely_fabricated_handle_index() {
-    // A `ResourceHandle` constructed with an index that was never
+    // A `ResourceAny` constructed with an index that was never
     // allocated trips `AbiCause::InvalidHandle` on lower.
     const COMPONENT: &[u8] = component!(
         r#"
@@ -228,14 +228,8 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
         .await
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume export");
-    let bogus: ResourceHandle = ResourceHandleParts {
-        type_id,
-        index: 999,
-        rep: 0,
-        generation: 0,
-    }
-    .into();
-    let outcome = consume.call(&mut store, &[Val::Own(bogus)]).await;
+    let bogus = <ResourceAny as ResourceAnyInternal>::new(type_id, 999, 0, 0, true);
+    let outcome = consume.call(&mut store, &[Val::Resource(bogus)]).await;
     assert!(matches!(outcome, Err(Error::Abi(_))));
 }
 
@@ -313,14 +307,14 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
         .expect("instantiate");
     let drop_alpha = inst.get_func("drop-alpha").expect("drop-alpha");
     let drop_beta = inst.get_func("drop-beta").expect("drop-beta");
-    let a = store.resource_new(alpha_id, 11).expect("mint alpha");
-    let b = store.resource_new(beta_id, 22).expect("mint beta");
+    let a = super::mint(&mut store, alpha_id, 11).expect("mint alpha");
+    let b = super::mint(&mut store, beta_id, 22).expect("mint beta");
     drop_alpha
-        .call(&mut store, &[Val::Own(a)])
+        .call(&mut store, &[Val::Resource(a)])
         .await
         .expect("call drop-alpha");
     drop_beta
-        .call(&mut store, &[Val::Own(b)])
+        .call(&mut store, &[Val::Resource(b)])
         .await
         .expect("call drop-beta");
     assert_eq!(store.data().alphas, vec![11]);
@@ -373,16 +367,16 @@ async fn it_reuses_freed_handle_indices_after_drop() {
         .expect("instantiate");
     let consume = inst.get_func("consume").expect("consume");
 
-    let h0 = store.resource_new(type_id, 1).expect("h0");
-    let h1 = store.resource_new(type_id, 2).expect("h1");
-    let h2 = store.resource_new(type_id, 3).expect("h2");
+    let h0 = super::mint(&mut store, type_id, 1).expect("h0");
+    let h1 = super::mint(&mut store, type_id, 2).expect("h1");
+    let h2 = super::mint(&mut store, type_id, 3).expect("h2");
     let h1_index = h1.index();
     consume
-        .call(&mut store, &[Val::Own(h1)])
+        .call(&mut store, &[Val::Resource(h1)])
         .await
         .expect("drop middle");
     // The middle slot is free; minting again reuses it.
-    let h3 = store.resource_new(type_id, 4).expect("h3");
+    let h3 = super::mint(&mut store, type_id, 4).expect("h3");
     assert_eq!(h3.index(), h1_index);
     // The two siblings are still live and distinct.
     assert_ne!(h0.index(), h2.index());
@@ -480,15 +474,11 @@ async fn local_resource_instance() -> (Store<()>, crate::Instance) {
     (store, instance)
 }
 
-async fn make_handle(
-    store: &mut Store<()>,
-    instance: &crate::Instance,
-    rep: u32,
-) -> ResourceHandle {
+async fn make_handle(store: &mut Store<()>, instance: &crate::Instance, rep: u32) -> ResourceAny {
     let make = instance.get_func("make").expect("make export");
     let results = make.call(store, &[Val::U32(rep)]).await.expect("make call");
     match results.as_ref() {
-        [Val::Own(handle)] => *handle,
+        [Val::Resource(handle)] if handle.owned() => *handle,
         other => panic!("expected an owned handle, got {other:?}"),
     }
 }
@@ -539,7 +529,7 @@ async fn it_supports_a_locally_defined_resource_with_an_in_binary_destructor() {
     let handle = make_handle(&mut store, &instance, 7).await;
     let dispose = instance.get_func("dispose").expect("dispose export");
     dispose
-        .call(&mut store, &[Val::Own(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("dispose call");
     let dropped = instance.get_func("dropped").expect("dropped export");
@@ -569,7 +559,7 @@ async fn it_runs_the_in_binary_destructor_exactly_once_per_dropped_handle() {
     for rep in [2, 3] {
         let handle = make_handle(&mut store, &instance, rep).await;
         dispose
-            .call(&mut store, &[Val::Own(handle)])
+            .call(&mut store, &[Val::Resource(handle)])
             .await
             .expect("dispose call");
     }
@@ -604,7 +594,7 @@ async fn it_rejects_a_handle_from_another_instance_of_the_same_component() {
     let handle = make_handle(&mut store, &first, 1).await;
     let dispose = second.get_func("dispose").expect("dispose export");
     let err = dispose
-        .call(&mut store, &[Val::Own(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("a handle from another instance must not lower");
     assert!(
@@ -694,7 +684,7 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     // One identity registered in both interfaces is one resource
     // type: a handle minted for `a` lowers through `b`.
     let type_id = ResourceType::host::<Thing>();
-    let kept: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let kept: Arc<Mutex<Option<ResourceAny>>> = Arc::new(Mutex::new(None));
     let keeping = kept.clone();
     for iface in [&a, &b] {
         linker
@@ -718,8 +708,11 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call: HostCall<'_, Vec<u32>>, _args, results| {
-                results[0] = Val::Own(call.resource_new(type_id, 9)?);
+            move |mut call: HostCall<'_, Vec<u32>>, _args, results| {
+                results[0] = Val::Resource(ResourceAny::try_from_resource(
+                    Resource::<Thing>::new_own(9),
+                    call.store(),
+                )?);
                 Ok(())
             },
         )
@@ -737,13 +730,14 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
                 async_: false,
             },
             move |mut call: HostCall<'_, Vec<u32>>, args, _results| {
-                let Val::Own(handle) = &args[0] else {
-                    panic!("expected an owned handle, got {args:?}");
+                let handle = match &args[0] {
+                    Val::Resource(handle) if handle.owned() => *handle,
+                    _ => panic!("expected an owned handle, got {args:?}"),
                 };
                 // The handle minted under `a` arrives through `b` with the
                 // same identity; record the rep the host gave it.
                 call.data_mut().push(handle.rep());
-                *keeping.lock().expect("the kept handle") = Some(*handle);
+                *keeping.lock().expect("the kept handle") = Some(handle);
                 Ok(())
             },
         )
@@ -765,12 +759,10 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
         .expect("the kept handle")
         .take()
         .expect("`consume` kept it");
-    store
-        .resource_drop(kept)
+    kept.resource_drop(&mut store.as_context_mut())
         .expect("the one live entry releases");
     assert_eq!(store.data(), &vec![9, 9], "the destructor ran once for it");
-    store
-        .resource_drop(kept)
+    kept.resource_drop(&mut store.as_context_mut())
         .expect_err("no second entry of the type is live");
 }
 
@@ -856,11 +848,10 @@ async fn it_tells_two_resources_of_one_name_apart_by_identity() {
 
     // A handle of the first `error` is refused where the second is
     // declared, before it reaches the guest.
-    let wrong = store
-        .resource_new(ResourceType::host::<XError>(), 1)
+    let wrong = super::mint(&mut store, ResourceType::host::<XError>(), 1)
         .expect("mint a handle of the first");
     let refused = take
-        .call(&mut store, &[Val::Own(wrong)])
+        .call(&mut store, &[Val::Resource(wrong)])
         .await
         .expect_err("a handle of another identity does not lower");
     let Error::Abi(abi) = &refused else {
@@ -878,13 +869,12 @@ async fn it_tells_two_resources_of_one_name_apart_by_identity() {
         .instantiate(&mut store, &component)
         .await
         .expect("the component links");
-    let right = store
-        .resource_new(ResourceType::host::<YError>(), 2)
+    let right = super::mint(&mut store, ResourceType::host::<YError>(), 2)
         .expect("mint a handle of the second");
     instance
         .get_func("take-y")
         .expect("take-y export")
-        .call(&mut store, &[Val::Own(right)])
+        .call(&mut store, &[Val::Resource(right)])
         .await
         .expect("a handle of the declared identity lowers");
     assert_eq!(store.data(), &vec![2], "the guest dropped it");
@@ -929,8 +919,11 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call: HostCall<'_, ()>, _args, results| {
-                results[0] = Val::Own(call.resource_new(type_id, 1)?);
+            move |mut call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Resource(ResourceAny::try_from_resource(
+                    Resource::<Thing>::new_own(1),
+                    call.store(),
+                )?);
                 Ok(())
             },
         )
@@ -1023,8 +1016,11 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call: HostCall<'_, ()>, _args, results| {
-                results[0] = Val::Own(call.resource_new(type_id, 42)?);
+            move |mut call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Resource(ResourceAny::try_from_resource(
+                    Resource::<Thing>::new_own(42),
+                    call.store(),
+                )?);
                 Ok(())
             },
         )
@@ -1036,7 +1032,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
         .expect("instantiate");
     let run = instance.get_func("run").expect("run export");
     let results = run.call(&mut store, &[]).await.expect("run");
-    let [Val::Own(handle)] = results.as_ref() else {
+    let [Val::Resource(handle)] = results.as_ref() else {
         panic!("expected an owned handle, got {results:?}");
     };
     assert_eq!(
@@ -1052,7 +1048,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
 }
 
 #[wcmp_macros::test]
-async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
+async fn it_refuses_a_returned_handle_of_a_type_the_instance_does_not_hold() {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
@@ -1079,8 +1075,8 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call: HostCall<'_, ()>, _args, results| {
-                results[0] = Val::Own(call.resource_new(stranger, 1)?);
+            move |mut call: HostCall<'_, ()>, _args, results| {
+                results[0] = Val::Resource(call.store().internal().mint_own(stranger, 1)?);
                 Ok(())
             },
         )
@@ -1094,7 +1090,7 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
     let err = run
         .call(&mut store, &[])
         .await
-        .expect_err("minting against an unknown identity fails the call");
+        .expect_err("a handle of an unknown identity does not lower");
     // The host error traps the guest, and the call gets it back as
     // the host function raised it.
     let Error::Abi(abi) = &err else {
@@ -1104,10 +1100,13 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         matches!(abi.cause, AbiCause::UnregisteredResourceType),
         "expected the unregistered-resource-type cause, got {err:?}"
     );
-    assert_eq!(
-        abi.valtype,
-        Some(ValueType::Own(stranger)),
-        "the refusal names the identity the host asked to mint against"
+    // The refusal names the `own` result the component declares, as a
+    // lowering's refusal names the slot it refused; Wasmtime names no
+    // type here ("mismatched resource types").
+    assert_eq!(abi.position, AbiPosition::Result, "{err}");
+    assert!(
+        matches!(abi.valtype, Some(ValueType::Own(declared)) if declared != stranger),
+        "the refusal names the declared slot, got {err:?}"
     );
 }
 
@@ -1286,8 +1285,9 @@ fn borrower_linker(engine: &Engine) -> (Linker<()>, ResourceType) {
                 async_: false,
             },
             |_: HostCall<'_, ()>, args, results| {
-                let Val::Borrow(handle) = &args[0] else {
-                    panic!("expected a borrowed handle, got {args:?}");
+                let handle = match &args[0] {
+                    Val::Resource(handle) if !handle.owned() => *handle,
+                    _ => panic!("expected a borrowed handle, got {args:?}"),
                 };
                 results[0] = Val::U32(handle.rep());
                 Ok(())
@@ -1314,10 +1314,10 @@ async fn borrower_instance() -> (Store<()>, crate::Instance, ResourceType) {
 #[wcmp_macros::test]
 async fn it_rejects_a_host_call_that_leaves_outstanding_borrows() {
     let (mut store, instance, type_id) = borrower_instance().await;
-    let handle = store.resource_new(type_id, 5).expect("mint");
+    let handle = super::mint(&mut store, type_id, 5).expect("mint");
     let hold = instance.get_func("hold").expect("hold export");
     let err = hold
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("the guest kept the borrow, so the call must fail");
     assert!(
@@ -1329,10 +1329,10 @@ async fn it_rejects_a_host_call_that_leaves_outstanding_borrows() {
 #[wcmp_macros::test]
 async fn it_leaves_the_owning_handle_live_after_a_borrow_is_dropped_in_the_call() {
     let (mut store, instance, type_id) = borrower_instance().await;
-    let handle = store.resource_new(type_id, 7).expect("mint");
+    let handle = super::mint(&mut store, type_id, 7).expect("mint");
     let peek = instance.get_func("peek").expect("peek export");
     let results = peek
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("the guest dropped its borrow before returning");
     assert_eq!(
@@ -1359,11 +1359,13 @@ async fn it_refuses_to_lower_a_borrow_of_a_released_handle() {
     // handle's own rep at its word, so the lower looks the handle up
     // in the host's table instead and finds nothing there.
     let (mut store, instance, type_id) = borrower_instance().await;
-    let handle = store.resource_new(type_id, 9).expect("mint");
-    store.resource_drop(handle).expect("the host releases it");
+    let handle = super::mint(&mut store, type_id, 9).expect("mint");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("the host releases it");
     let peek = instance.get_func("peek").expect("peek export");
     let err = peek
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("a released handle names no entry to borrow");
     assert!(
@@ -1378,16 +1380,10 @@ async fn it_refuses_to_lower_a_borrow_the_host_never_minted() {
     // thin air: an index the host's table for the type never handed
     // out names no entry, whatever rep the record carries beside it.
     let (mut store, instance, type_id) = borrower_instance().await;
-    let forged: ResourceHandle = ResourceHandleParts {
-        type_id,
-        index: 999,
-        rep: 4,
-        generation: 0,
-    }
-    .into();
+    let forged = <ResourceAny as ResourceAnyInternal>::new(type_id, 999, 4, 0, true);
     let peek = instance.get_func("peek").expect("peek export");
     let err = peek
-        .call(&mut store, &[Val::Borrow(forged)])
+        .call(&mut store, &[Val::Resource(forged)])
         .await
         .expect_err("the host never minted this handle");
     assert!(
@@ -1406,7 +1402,7 @@ type ReleaseAttempt = Option<(bool, String)>;
 /// borrow the host lent for the call, so the attempt lands in the
 /// middle of the call.
 async fn drop_attempt_instance(
-    lent: Arc<Mutex<Option<ResourceHandle>>>,
+    lent: Arc<Mutex<Option<ResourceAny>>>,
     attempt: Arc<Mutex<ReleaseAttempt>>,
 ) -> (Store<()>, crate::Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
@@ -1439,8 +1435,9 @@ async fn drop_attempt_instance(
                 async_: false,
             },
             move |mut call: HostCall<'_, ()>, args, results| {
-                let Val::Borrow(borrowed) = &args[0] else {
-                    panic!("expected a borrowed handle, got {args:?}");
+                let borrowed = match &args[0] {
+                    Val::Resource(borrowed) if !borrowed.owned() => *borrowed,
+                    _ => panic!("expected a borrowed handle, got {args:?}"),
                 };
                 results[0] = Val::U32(borrowed.rep());
                 let owned = lent
@@ -1480,12 +1477,12 @@ async fn it_refuses_to_release_a_lent_handle_until_the_call_ends() {
     let lent = Arc::new(Mutex::new(None));
     let attempt: Arc<Mutex<ReleaseAttempt>> = Arc::new(Mutex::new(None));
     let (mut store, instance, type_id) = drop_attempt_instance(lent.clone(), attempt.clone()).await;
-    let handle = store.resource_new(type_id, 13).expect("mint");
+    let handle = super::mint(&mut store, type_id, 13).expect("mint");
     *lent.lock().expect("the lent handle") = Some(handle);
 
     let peek = instance.get_func("peek").expect("peek export");
     let results = peek
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("the guest dropped its borrow before returning");
     assert_eq!(
@@ -1509,8 +1506,8 @@ async fn it_refuses_to_release_a_lent_handle_until_the_call_ends() {
         "the refusal must name the lend, got: {message}"
     );
 
-    store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("the call ended, so the lend came back and the release stands");
 }
 
@@ -1537,7 +1534,7 @@ fn chain(error: &Error) -> String {
 /// which carries the guest's table index, not one of the host's —
 /// and try to lower it back into a guest.
 async fn recording_borrower_instance(
-    seen: Arc<Mutex<Option<ResourceHandle>>>,
+    seen: Arc<Mutex<Option<ResourceAny>>>,
 ) -> (Store<()>, crate::Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
@@ -1569,11 +1566,12 @@ async fn recording_borrower_instance(
                 async_: false,
             },
             move |_: HostCall<'_, ()>, args, results| {
-                let Val::Borrow(handle) = &args[0] else {
-                    panic!("expected a borrowed handle, got {args:?}");
+                let handle = match &args[0] {
+                    Val::Resource(handle) if !handle.owned() => *handle,
+                    _ => panic!("expected a borrowed handle, got {args:?}"),
                 };
                 results[0] = Val::U32(handle.rep());
-                *seen.lock().expect("the borrowed handle") = Some(*handle);
+                *seen.lock().expect("the borrowed handle") = Some(handle);
                 Ok(())
             },
         )
@@ -1595,10 +1593,10 @@ async fn it_refuses_to_lower_a_borrow_the_host_kept_past_the_call_that_lent_it()
     // to the refused call. The guest's own index plays no part: the
     // guest sees the borrow at index one of its table, where the host's
     // table holds another resource.
-    let seen: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let seen: Arc<Mutex<Option<ResourceAny>>> = Arc::new(Mutex::new(None));
     let (mut store, instance, type_id) = recording_borrower_instance(seen.clone()).await;
-    let first = store.resource_new(type_id, 100).expect("mint");
-    let second = store.resource_new(type_id, 200).expect("mint");
+    let first = super::mint(&mut store, type_id, 100).expect("mint");
+    let second = super::mint(&mut store, type_id, 200).expect("mint");
     assert_eq!(
         (first.index(), second.index()),
         (1, 2),
@@ -1607,7 +1605,7 @@ async fn it_refuses_to_lower_a_borrow_the_host_kept_past_the_call_that_lent_it()
 
     let peek = instance.get_func("peek").expect("peek export");
     let results = peek
-        .call(&mut store, &[Val::Borrow(second)])
+        .call(&mut store, &[Val::Resource(second)])
         .await
         .expect("the guest dropped its borrow before returning");
     assert_eq!(
@@ -1628,7 +1626,7 @@ async fn it_refuses_to_lower_a_borrow_the_host_kept_past_the_call_that_lent_it()
     );
 
     let err = peek
-        .call(&mut store, &[Val::Borrow(lifted)])
+        .call(&mut store, &[Val::Resource(lifted)])
         .await
         .expect_err("the borrow went with the call that handed it to the host");
     assert!(
@@ -1636,11 +1634,11 @@ async fn it_refuses_to_lower_a_borrow_the_host_kept_past_the_call_that_lent_it()
         "expected the invalid-handle cause, got {err:?}"
     );
 
-    store
-        .resource_drop(first)
+    first
+        .resource_drop(&mut store.as_context_mut())
         .expect("the refused lower left the other entry alone");
-    store
-        .resource_drop(second)
+    second
+        .resource_drop(&mut store.as_context_mut())
         .expect("the first call ended, so its lend came back");
 }
 
@@ -1662,9 +1660,11 @@ async fn it_refuses_to_lower_a_stale_handle_whose_slot_was_reminted_with_the_sam
     // carry the same index and the same rep, and only the generation of
     // the entry tells them apart, as Wasmtime's host index does.
     let (mut store, instance, type_id) = borrower_instance().await;
-    let stale = store.resource_new(type_id, 9).expect("mint");
-    store.resource_drop(stale).expect("release");
-    let fresh = store.resource_new(type_id, 9).expect("mint again");
+    let stale = super::mint(&mut store, type_id, 9).expect("mint");
+    stale
+        .resource_drop(&mut store.as_context_mut())
+        .expect("release");
+    let fresh = super::mint(&mut store, type_id, 9).expect("mint again");
     assert_eq!(
         (fresh.index(), fresh.rep()),
         (stale.index(), stale.rep()),
@@ -1673,7 +1673,7 @@ async fn it_refuses_to_lower_a_stale_handle_whose_slot_was_reminted_with_the_sam
 
     let peek = instance.get_func("peek").expect("peek export");
     let err = peek
-        .call(&mut store, &[Val::Borrow(stale)])
+        .call(&mut store, &[Val::Resource(stale)])
         .await
         .expect_err("the released handle names another entry now");
     assert!(
@@ -1682,8 +1682,8 @@ async fn it_refuses_to_lower_a_stale_handle_whose_slot_was_reminted_with_the_sam
     );
     // The refused lower is a trap, which poisons the store, so the new
     // handle is checked through its release, which runs no guest code.
-    store
-        .resource_drop(fresh)
+    fresh
+        .resource_drop(&mut store.as_context_mut())
         .expect("the resource that took the index is still the host's");
 }
 
@@ -1692,19 +1692,21 @@ async fn it_refuses_to_release_a_stale_handle_whose_slot_was_reminted() {
     // Releasing the old handle again must not release the resource that
     // took its index, which would run that resource's destructor.
     let (mut store, _instance, type_id) = borrower_instance().await;
-    let stale = store.resource_new(type_id, 9).expect("mint");
-    store.resource_drop(stale).expect("release");
-    let fresh = store.resource_new(type_id, 9).expect("mint again");
+    let stale = super::mint(&mut store, type_id, 9).expect("mint");
+    stale
+        .resource_drop(&mut store.as_context_mut())
+        .expect("release");
+    let fresh = super::mint(&mut store, type_id, 9).expect("mint again");
 
-    let err = store
-        .resource_drop(stale)
+    let err = stale
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("the released handle names another entry now");
     assert!(
         invalid_handle_reason(&err).contains("host-owned resource was already de-allocated"),
         "got {err}"
     );
-    store
-        .resource_drop(fresh)
+    fresh
+        .resource_drop(&mut store.as_context_mut())
         .expect("the resource that took the index is still the host's");
 }
 
@@ -1714,17 +1716,17 @@ async fn it_names_the_rep_mismatch_when_a_handle_records_another_rep() {
     // whose rep does not came from somewhere other than this entry. The
     // refusal says so, rather than calling a live index unknown.
     let (mut store, instance, type_id) = borrower_instance().await;
-    let first = store.resource_new(type_id, 100).expect("mint");
-    let forged: ResourceHandle = ResourceHandleParts {
+    let first = super::mint(&mut store, type_id, 100).expect("mint");
+    let forged = <ResourceAny as ResourceAnyInternal>::new(
         type_id,
-        index: first.index(),
-        rep: 200,
-        generation: first.generation(),
-    }
-    .into();
+        first.index(),
+        200,
+        first.generation(),
+        true,
+    );
     let peek = instance.get_func("peek").expect("peek export");
     let err = peek
-        .call(&mut store, &[Val::Borrow(forged)])
+        .call(&mut store, &[Val::Resource(forged)])
         .await
         .expect_err("the forged handle records another rep");
     let reason = invalid_handle_reason(&err);
@@ -1732,8 +1734,8 @@ async fn it_names_the_rep_mismatch_when_a_handle_records_another_rep() {
         reason.contains("with rep 100, not the rep 200 the handle records"),
         "the refusal names the mismatch, got {reason}"
     );
-    store
-        .resource_drop(first)
+    first
+        .resource_drop(&mut store.as_context_mut())
         .expect("the refused lower lent nothing");
 }
 
@@ -1811,7 +1813,7 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
         .await
         .expect("component parses");
     let (mut linker, type_id) = borrower_linker(&engine);
-    let held: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let held: Arc<Mutex<Option<ResourceAny>>> = Arc::new(Mutex::new(None));
     let release = Arc::new(AtomicBool::new(false));
     {
         let held = held.clone();
@@ -1832,10 +1834,11 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
                     async_: true,
                 },
                 move |_accessor: &crate::Accessor<()>, args: Vec<Val>| {
-                    let Some(Val::Borrow(handle)) = args.first() else {
-                        panic!("expected a borrowed handle, got {args:?}");
+                    let handle = match args.first() {
+                        Some(Val::Resource(handle)) if !handle.owned() => *handle,
+                        _ => panic!("expected a borrowed handle, got {args:?}"),
                     };
-                    *held.lock().expect("the held handle") = Some(*handle);
+                    *held.lock().expect("the held handle") = Some(handle);
                     let release = release.clone();
                     core::future::poll_fn(move |context| {
                         if release.load(Ordering::Relaxed) {
@@ -1859,11 +1862,11 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
         .expect("instantiate the borrower");
     let lend = lending.get_func("lend").expect("lend export");
     let peek = borrowing.get_func("peek").expect("peek export");
-    let minted = store.resource_new(type_id, 77).expect("mint");
+    let minted = super::mint(&mut store, type_id, 77).expect("mint");
 
     let (peeked, lifted) = store
         .run_concurrent(async |accessor| {
-            let arguments = [Val::Borrow(minted)];
+            let arguments = [Val::Resource(minted)];
             let mut lent = core::pin::pin!(lend.call_concurrent(accessor, &arguments));
             core::future::poll_fn(|context| {
                 assert!(
@@ -1882,7 +1885,7 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
                 .expect("the held handle")
                 .expect("the host holds the borrow");
             let peeked = peek
-                .call_concurrent(accessor, &[Val::Borrow(lifted)])
+                .call_concurrent(accessor, &[Val::Resource(lifted)])
                 .await
                 .expect("the host's borrow lowers back into a guest");
             release.store(true, Ordering::Relaxed);
@@ -1899,15 +1902,15 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
     );
 
     let err = peek
-        .call(&mut store, &[Val::Borrow(lifted)])
+        .call(&mut store, &[Val::Resource(lifted)])
         .await
         .expect_err("the borrow went with the call that handed it over");
     assert!(
         matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
         "got {err:?}"
     );
-    store
-        .resource_drop(minted)
+    minted
+        .resource_drop(&mut store.as_context_mut())
         .expect("every lend of the host's handle came back");
 }
 
@@ -1964,7 +1967,7 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
             |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
         )
         .expect("the registration");
-    let lent: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let lent: Arc<Mutex<Option<ResourceAny>>> = Arc::new(Mutex::new(None));
     let given = lent.clone();
     linker
         .instance(&iface)
@@ -1980,7 +1983,7 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
                     .lock()
                     .expect("the lent handle")
                     .expect("the host minted a handle before the call");
-                results[0] = Val::Own(owned);
+                results[0] = Val::Resource(owned);
                 Ok(())
             },
         )
@@ -1991,12 +1994,12 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
         .await
         .expect("instantiate");
 
-    let handle = store.resource_new(type_id, 21).expect("mint");
+    let handle = super::mint(&mut store, type_id, 21).expect("mint");
     *lent.lock().expect("the lent handle") = Some(handle);
 
     let grab = instance.get_func("grab").expect("grab export");
     let err = grab
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("the entry is lent for the length of the call");
     let text = chain(&err);
@@ -2005,8 +2008,8 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
         "the refusal must name the lend, got: {text}"
     );
 
-    store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("the call ended, so the lend came back and the release stands");
 }
 
@@ -2054,7 +2057,7 @@ async fn it_lowers_a_borrow_into_the_defining_instance_through_the_hosts_entry()
     let handle = make_handle(&mut store, &instance, 42).await;
     let read = instance.get_func("read").expect("read export");
     let results = read
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect("the defining instance borrows its own resource");
     assert_eq!(
@@ -2063,11 +2066,11 @@ async fn it_lowers_a_borrow_into_the_defining_instance_through_the_hosts_entry()
         "the rep the guest read is the one its owning entry holds"
     );
 
-    store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("the call ended, so the lend came back");
     let err = read
-        .call(&mut store, &[Val::Borrow(handle)])
+        .call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("a released handle names no entry to borrow");
     assert!(
@@ -2365,8 +2368,9 @@ async fn disposal_store() -> (Store<Vec<u32>>, ResourceType, crate::Instance) {
                 async_: false,
             },
             |_: HostCall<'_, Vec<u32>>, args, results| {
-                let Val::Borrow(handle) = &args[0] else {
-                    panic!("expected a borrowed handle, got {args:?}");
+                let handle = match &args[0] {
+                    Val::Resource(handle) if !handle.owned() => *handle,
+                    _ => panic!("expected a borrowed handle, got {args:?}"),
                 };
                 results[0] = Val::U32(handle.rep());
                 Ok(())
@@ -2384,24 +2388,28 @@ async fn disposal_store() -> (Store<Vec<u32>>, ResourceType, crate::Instance) {
 #[wcmp_macros::test]
 async fn it_releases_a_host_held_handle_and_runs_its_destructor_once() {
     let (mut store, type_id, _instance) = disposal_store().await;
-    let handle = store.resource_new(type_id, 31).expect("mint");
-    store.resource_drop(handle).expect("release");
+    let handle = super::mint(&mut store, type_id, 31).expect("mint");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("release");
     assert_eq!(
         store.data(),
         &vec![31],
         "the destructor ran once with the rep"
     );
-    let next = store.resource_new(type_id, 32).expect("mint again");
+    let next = super::mint(&mut store, type_id, 32).expect("mint again");
     assert_eq!(next.index(), handle.index(), "the freed slot is reused");
 }
 
 #[wcmp_macros::test]
 async fn it_refuses_to_release_a_handle_twice() {
     let (mut store, type_id, _instance) = disposal_store().await;
-    let handle = store.resource_new(type_id, 5).expect("mint");
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
+    let handle = super::mint(&mut store, type_id, 5).expect("mint");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("first release");
+    let err = handle
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("a released handle is not live");
     assert!(
         matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::InvalidHandle { .. })),
@@ -2413,10 +2421,12 @@ async fn it_refuses_to_release_a_handle_twice() {
 #[wcmp_macros::test]
 async fn it_names_the_resource_type_when_it_refuses_a_released_handle() {
     let (mut store, type_id, _instance) = disposal_store().await;
-    let handle = store.resource_new(type_id, 5).expect("mint");
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
+    let handle = super::mint(&mut store, type_id, 5).expect("mint");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("first release");
+    let err = handle
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("a released handle is not live");
     let Error::Abi(abi) = &err else {
         panic!("expected a canonical-ABI error, got {err:?}");
@@ -2433,7 +2443,9 @@ async fn it_names_the_resource_type_when_it_refuses_a_released_handle() {
 async fn it_releases_a_locally_defined_resource_through_the_store() {
     let (mut store, instance) = local_resource_instance().await;
     let handle = make_handle(&mut store, &instance, 9).await;
-    store.resource_drop(handle).expect("release");
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("release");
     let dropped = instance.get_func("dropped").expect("dropped export");
     let last = instance.get_func("last").expect("last export");
     assert_eq!(
@@ -2453,8 +2465,8 @@ async fn it_releases_a_locally_defined_resource_through_the_store() {
 
 #[wcmp_macros::test]
 async fn it_runs_no_destructor_when_a_store_is_dropped() {
-    let (store, type_id, instance) = disposal_store().await;
-    let _leaked = store.resource_new(type_id, 77).expect("mint");
+    let (mut store, type_id, instance) = disposal_store().await;
+    let _leaked = super::mint(&mut store, type_id, 77).expect("mint");
     // The host data is the only record the destructor writes to; take
     // it out of the store before the store drops.
     drop(instance);
@@ -2473,8 +2485,8 @@ async fn it_lets_an_instance_drop_before_its_store() {
     drop(instance);
     // The store, its tables, and the destructor the dropped instance
     // introduced all outlive the instance handle.
-    store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("a handle minted by a dropped instance still releases");
 }
 
@@ -2520,12 +2532,12 @@ async fn it_names_a_host_resource_no_component_imported() {
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    let handle = store.resource_new(gadget, 1).expect("mint");
-    store
-        .resource_drop(handle)
+    let handle = super::mint(&mut store, gadget, 1).expect("mint");
+    handle
+        .resource_drop(&mut store.as_context_mut())
         .expect("released; no instance of this store holds its destructor");
-    let err = store
-        .resource_drop(handle)
+    let err = handle
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("a released handle is not live");
 
     assert_eq!(
@@ -2542,9 +2554,11 @@ async fn it_names_a_locally_defined_resource_when_it_refuses_a_released_handle()
     // instantiation gave it its identity, and the refusal names that.
     let (mut store, instance) = local_resource_instance().await;
     let handle = make_handle(&mut store, &instance, 9).await;
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
+    handle
+        .resource_drop(&mut store.as_context_mut())
+        .expect("first release");
+    let err = handle
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("a released handle is not live");
 
     assert_eq!(
@@ -2556,10 +2570,10 @@ async fn it_names_a_locally_defined_resource_when_it_refuses_a_released_handle()
 }
 
 #[wcmp_macros::test]
-async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
-    // The mint entry point refuses an identity the calling instance
-    // holds no table for. The refusal names that identity, exactly as
-    // the lower path names the handle slot it refused.
+async fn it_refuses_a_returned_host_handle_of_another_registration() {
+    // A host function returns a handle of a host type that is
+    // registered, but not as the resource the result declares. The
+    // lowering refuses it.
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
@@ -2594,10 +2608,13 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call: HostCall<'_, ()>, _args, results| {
+            move |mut call: HostCall<'_, ()>, _args, results| {
                 // `gadget` is registered against the linker but is not a
                 // resource type of the instance being served.
-                results[0] = Val::Own(call.resource_new(gadget, 1)?);
+                results[0] = Val::Resource(ResourceAny::try_from_resource(
+                    Resource::<Gadget>::new_own(1),
+                    call.store(),
+                )?);
                 Ok(())
             },
         )
@@ -2611,7 +2628,7 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
     let err = run
         .call(&mut store, &[])
         .await
-        .expect_err("minting against a type the instance does not hold fails");
+        .expect_err("a handle of another registration does not lower");
 
     // The host error traps the guest, and the call gets it back as
     // the host function raised it.
@@ -2621,10 +2638,10 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
                 matches!(abi.cause, AbiCause::UnregisteredResourceType),
                 "expected the unregistered-resource-type cause, got {err:?}"
             );
-            assert_eq!(
-                abi.valtype,
-                Some(ValueType::Own(ResourceType::host::<Gadget>())),
-                "the refusal names the resource type the mint asked for"
+            assert_eq!(abi.position, AbiPosition::Result, "{err}");
+            assert!(
+                matches!(abi.valtype, Some(ValueType::Own(declared)) if declared != gadget),
+                "the refusal names the declared slot, got {err:?}"
             );
         }
         other => panic!("expected the unregistered-resource-type cause, got {other:?}"),
@@ -2671,8 +2688,8 @@ async fn it_reports_a_substrate_failure_when_a_local_destructor_traps() {
         .expect("instantiate");
     let handle = make_handle(&mut store, &instance, 3).await;
 
-    let err = store
-        .resource_drop(handle)
+    let err = handle
+        .resource_drop(&mut store.as_context_mut())
         .expect_err("a destructor that traps fails the release");
 
     let Error::Abi(abi) = &err else {

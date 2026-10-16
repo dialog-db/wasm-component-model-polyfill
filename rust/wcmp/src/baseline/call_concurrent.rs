@@ -973,9 +973,9 @@ async fn it_resolves_every_call_a_waker_gated_combinator_holds() {
 #[wcmp_macros::test]
 async fn it_ends_the_entry_with_the_borrows_a_concurrent_calls_guest_still_owes() {
     let (mut store, instance, type_id) = instantiate_borrow_holder().await;
-    let handle = store.resource_new(type_id, 5).expect("mint an own handle");
+    let handle = super::mint(&mut store, type_id, 5).expect("mint an own handle");
     let hold = func(&instance, "hold");
-    let args = [Val::Borrow(handle)];
+    let args = [Val::Resource(handle)];
 
     let failure = match store
         .run_concurrent(async |accessor| {
@@ -1021,7 +1021,7 @@ async fn it_gives_a_host_lend_back_when_the_call_resolves() {
         let component = Component::new(&engine, BORROWS_AND_KEEPS_RUNNING)
             .await
             .expect("component parses");
-        let lent: Arc<Mutex<Option<crate::ResourceHandle>>> = Arc::default();
+        let lent: Arc<Mutex<Option<crate::ResourceAny>>> = Arc::default();
         let refused = Arc::new(AtomicBool::new(false));
         let mut linker: Linker<()> = Linker::new(&engine);
         let interface: InterfaceIdentifier = "pdd020-tests:host/lends@0.1.0"
@@ -1059,9 +1059,9 @@ async fn it_gives_a_host_lend_back_when_the_call_resolves() {
             .await
             .expect("instantiate");
         let answer = func(&instance, "answer");
-        let handle = store.resource_new(ty, 11).expect("mint");
+        let handle = super::mint(&mut store, ty, 11).expect("mint");
         *lent.lock().expect("the lent handle") = Some(handle);
-        let arguments = [Val::U32(21), Val::Borrow(handle)];
+        let arguments = [Val::U32(21), Val::Resource(handle)];
 
         let returned = if through_call {
             answer.call(&mut store, &arguments).await
@@ -1086,8 +1086,8 @@ async fn it_gives_a_host_lend_back_when_the_call_resolves() {
             1,
             "the callback task kept running past its `task.return`"
         );
-        store
-            .resource_drop(handle)
+        handle
+            .resource_drop(&mut store.as_context_mut())
             .expect("the resolution gave the host its handle back");
     }
 }

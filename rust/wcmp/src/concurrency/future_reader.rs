@@ -71,7 +71,7 @@ use super::source::Source;
 /// the lower, the pipe, and the close cannot tell a reader from
 /// another store. Using a reader with a store other than the one that
 /// made it is a host error the polyfill does not detect, as with a
-/// [`ResourceHandle`](crate::ResourceHandle): when the other store
+/// [`ResourceAny`](crate::ResourceAny): when the other store
 /// holds a readable end for the host under the same index and
 /// generation, that end is the one lowered, piped, or closed, and the
 /// guest reads, the consumer takes, or the close ends the other

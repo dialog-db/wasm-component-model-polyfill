@@ -496,7 +496,6 @@ pub fn wcmp::TypeRendering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::f
 impl core::marker::StructuralPartialEq for wcmp::TypeRendering
 #[non_exhaustive] pub enum wcmp::Val
 pub wcmp::Val::Bool(bool)
-pub wcmp::Val::Borrow(wcmp::ResourceHandle)
 pub wcmp::Val::Char(char)
 pub wcmp::Val::Enum(alloc::string::String)
 pub wcmp::Val::ErrorContext(wcmp::ErrorContextAny)
@@ -508,8 +507,8 @@ pub wcmp::Val::Future(wcmp::FutureAny)
 pub wcmp::Val::List(alloc::boxed::Box<[wcmp::Val]>)
 pub wcmp::Val::Map(alloc::boxed::Box<[(wcmp::Val, wcmp::Val)]>)
 pub wcmp::Val::Option(core::option::Option<alloc::boxed::Box<wcmp::Val>>)
-pub wcmp::Val::Own(wcmp::ResourceHandle)
 pub wcmp::Val::Record(alloc::boxed::Box<[wcmp::ValField]>)
+pub wcmp::Val::Resource(wcmp::ResourceAny)
 pub wcmp::Val::Result(core::result::Result<core::option::Option<alloc::boxed::Box<wcmp::Val>>, core::option::Option<alloc::boxed::Box<wcmp::Val>>>)
 pub wcmp::Val::S16(i16)
 pub wcmp::Val::S32(i32)
@@ -834,7 +833,6 @@ pub struct wcmp::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wcmp::HostCall<'a, T>
 pub fn wcmp::HostCall<'a, T>::data(&self) -> &T
 pub fn wcmp::HostCall<'a, T>::data_mut(&mut self) -> &mut T
-pub fn wcmp::HostCall<'a, T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::HostCall<'a, T>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
 pub struct wcmp::Instance
 impl wcmp::Instance
@@ -1054,22 +1052,55 @@ pub fn wcmp::RecordType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt:
 impl core::hash::Hash for wcmp::RecordType
 pub fn wcmp::RecordType::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::StructuralPartialEq for wcmp::RecordType
-pub struct wcmp::ResourceHandle
-impl wcmp::ResourceHandle
-pub fn wcmp::ResourceHandle::index(&self) -> u32
-pub fn wcmp::ResourceHandle::rep(&self) -> u32
-pub fn wcmp::ResourceHandle::ty(&self) -> wcmp::ResourceType
-impl core::clone::Clone for wcmp::ResourceHandle
-pub fn wcmp::ResourceHandle::clone(&self) -> wcmp::ResourceHandle
-impl core::cmp::Eq for wcmp::ResourceHandle
-impl core::cmp::PartialEq for wcmp::ResourceHandle
-pub fn wcmp::ResourceHandle::eq(&self, &wcmp::ResourceHandle) -> bool
-impl core::fmt::Debug for wcmp::ResourceHandle
-pub fn wcmp::ResourceHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for wcmp::ResourceHandle
-pub fn wcmp::ResourceHandle::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::Copy for wcmp::ResourceHandle
-impl core::marker::StructuralPartialEq for wcmp::ResourceHandle
+pub struct wcmp::Resource<T: 'static>
+impl<T: 'static> wcmp::Resource<T>
+pub fn wcmp::Resource<T>::new_borrow(u32) -> Self
+pub fn wcmp::Resource<T>::new_own(u32) -> Self
+pub fn wcmp::Resource<T>::owned(&self) -> bool
+pub fn wcmp::Resource<T>::rep(&self) -> u32
+pub fn wcmp::Resource<T>::try_from_resource_any<D: 'static>(wcmp::ResourceAny, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<Self>
+pub fn wcmp::Resource<T>::try_into_resource_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::ResourceAny>
+impl<T: 'static> core::fmt::Debug for wcmp::Resource<T>
+pub fn wcmp::Resource<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: 'static> wcmp::ComponentType for wcmp::Resource<T>
+impl<T: 'static> wcmp::Lift for wcmp::Resource<T>
+impl<T: 'static> wcmp::Lower for wcmp::Resource<T>
+pub struct wcmp::ResourceAny
+impl wcmp::ResourceAny
+pub fn wcmp::ResourceAny::owned(&self) -> bool
+pub fn wcmp::ResourceAny::resource_drop<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
+pub fn wcmp::ResourceAny::try_from_resource<T: 'static, D: 'static>(wcmp::Resource<T>, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<Self>
+pub fn wcmp::ResourceAny::try_into_resource<T: 'static>(self, &mut wcmp::StoreContext<'_, impl core::marker::Sized + 'static>) -> wcmp::Result<wcmp::Resource<T>>
+pub fn wcmp::ResourceAny::try_into_resource_dynamic<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::ResourceDynamic>
+pub fn wcmp::ResourceAny::ty(&self) -> wcmp::ResourceType
+impl core::clone::Clone for wcmp::ResourceAny
+pub fn wcmp::ResourceAny::clone(&self) -> wcmp::ResourceAny
+impl core::cmp::Eq for wcmp::ResourceAny
+impl core::cmp::PartialEq for wcmp::ResourceAny
+pub fn wcmp::ResourceAny::eq(&self, &wcmp::ResourceAny) -> bool
+impl core::fmt::Debug for wcmp::ResourceAny
+pub fn wcmp::ResourceAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for wcmp::ResourceAny
+pub fn wcmp::ResourceAny::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for wcmp::ResourceAny
+impl core::marker::StructuralPartialEq for wcmp::ResourceAny
+impl wcmp::ComponentType for wcmp::ResourceAny
+impl wcmp::Lift for wcmp::ResourceAny
+impl wcmp::Lower for wcmp::ResourceAny
+pub struct wcmp::ResourceDynamic
+impl wcmp::ResourceDynamic
+pub fn wcmp::ResourceDynamic::new_borrow(u32, u32) -> Self
+pub fn wcmp::ResourceDynamic::new_own(u32, u32) -> Self
+pub fn wcmp::ResourceDynamic::owned(&self) -> bool
+pub fn wcmp::ResourceDynamic::rep(&self) -> u32
+pub fn wcmp::ResourceDynamic::try_from_resource_any<D: 'static>(wcmp::ResourceAny, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<Self>
+pub fn wcmp::ResourceDynamic::try_into_resource_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::ResourceAny>
+pub fn wcmp::ResourceDynamic::ty(&self) -> u32
+impl core::fmt::Debug for wcmp::ResourceDynamic
+pub fn wcmp::ResourceDynamic::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl wcmp::ComponentType for wcmp::ResourceDynamic
+impl wcmp::Lift for wcmp::ResourceDynamic
+impl wcmp::Lower for wcmp::ResourceDynamic
 pub struct wcmp::ResourceType
 impl wcmp::ResourceType
 pub fn wcmp::ResourceType::host<T: 'static>() -> Self
@@ -1110,8 +1141,6 @@ pub fn wcmp::Store<T>::as_context_mut(&mut self) -> wcmp::StoreContext<'_, T>
 pub fn wcmp::Store<T>::data(&self) -> &T
 pub fn wcmp::Store<T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::Store<T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::Store<T>::resource_drop(&mut self, wcmp::ResourceHandle) -> wcmp::Result<()>
-pub fn wcmp::Store<T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
 pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, usize)
 impl<T: core::marker::Send + 'static> wcmp::Store<T>
@@ -1123,7 +1152,6 @@ impl<'a, T: 'static> wcmp::StoreContext<'a, T>
 pub fn wcmp::StoreContext<'a, T>::data(&self) -> &T
 pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::StoreContext<'a, T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
 pub struct wcmp::StoreId(_)
 impl core::clone::Clone for wcmp::StoreId
@@ -1289,6 +1317,8 @@ impl wcmp::ComponentType for u64
 impl wcmp::ComponentType for u8
 impl wcmp::ComponentType for wcmp::ErrorContext
 impl wcmp::ComponentType for wcmp::FutureAny
+impl wcmp::ComponentType for wcmp::ResourceAny
+impl wcmp::ComponentType for wcmp::ResourceDynamic
 impl wcmp::ComponentType for wcmp::StreamAny
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType, Q: wcmp::ComponentType, R: wcmp::ComponentType> wcmp::ComponentType for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType, Q: wcmp::ComponentType> wcmp::ComponentType for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
@@ -1308,6 +1338,7 @@ impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType> wcm
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType> wcmp::ComponentType for (A, B)
 impl<A: wcmp::ComponentType> wcmp::ComponentType for (A)
 impl<K: wcmp::ComponentType, V: wcmp::ComponentType> wcmp::ComponentType for std::collections::hash::map::HashMap<K, V>
+impl<T: 'static> wcmp::ComponentType for wcmp::Resource<T>
 impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for &T
 impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for alloc::boxed::Box<T>
 impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for alloc::sync::Arc<T>
@@ -1360,6 +1391,8 @@ impl wcmp::Lift for u64
 impl wcmp::Lift for u8
 impl wcmp::Lift for wcmp::ErrorContext
 impl wcmp::Lift for wcmp::FutureAny
+impl wcmp::Lift for wcmp::ResourceAny
+impl wcmp::Lift for wcmp::ResourceDynamic
 impl wcmp::Lift for wcmp::StreamAny
 impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift, E: wcmp::Lift, F: wcmp::Lift, G: wcmp::Lift, H: wcmp::Lift, I: wcmp::Lift, J: wcmp::Lift, K: wcmp::Lift, L: wcmp::Lift, M: wcmp::Lift, N: wcmp::Lift, O: wcmp::Lift, P: wcmp::Lift, Q: wcmp::Lift, R: wcmp::Lift> wcmp::Lift for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift, E: wcmp::Lift, F: wcmp::Lift, G: wcmp::Lift, H: wcmp::Lift, I: wcmp::Lift, J: wcmp::Lift, K: wcmp::Lift, L: wcmp::Lift, M: wcmp::Lift, N: wcmp::Lift, O: wcmp::Lift, P: wcmp::Lift, Q: wcmp::Lift> wcmp::Lift for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
@@ -1379,6 +1412,7 @@ impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift> wcmp::Lift for (A, B, C)
 impl<A: wcmp::Lift, B: wcmp::Lift> wcmp::Lift for (A, B)
 impl<A: wcmp::Lift> wcmp::Lift for (A)
 impl<K: wcmp::Lift + core::cmp::Eq + core::hash::Hash, V: wcmp::Lift> wcmp::Lift for std::collections::hash::map::HashMap<K, V>
+impl<T: 'static> wcmp::Lift for wcmp::Resource<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::StreamReader<T>
 impl<T: wcmp::Lift, E: wcmp::Lift> wcmp::Lift for core::result::Result<T, E>
@@ -1405,6 +1439,8 @@ impl wcmp::Lower for u64
 impl wcmp::Lower for u8
 impl wcmp::Lower for wcmp::ErrorContext
 impl wcmp::Lower for wcmp::FutureAny
+impl wcmp::Lower for wcmp::ResourceAny
+impl wcmp::Lower for wcmp::ResourceDynamic
 impl wcmp::Lower for wcmp::StreamAny
 impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower, E: wcmp::Lower, F: wcmp::Lower, G: wcmp::Lower, H: wcmp::Lower, I: wcmp::Lower, J: wcmp::Lower, K: wcmp::Lower, L: wcmp::Lower, M: wcmp::Lower, N: wcmp::Lower, O: wcmp::Lower, P: wcmp::Lower, Q: wcmp::Lower, R: wcmp::Lower> wcmp::Lower for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower, E: wcmp::Lower, F: wcmp::Lower, G: wcmp::Lower, H: wcmp::Lower, I: wcmp::Lower, J: wcmp::Lower, K: wcmp::Lower, L: wcmp::Lower, M: wcmp::Lower, N: wcmp::Lower, O: wcmp::Lower, P: wcmp::Lower, Q: wcmp::Lower> wcmp::Lower for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
@@ -1424,6 +1460,7 @@ impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower> wcmp::Lower for (A, B, C)
 impl<A: wcmp::Lower, B: wcmp::Lower> wcmp::Lower for (A, B)
 impl<A: wcmp::Lower> wcmp::Lower for (A)
 impl<K: wcmp::Lower, V: wcmp::Lower> wcmp::Lower for std::collections::hash::map::HashMap<K, V>
+impl<T: 'static> wcmp::Lower for wcmp::Resource<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::StreamReader<T>
 impl<T: wcmp::Lower + ?core::marker::Sized> wcmp::Lower for &T

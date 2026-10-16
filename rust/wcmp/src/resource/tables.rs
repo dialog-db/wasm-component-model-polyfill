@@ -701,7 +701,7 @@ impl HandleTables {
     /// say where each one lives.
     ///
     /// While the lend stands, the entry cannot be taken back out of
-    /// the host's table: `Store::resource_drop` from a host function
+    /// the host's table: `ResourceAny::resource_drop` from a host function
     /// the guest called, and a second lowering of the same handle as
     /// an `own<T>`, both fail with [`HandleLookupError::Lent`]. That
     /// is what makes the host's own handles obey the rule the
@@ -1074,7 +1074,7 @@ impl HandleTables {
     }
 
     /// The host's table for a resource type, created on first access.
-    /// Handles the host holds (`Store::resource_new`, an `own<T>`
+    /// Handles the host holds (a `ResourceAny`, an `own<T>`
     /// lifted out of a guest) live here.
     pub fn host_table(&mut self, type_id: ResourceType) -> TableId {
         *self

@@ -15,10 +15,9 @@ use crate::concurrency::{
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::internal::EngineInternal;
-use crate::resource::{HandleTables, ResourceHandle};
+use crate::resource::HandleTables;
 use crate::runtime_layer::{AsContextMut, MaybeSend, Store as RuntimeStore, substrate_failure};
 use crate::suspend_provider_kind::SuspendProviderKind;
-use crate::types::ResourceType;
 
 use super::store_context::StoreContext;
 use super::store_context::internal::StoreContextInternalExt;
@@ -60,7 +59,7 @@ pub mod internal;
 /// trapped flag per store, and a poisoned store runs no more guest
 /// code. [`Func::call`], [`Func::call_concurrent`], their typed
 /// counterparts, every instantiation into the store, and
-/// [`Store::resource_drop`] of a resource a guest defines fail with
+/// [`ResourceAny::resource_drop`] of a resource a guest defines fail with
 /// the cannot-enter cause, [`TaskCause::CannotEnter`]. What runs no
 /// guest code still works: the release of a resource the host
 /// defines, [`Store::run_concurrent`] whose closure does only host
@@ -104,6 +103,7 @@ pub mod internal;
 /// [`Func::call`]: crate::Func::call
 /// [`Func::call_concurrent`]: crate::Func::call_concurrent
 /// [`TaskCause::CannotEnter`]: crate::TaskCause::CannotEnter
+/// [`ResourceAny::resource_drop`]: crate::ResourceAny::resource_drop
 ///
 /// # What the store does not lend
 ///
@@ -423,77 +423,6 @@ impl<T: 'static> Store<T> {
         self.store_data_mut().scheduler_mut()
     }
 
-    /// Mint a fresh `own<T>` handle in this store's resource table
-    /// for the given registered resource type.
-    ///
-    /// The `rep` is a host-supplied 32-bit representation that
-    /// identifies the resource's host-side state — typically an
-    /// index into a host-managed table. The polyfill allocates a
-    /// table entry, records the rep, and returns a [`ResourceHandle`]
-    /// the caller can hand to a guest export through [`Val::Own`].
-    ///
-    /// [`Val::Own`]: crate::Val::Own
-    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
-        self.reachable()?;
-        self.store_data().resource_new(type_id, rep)
-    }
-
-    /// Release a handle the host holds. The handle's entry leaves the
-    /// host's table for its resource type, and the resource's
-    /// destructor runs once: the registered closure for a host
-    /// resource, or the defining component's own destructor for a
-    /// locally-defined one. A handle that is not live, because it was
-    /// released or handed to a guest already, fails with the
-    /// invalid-handle ABI cause; a handle lent out as a borrow cannot
-    /// be released until the call that borrowed it ends.
-    ///
-    /// The destructor runs as a task with one thread of its own, as
-    /// it does when a guest drops the last owning handle: it sees
-    /// two context slots of zero, and what it writes into them ends
-    /// with it.
-    ///
-    /// A destructor may not block. The Canonical ABI says so under
-    /// `canon resource.drop`: the destructor call works like a
-    /// synchronous cross-component call, and `canon lift` traps a
-    /// call that is not `async`-typed and blocks before it returns.
-    /// Wasmtime enters a destructor as a synchronous call and traps
-    /// a block inside it with `Trap::CannotBlockSyncTask`. A
-    /// destructor that blocks therefore fails the release with the
-    /// cannot-block cause, on every target and whether or not a
-    /// suspend provider is installed.
-    ///
-    /// A locally-defined resource's destructor is guest code, and
-    /// guest code runs inside a turn of the store's scheduler, so
-    /// the release runs one for it. Three rules come with the turn.
-    /// A destructor that calls a host `async` import whose future is
-    /// ready when the import polls it gets the result and returns,
-    /// and the release stands. A destructor that lowers such an
-    /// import synchronously and whose future stays pending blocks,
-    /// which fails the release with the cannot-block cause. A
-    /// destructor that lowers the import asynchronously does not
-    /// block: it leaves its host task in the store, where the next
-    /// turn of any driver polls it.
-    ///
-    /// A host resource's destructor is the host's own closure and
-    /// not guest code, so it runs outside a turn, as the call that
-    /// released the handle does.
-    ///
-    /// A locally-defined resource's destructor that fails is a trap,
-    /// and poisons the store. A poisoned store refuses the release of
-    /// a resource a guest defines with the cannot-enter cause, after
-    /// the handle has left the host's table, as in Wasmtime: the
-    /// destructor is guest code, and no guest code runs in the store
-    /// again. The release of a resource the host defines still runs,
-    /// because its destructor is the host's own.
-    ///
-    /// Dropping the store instead runs no destructor: a handle the
-    /// host never released is leaked, as in Wasmtime.
-    pub fn resource_drop(&mut self, handle: ResourceHandle) -> Result<()> {
-        self.reachable()?;
-        let mut context = self.context();
-        context.internal().resource_drop(handle)
-    }
-
     /// Whether a turn of this store is running. A driver entered
     /// while another driver of the same store is inside a turn fails
     /// with the recursive-driver cause. Workspace-internal.
@@ -628,7 +557,8 @@ mod tests {
     use crate::concurrency::{HostTask, Item, ItemKind};
     use crate::engine::Engine;
     use crate::executor::ResourceDestructor;
-    use crate::internal::ResourceTypeInternal;
+    use crate::internal::{ResourceAnyInternal, ResourceTypeInternal};
+    use crate::types::ResourceType;
     use crate::value::Val;
 
     use super::*;
@@ -645,7 +575,7 @@ mod tests {
 
         let handle = store
             .run_concurrent(async |accessor: &crate::Accessor<()>| {
-                accessor.with(|context| context.resource_new(type_id, 9))
+                accessor.with(|context| context.internal().mint_own(type_id, 9))
             })
             .await
             .expect("the driver runs")
@@ -673,7 +603,11 @@ mod tests {
                 Ok(())
             })),
         );
-        let _handle = store.resource_new(type_id, 7).expect("mint a handle");
+        let _handle = store
+            .context()
+            .internal()
+            .mint_own(type_id, 7)
+            .expect("mint a handle");
 
         // A queued item and a host task, neither of which has run.
         let item_runs = Arc::new(AtomicUsize::new(0));

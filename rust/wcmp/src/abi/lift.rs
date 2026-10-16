@@ -11,17 +11,22 @@
 //! compound shapes, dispatching to per-variant primitives at the
 //! leaves.
 
+use std::sync::{Arc, Mutex};
+
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
-use crate::concurrency::{CopyState, EndId, EndKind};
+use crate::concurrency::{CopyState, EndId, EndKind, Scope};
 use crate::concurrency::{ErrorContextAny, ErrorContextId, FutureAny, StreamAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, Result};
 use crate::internal::{
-    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceTypeInternal,
-    StreamAnyInternal,
+    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceAnyInternal,
+    ResourceTypeInternal, StreamAnyInternal,
 };
-use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
+use crate::resource::{
+    HandleKind, HandleLookupError, HandleTables, HostHandle, ResourceAny, ResourceTableRuntime,
+    TableId,
+};
 use crate::types::{MapType, PrimitiveType, ResourceType, ValueType, resolve_resources};
 use crate::value::{Val, ValField};
 
@@ -189,7 +194,7 @@ pub fn lift<T: 'static>(
         }
         ValueType::Own(_) | ValueType::Borrow(_) => {
             let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
-            lift_handle(ctx, index, ty, position, matches!(ty, ValueType::Own(_)))
+            lift_resource_any(ctx, index, ty, position).map(Val::Resource)
         }
         ValueType::Stream(_) | ValueType::Future(_) => {
             let index = u32::from_le_bytes(ctx.read_array(offset, position, ty)?);
@@ -855,66 +860,37 @@ pub fn read_discriminant<T: 'static>(
     })
 }
 
-/// Lift a `own<T>` or `borrow<T>` handle from a 4-byte index that
-/// has already been read out of the flat slot or memory location.
+/// Lift a `own<T>` or `borrow<T>` handle toward the host as a
+/// [`ResourceAny`], from a 4-byte index that has already been read
+/// out of the flat slot or memory location.
 ///
 /// The lift cross-references the index against the per-store handle
 /// tables: the polyfill keeps one table per component instance,
 /// shared by every handle kind that instance uses, and one table per
-/// resource type for the handles the host owns outright, keyed by
+/// resource type for the handles the host holds, keyed by
 /// [`ResourceType`](crate::resource::ResourceType). For an
 /// `own<T>` lift the entry is removed from the instance's table and
 /// inserted into the host's table for the resource type — ownership
-/// transfers to the host. For `borrow<T>` the entry is left in
-/// place and the host receives a handle that aliases the live entry.
+/// transfers to the host. For `borrow<T>` the instance's entry is
+/// left in place and lent to the call, and the host's handle names a
+/// borrow entry of its own table, which goes when the call ends.
 ///
 /// The declared `ValueType` names the resource table by its index in
 /// the component, and the lift context maps that to the table the
 /// instance keeps and the resource type it holds.
-pub fn lift_handle<T: 'static>(
+pub fn lift_resource_any<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     index: u32,
     ty: &ValueType,
     position: AbiPosition,
-    is_own: bool,
-) -> Result<Val> {
+) -> Result<ResourceAny> {
     let scope = ctx.scope();
-    let tables = ctx.instance().tables().cloned().ok_or_else(|| {
-        Error::from(AbiError {
-            position,
-            valtype: Some(ty.clone()),
-            cause: AbiCause::InvalidHandle {
-                reason: "no handle-tables ledger available to the lift context".to_owned(),
-            },
-        })
-    })?;
-
+    let (tables, table) = declared_resource_table(ctx, ty, position)?;
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-
-    // The declared type names the resource table by its index in the
-    // component; the instance maps that to the table it keeps.
-    let table = declared_table_index(ty)
-        .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
-        .ok_or_else(|| {
-            Error::from(AbiError {
-                position,
-                valtype: Some(ty.clone()),
-                cause: AbiCause::InvalidHandle {
-                    reason: "the handle's type names no resource table of the instance".to_owned(),
-                },
-            })
-        })?;
-    let invalid = |reason: String| {
-        Error::from(AbiError {
-            position,
-            valtype: Some(ty.clone()),
-            cause: AbiCause::InvalidHandle { reason },
-        })
-    };
-
-    if is_own {
+    let invalid = |reason: String| invalid_handle(reason, ty, position);
+    if matches!(ty, ValueType::Own(_)) {
         // Ownership transfers to the host: the guest's entry goes
         // away and the host's table for the type takes the resource.
         // An entry that is lent out as a borrow cannot leave until the
@@ -923,58 +899,137 @@ pub fn lift_handle<T: 'static>(
             .remove_own(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
         let (index, generation) = guard.insert_host_own(table.type_id, table.guest_defined, rep);
-        Ok(Val::Own(
-            ResourceHandleParts {
-                type_id: table.type_id,
-                index,
-                rep,
-                generation,
-            }
-            .into(),
-        ))
-    } else {
-        // Every instance addresses its own handles by table index, the
-        // instance that defines the resource included: a lift of a
-        // borrow always reads the entry the index names. Only the
-        // lower side short-circuits to the rep, when the instance the
-        // borrow is lowered into is the resource's definer. That is
-        // never this instance at the host boundary: a component may not
-        // import a function whose type names a resource it defines
-        // itself, and the host has no way to hand one such a type, so
-        // no defining instance lifts its own borrow to the host.
-        //
-        // A borrow lifted out of an owning entry lends that entry to
-        // the current scope, which gives it back when the scope ends;
-        // a borrow of a borrow needs no bookkeeping of its own.
-        let entry = guard
-            .lookup(table.table, index, table.type_id, table.guest_defined)
-            .map_err(|e| invalid(e.to_string()))?;
-        if matches!(entry, HandleKind::Own { .. }) {
-            guard
-                .lend_to(scope, table.table, index)
-                .map_err(|e| invalid(e.to_string()))?;
-        }
-        let rep = entry
-            .rep()
-            .ok_or_else(|| invalid(HandleLookupError::WrongKind { index }.to_string()))?;
-        // The host's handle names a borrow entry of its own table, which
-        // the scope's end removes, so the handle reads as the borrow it
-        // is when the host lowers it back into a guest, and as gone
-        // afterwards.
-        let (index, generation) = guard
-            .insert_host_borrow(scope, table.type_id, table.guest_defined, rep)
-            .ok_or_else(|| invalid(HandleLookupError::NoCallInFlight.to_string()))?;
-        Ok(Val::Borrow(
-            ResourceHandleParts {
-                type_id: table.type_id,
-                index,
-                rep,
-                generation,
-            }
-            .into(),
-        ))
+        return Ok(ResourceAny::new(
+            table.type_id,
+            index,
+            rep,
+            generation,
+            true,
+        ));
     }
+    let rep = lift_borrowed_rep(&mut guard, scope, table, index, ty, position)?;
+    // The host's handle names a borrow entry of its own table, which
+    // the scope's end removes, so the handle reads as the borrow it
+    // is when the host lowers it back into a guest, and as gone
+    // afterwards.
+    let (index, generation) = guard
+        .insert_host_borrow(scope, table.type_id, table.guest_defined, rep)
+        .ok_or_else(|| invalid(HandleLookupError::NoCallInFlight.to_string()))?;
+    Ok(ResourceAny::new(
+        table.type_id,
+        index,
+        rep,
+        generation,
+        false,
+    ))
 }
+
+/// Lift a `own<T>` or `borrow<T>` handle toward the host as a typed
+/// host handle, and return the handle and the identity of its
+/// resource type, as Wasmtime's `HostResource::lift_from_index` does.
+///
+/// An `own<T>` moves out of the instance's table into a handle in no
+/// table, which takes an entry in the host's table only if the host
+/// lowers a borrow of it. A `borrow<T>` lends the instance's owning
+/// entry to the call, as a lift into a [`ResourceAny`] does, and the
+/// handle is a bare borrow of the rep, which the host table does not
+/// track: that mirrors the canonical ABI's rule that the instance
+/// defining a resource receives a borrow of it as the rep alone.
+pub fn lift_host_resource<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<(HostHandle, ResourceType)> {
+    let scope = ctx.scope();
+    let (tables, table) = declared_resource_table(ctx, ty, position)?;
+    let mut guard = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    if matches!(ty, ValueType::Own(_)) {
+        let rep = guard
+            .remove_own(table.table, index, table.type_id, table.guest_defined)
+            .map_err(|e| invalid_handle(e.to_string(), ty, position))?;
+        return Ok((HostHandle::own(rep), table.type_id));
+    }
+    let rep = lift_borrowed_rep(&mut guard, scope, table, index, ty, position)?;
+    Ok((HostHandle::borrow(rep), table.type_id))
+}
+
+/// Read the rep of the borrow the guest's entry at `index` hands over,
+/// lending that entry to `scope` when it owns the resource.
+///
+/// Every instance addresses its own handles by table index, the
+/// instance that defines the resource included: a lift of a borrow
+/// always reads the entry the index names. Only the lower side
+/// short-circuits to the rep, when the instance the borrow is lowered
+/// into is the resource's definer. That is never this instance at the
+/// host boundary: a component may not import a function whose type
+/// names a resource it defines itself, and the host has no way to hand
+/// one such a type, so no defining instance lifts its own borrow to
+/// the host.
+///
+/// A borrow lifted out of an owning entry lends that entry to the
+/// scope, which gives it back when the scope ends; a borrow of a
+/// borrow needs no bookkeeping of its own.
+fn lift_borrowed_rep(
+    guard: &mut HandleTables,
+    scope: Option<Scope>,
+    table: ResourceTableRuntime,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<u32> {
+    let invalid = |error: HandleLookupError| invalid_handle(error.to_string(), ty, position);
+    let entry = guard
+        .lookup(table.table, index, table.type_id, table.guest_defined)
+        .map_err(invalid)?;
+    if matches!(entry, HandleKind::Own { .. }) {
+        guard.lend_to(scope, table.table, index).map_err(invalid)?;
+    }
+    entry
+        .rep()
+        .ok_or_else(|| invalid(HandleLookupError::WrongKind { index }))
+}
+
+/// The handle tables of the store and the instance's table that the
+/// handle type `ty` declares.
+fn declared_resource_table<T: 'static>(
+    ctx: &BoundaryContext<'_, T>,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<(Arc<Mutex<HandleTables>>, ResourceTableRuntime)> {
+    let tables = ctx.instance().tables().cloned().ok_or_else(|| {
+        invalid_handle(
+            "no handle-tables ledger available to the lift context".to_owned(),
+            ty,
+            position,
+        )
+    })?;
+    // The declared type names the resource table by its index in the
+    // component; the instance maps that to the table it keeps.
+    let table = declared_table_index(ty)
+        .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
+        .ok_or_else(|| {
+            invalid_handle(
+                "the handle's type names no resource table of the instance".to_owned(),
+                ty,
+                position,
+            )
+        })?;
+    Ok((tables, table))
+}
+
+fn invalid_handle(reason: impl Into<String>, ty: &ValueType, position: AbiPosition) -> Error {
+    Error::from(AbiError {
+        position,
+        valtype: Some(ty.clone()),
+        cause: AbiCause::InvalidHandle {
+            reason: reason.into(),
+        },
+    })
+}
+
 fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Error {
     Error::from(AbiError {
         position,

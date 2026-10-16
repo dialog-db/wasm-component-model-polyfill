@@ -32,7 +32,7 @@ use crate::concurrency::{
 use crate::error::{Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
-use crate::resource::{HandleTables, ResourceHandle, TableId};
+use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
     Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
 };
@@ -142,8 +142,25 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.restore_resource(record);
     }
 
+    /// An owned handle of `rep` in the host's table for `type_id`,
+    /// whose release runs the resource's destructor, as a handle a
+    /// guest hands the host does. A host has no public way to make a
+    /// handle of a type a component defines, so only the crate's
+    /// tests mint one, and this is compiled for them alone.
+    #[cfg(test)]
+    pub fn mint_own(self, type_id: ResourceType, rep: u32) -> Result<ResourceAny> {
+        use crate::internal::ResourceAnyInternal;
+
+        let guest_defined = self.context.store_data().is_guest_defined(type_id);
+        let (index, generation) =
+            self.context
+                .lock_tables()?
+                .insert_host_own(type_id, guest_defined, rep);
+        Ok(ResourceAny::new(type_id, index, rep, generation, true))
+    }
+
     /// Release a handle the host holds.
-    pub fn resource_drop(self, handle: ResourceHandle) -> Result<()> {
+    pub fn resource_drop(self, handle: ResourceAny) -> Result<()> {
         self.context.resource_drop(handle)
     }
 

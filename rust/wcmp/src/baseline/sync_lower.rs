@@ -52,7 +52,8 @@ use std::sync::{Arc, Mutex};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     Accessor, Component, Engine, EngineConfig, Error, Func, FunctionParameter, FunctionType,
-    HostCall, Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, Val, ValueType,
+    HostCall, Instance, Linker, PrimitiveType, Resource, ResourceAny, ResourceType, SchedulerCause,
+    Store, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -702,11 +703,14 @@ async fn lender() -> (Store<()>, Instance) {
                 result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
-            move |call, args, results| {
+            move |mut call, args, results| {
                 let Some(Val::U32(rep)) = args.first() else {
                     panic!("`[constructor]thing` was given {args:?}");
                 };
-                results[0] = Val::Own(call.resource_new(thing, *rep)?);
+                results[0] = Val::Resource(ResourceAny::try_from_resource(
+                    Resource::<Thing>::new_own(*rep),
+                    call.store(),
+                )?);
                 Ok(())
             },
         )

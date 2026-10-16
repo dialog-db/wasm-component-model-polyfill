@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
-use crate::internal::{ErrorInternal, ResourceHandleInternal, StoreIdInternal};
-use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts};
+use crate::internal::{ErrorInternal, ResourceAnyInternal, StoreIdInternal};
+use crate::resource::{HandleTables, ResourceAny, host_reason};
 use crate::runtime_layer::HostFrames;
 use crate::types::{ResourceType, ValueType};
 
@@ -283,54 +283,38 @@ impl<T: 'static> StoreData<T> {
         )
     }
 
-    /// Mint a fresh `own<T>` handle in this store's host table for
-    /// `type_id`, with `rep` as its representation.
-    /// Workspace-internal.
-    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
-        let guest_defined = self.is_guest_defined(type_id);
-        let mut guard = self.lock_tables()?;
-        let (index, generation) = guard.insert_host_own(type_id, guest_defined, rep);
-        Ok(ResourceHandleParts {
-            type_id,
-            index,
-            rep,
-            generation,
-        }
-        .into())
-    }
-
-    /// Take the entry of a handle the host holds out of its table,
-    /// and report the rep the destructor runs against.
-    /// Workspace-internal.
-    pub fn remove_host_handle(&self, handle: ResourceHandle) -> Result<u32> {
+    /// Take the entry of a handle the host holds out of its table, and
+    /// report the rep the destructor runs against. A borrow's entry
+    /// goes when the call that lent it ends, so for a borrow the entry
+    /// is only checked, and no rep comes back. Workspace-internal.
+    pub fn remove_host_handle(&self, handle: ResourceAny) -> Result<Option<u32>> {
         let guest_defined = self.is_guest_defined(handle.ty());
         let mut guard = self.lock_tables()?;
         let table = guard.host_table(handle.ty());
-        guard
-            .remove_host_own(
-                table,
-                handle.index(),
-                handle.generation(),
-                handle.rep(),
-                handle.ty(),
-                guest_defined,
-            )
-            .map_err(|e| {
-                let reason = match e {
-                    HandleLookupError::Unknown { index } => {
-                        format!("handle index {index} is not live in the host's resource table")
-                    }
-                    HandleLookupError::NotOwned { index } => {
-                        format!("handle index {index} is a borrow, which returns with its call")
-                    }
-                    other => other.to_string(),
-                };
-                Error::from(AbiError {
-                    position: AbiPosition::Argument(0),
-                    valtype: Some(ValueType::Own(handle.ty())),
-                    cause: AbiCause::InvalidHandle { reason },
-                })
+        let (index, generation, rep, ty) = (
+            handle.index(),
+            handle.generation(),
+            handle.rep(),
+            handle.ty(),
+        );
+        let removed = if handle.owned() {
+            guard
+                .remove_host_own(table, index, generation, rep, ty, guest_defined)
+                .map(Some)
+        } else {
+            guard
+                .lookup_host(table, index, generation, rep, ty, guest_defined)
+                .map(|_| None)
+        };
+        removed.map_err(|e| {
+            Error::from(AbiError {
+                position: AbiPosition::Argument(0),
+                valtype: Some(ValueType::Own(ty)),
+                cause: AbiCause::InvalidHandle {
+                    reason: host_reason(e),
+                },
             })
+        })
     }
 
     /// Whether a turn of this store is running. A driver entered

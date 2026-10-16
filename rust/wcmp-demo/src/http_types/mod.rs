@@ -33,17 +33,13 @@ use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wcmp::__private::{
-    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
-    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
-};
 use wcmp::{
     Component, ComponentType, Error, ExternType, FixedLengthListType, FunctionParameter,
     FunctionType, FutureAny, FutureConsumer, FutureReader, FutureType, HostCall,
     InterfaceIdentifier, Lift, Linker, ListType, Lower, MapType, OptionType, RecordField,
-    RecordType, ResourceHandle, ResourceType, ResultType, Source, StoreContext, StreamAny,
-    StreamConsumer, StreamReader, StreamResult, StreamType, TupleType, Val, ValueType, VariantCase,
-    VariantType,
+    RecordType, ResourceAny, ResourceDynamic, ResourceType, ResultType, Source, StoreContext,
+    StreamAny, StreamConsumer, StreamReader, StreamResult, StreamType, TupleType, Val, ValueType,
+    VariantCase, VariantType,
 };
 
 mod body;
@@ -74,9 +70,9 @@ pub const TYPES: &str = "wasi:http/types@0.3.0";
 pub fn response_handle<T: HttpHost>(
     store: &mut StoreContext<'_, T>,
     rep: u32,
-) -> Result<ResourceHandle, Error> {
+) -> Result<ResourceAny, Error> {
     let types = store.data_mut().http().types()?;
-    store.resource_new(types.response, rep)
+    ResourceDynamic::new_own(rep, types.response).try_into_resource_any(store)
 }
 
 /// Define [`TYPES`] in `linker`, with the types `component` imports it
@@ -106,9 +102,9 @@ pub fn define<T: HttpHost>(
         types.resource(name, identity(name), destructor::<T>(name))?;
     }
     let registered = Types {
-        fields: identity("fields"),
-        request: identity("request"),
-        response: identity("response"),
+        fields: dynamic("fields"),
+        request: dynamic("request"),
+        response: dynamic("response"),
     };
     for item in &items {
         let ExternType::Function(ty) = &item.ty else {
@@ -166,11 +162,21 @@ const RESOURCES: [&str; 4] = ["fields", "request", "response", "request-options"
 ///
 /// When `name` is not one of [`RESOURCES`].
 fn identity(name: &str) -> ResourceType {
+    ResourceType::host_dynamic(dynamic(name))
+}
+
+/// The dynamic resource type of the resource `name` of [`TYPES`]: its
+/// index in [`RESOURCES`].
+///
+/// # Panics
+///
+/// When `name` is not one of [`RESOURCES`].
+fn dynamic(name: &str) -> u32 {
     let index = RESOURCES
         .iter()
         .position(|resource| *resource == name)
         .expect("the resource is one of `wasi:http/types`");
-    ResourceType::host_dynamic(u32::try_from(index).expect("the list is short"))
+    u32::try_from(index).expect("the list is short")
 }
 
 /// The destructor of the resource `name`, which forgets what the host
@@ -298,12 +304,37 @@ fn malformed(function: &str, args: &[Val]) -> Error {
     }
 }
 
-/// The representation of a handle argument.
-fn rep_of(val: &Val) -> Option<u32> {
+/// The representation of the handle argument `val`, if it is one.
+///
+/// An owned handle leaves the store's host table, because the host
+/// keeps what the resource holds by its representation and takes it
+/// over: a function that takes an `own` consumes the resource. A
+/// borrow stays where it is.
+///
+/// # Errors
+///
+/// The polyfill's error when the handle is not one of a dynamic host
+/// resource type, or the host table no longer holds it.
+fn rep_of<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    val: Option<&Val>,
+) -> Result<Option<u32>, Error> {
     match val {
-        Val::Own(handle) | Val::Borrow(handle) => Some(handle.rep()),
-        _ => None,
+        Some(Val::Resource(handle)) => Ok(Some(handle.try_into_resource_dynamic(store)?.rep())),
+        _ => Ok(None),
     }
+}
+
+/// A new owned handle of the resource `rep`, of the dynamic resource
+/// type `ty`, as the value a host function answers.
+fn new_handle<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    rep: u32,
+    ty: u32,
+) -> Result<Val, Error> {
+    Ok(Val::Resource(
+        ResourceDynamic::new_own(rep, ty).try_into_resource_any(store)?,
+    ))
 }
 
 /// `result<_, E>` that is `ok`.
@@ -319,13 +350,15 @@ fn call_types<T: HttpHost>(
     args: &[Val],
 ) -> Result<Option<Val>, Error> {
     let bad = || malformed(function, args);
+    // Every function of the subset that takes a handle takes it first.
+    let handle = rep_of(call.store(), args.first())?;
     Ok(Some(match function {
         "[constructor]fields" => {
             let table = call.data_mut().http();
             let rep = table.rep();
             table.fields.insert(rep, Fields::default());
             let types = table.types()?;
-            Val::Own(call.resource_new(types.fields, rep)?)
+            new_handle(call.store(), rep, types.fields)?
         }
         "[static]fields.from-list" => {
             let [Val::List(entries)] = args else {
@@ -347,12 +380,14 @@ fn call_types<T: HttpHost>(
             let rep = table.rep();
             table.fields.insert(rep, fields);
             let types = table.types()?;
-            Val::Result(Ok(Some(Box::new(Val::Own(
-                call.resource_new(types.fields, rep)?,
-            )))))
+            Val::Result(Ok(Some(Box::new(new_handle(
+                call.store(),
+                rep,
+                types.fields,
+            )?))))
         }
         "[method]fields.get" => {
-            let (fields, name) = fields_and_name(call, args).ok_or_else(bad)?;
+            let (fields, name) = fields_and_name(call, handle, args).ok_or_else(bad)?;
             Val::List(
                 fields
                     .entries
@@ -363,7 +398,7 @@ fn call_types<T: HttpHost>(
             )
         }
         "[method]fields.has" => {
-            let (fields, name) = fields_and_name(call, args).ok_or_else(bad)?;
+            let (fields, name) = fields_and_name(call, handle, args).ok_or_else(bad)?;
             Val::Bool(
                 fields
                     .entries
@@ -372,7 +407,7 @@ fn call_types<T: HttpHost>(
             )
         }
         "[method]fields.copy-all" => {
-            let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
+            let rep = handle.ok_or_else(bad)?;
             let fields = call
                 .data_mut()
                 .http()
@@ -391,7 +426,7 @@ fn call_types<T: HttpHost>(
             )
         }
         "[method]fields.append" | "[method]fields.set" | "[method]fields.delete" => {
-            let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
+            let rep = handle.ok_or_else(bad)?;
             let table = call.data_mut().http();
             let fields = table.fields.get_mut(&rep).ok_or_else(bad)?;
             if fields.immutable {
@@ -426,21 +461,21 @@ fn call_types<T: HttpHost>(
             ok_unit()
         }
         "[method]fields.clone" => {
-            let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
+            let rep = handle.ok_or_else(bad)?;
             let table = call.data_mut().http();
             let mut fields = table.fields.get(&rep).cloned().ok_or_else(bad)?;
             fields.immutable = false;
             let clone = table.rep();
             table.fields.insert(clone, fields);
             let types = table.types()?;
-            Val::Own(call.resource_new(types.fields, clone)?)
+            new_handle(call.store(), clone, types.fields)?
         }
         "[static]request.new" => {
-            let [headers, contents, trailers, _options] = args else {
+            let [_headers, contents, trailers, _options] = args else {
                 return Err(bad());
             };
             discard::<TrailersOutcome, T>(call.store(), trailers)?;
-            let headers_rep = rep_of(headers).ok_or_else(bad)?;
+            let headers_rep = handle.ok_or_else(bad)?;
             let body = match contents {
                 Val::Option(None) => Body::Empty,
                 Val::Option(Some(stream)) => Body::Stream(stream.as_ref().clone()),
@@ -458,7 +493,7 @@ fn call_types<T: HttpHost>(
                 body,
             });
             let types = table.types()?;
-            let request = Val::Own(call.resource_new(types.request, rep)?);
+            let request = new_handle(call.store(), rep, types.request)?;
             let transmitted = FutureReader::new(call.store(), async {
                 Ok::<_, Error>(Ok::<(), ErrorCode>(()))
             })?;
@@ -466,32 +501,35 @@ fn call_types<T: HttpHost>(
             Val::Tuple(Box::new([request, Val::Future(transmitted)]))
         }
         "[method]request.get-method" => {
-            let request = request(call, args).ok_or_else(bad)?;
+            let request = request(call, handle).ok_or_else(bad)?;
             method_val(&request.method)
         }
         "[method]request.set-method" => {
             let method = args.get(1).and_then(method_of).ok_or_else(bad)?;
-            request_mut(call, args).ok_or_else(bad)?.method = method;
+            request_mut(call, handle).ok_or_else(bad)?.method = method;
             ok_unit()
         }
-        "[method]request.get-path-with-query" => {
-            option_string(request(call, args).ok_or_else(bad)?.path_with_query.clone())
-        }
+        "[method]request.get-path-with-query" => option_string(
+            request(call, handle)
+                .ok_or_else(bad)?
+                .path_with_query
+                .clone(),
+        ),
         "[method]request.set-path-with-query" => {
             let value = args.get(1).and_then(string_option).ok_or_else(bad)?;
-            request_mut(call, args).ok_or_else(bad)?.path_with_query = value;
+            request_mut(call, handle).ok_or_else(bad)?.path_with_query = value;
             ok_unit()
         }
         "[method]request.get-authority" => {
-            option_string(request(call, args).ok_or_else(bad)?.authority.clone())
+            option_string(request(call, handle).ok_or_else(bad)?.authority.clone())
         }
         "[method]request.set-authority" => {
             let value = args.get(1).and_then(string_option).ok_or_else(bad)?;
-            request_mut(call, args).ok_or_else(bad)?.authority = value;
+            request_mut(call, handle).ok_or_else(bad)?.authority = value;
             ok_unit()
         }
         "[method]request.get-scheme" => {
-            let scheme = request(call, args).ok_or_else(bad)?.scheme.clone();
+            let scheme = request(call, handle).ok_or_else(bad)?.scheme.clone();
             Val::Option(scheme.map(|scheme| Box::new(scheme_val(&scheme))))
         }
         "[method]request.set-scheme" => {
@@ -500,24 +538,24 @@ fn call_types<T: HttpHost>(
                 Some(Val::Option(Some(scheme))) => Some(scheme_of(scheme).ok_or_else(bad)?),
                 _ => return Err(bad()),
             };
-            request_mut(call, args).ok_or_else(bad)?.scheme = value;
+            request_mut(call, handle).ok_or_else(bad)?.scheme = value;
             ok_unit()
         }
         "[method]request.get-headers" => {
-            let headers = request(call, args).ok_or_else(bad)?.headers.clone();
+            let headers = request(call, handle).ok_or_else(bad)?.headers.clone();
             new_fields(call, headers)?
         }
         "[method]response.get-headers" => {
-            let headers = response(call, args).ok_or_else(bad)?.headers.clone();
+            let headers = response(call, handle).ok_or_else(bad)?.headers.clone();
             new_fields(call, headers)?
         }
         "[method]request.get-options" => Val::Option(None),
         "[static]response.new" => {
-            let [headers, contents, trailers] = args else {
+            let [_headers, contents, trailers] = args else {
                 return Err(bad());
             };
             discard::<TrailersOutcome, T>(call.store(), trailers)?;
-            let headers_rep = rep_of(headers).ok_or_else(bad)?;
+            let headers_rep = handle.ok_or_else(bad)?;
             let body = match contents {
                 Val::Option(None) => Body::Empty,
                 Val::Option(Some(stream)) => Body::Stream(stream.as_ref().clone()),
@@ -532,7 +570,7 @@ fn call_types<T: HttpHost>(
                 body,
             });
             let types = table.types()?;
-            let response = Val::Own(call.resource_new(types.response, rep)?);
+            let response = new_handle(call.store(), rep, types.response)?;
             let transmitted = FutureReader::new(call.store(), async {
                 Ok::<_, Error>(Ok::<(), ErrorCode>(()))
             })?;
@@ -540,14 +578,14 @@ fn call_types<T: HttpHost>(
             Val::Tuple(Box::new([response, Val::Future(transmitted)]))
         }
         "[method]response.get-status-code" => {
-            Val::U16(response(call, args).ok_or_else(bad)?.status)
+            Val::U16(response(call, handle).ok_or_else(bad)?.status)
         }
         "[method]response.set-status-code" => {
             let Some(Val::U16(status)) = args.get(1) else {
                 return Err(bad());
             };
             let status = *status;
-            let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
+            let rep = handle.ok_or_else(bad)?;
             call.data_mut()
                 .http()
                 .responses
@@ -557,7 +595,7 @@ fn call_types<T: HttpHost>(
             ok_unit()
         }
         "[static]request.consume-body" | "[static]response.consume-body" => {
-            let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
+            let rep = handle.ok_or_else(bad)?;
             // How the guest's receipt of the body went: read, and kept
             // nowhere.
             discard::<Result<(), ErrorCode>, T>(call.store(), args.get(1).ok_or_else(bad)?)?;
@@ -576,7 +614,7 @@ fn call_types<T: HttpHost>(
                 Body::Bytes(bytes) => host_stream(call.store(), bytes)?,
             };
             let trailers = FutureReader::new(call.store(), async {
-                Ok::<_, Error>(TrailersOutcome(Ok(())))
+                Ok::<_, Error>(TrailersOutcome::Ok(None))
             })?;
             let trailers = FutureAny::try_from_future_reader(call.store(), trailers)?;
             Val::Tuple(Box::new([stream, Val::Future(trailers)]))
@@ -594,13 +632,14 @@ fn host_stream<T: 'static>(store: &mut StoreContext<'_, T>, bytes: Vec<u8>) -> R
     )?))
 }
 
-/// The fields of the handle in `args[0]` and the field name in
-/// `args[1]`, lower case.
+/// The fields of the handle `rep`, which `args[0]` held, and the field
+/// name in `args[1]`, lower case.
 fn fields_and_name<T: HttpHost>(
     call: &mut HostCall<'_, T>,
+    rep: Option<u32>,
     args: &[Val],
 ) -> Option<(Fields, String)> {
-    let rep = args.first().and_then(rep_of)?;
+    let rep = rep?;
     let Some(Val::String(name)) = args.get(1) else {
         return None;
     };
@@ -608,25 +647,28 @@ fn fields_and_name<T: HttpHost>(
     Some((fields, name.to_ascii_lowercase()))
 }
 
-/// The request of the handle in `args[0]`.
-fn request<'c, T: HttpHost>(call: &'c mut HostCall<'_, T>, args: &[Val]) -> Option<&'c Request> {
-    let rep = args.first().and_then(rep_of)?;
-    call.data_mut().http().requests.get(&rep)
+/// The request of the handle `rep`.
+fn request<'c, T: HttpHost>(
+    call: &'c mut HostCall<'_, T>,
+    rep: Option<u32>,
+) -> Option<&'c Request> {
+    call.data_mut().http().requests.get(&rep?)
 }
 
-/// The request of the handle in `args[0]`, mutably.
+/// The request of the handle `rep`, mutably.
 fn request_mut<'c, T: HttpHost>(
     call: &'c mut HostCall<'_, T>,
-    args: &[Val],
+    rep: Option<u32>,
 ) -> Option<&'c mut Request> {
-    let rep = args.first().and_then(rep_of)?;
-    call.data_mut().http().requests.get_mut(&rep)
+    call.data_mut().http().requests.get_mut(&rep?)
 }
 
-/// The response of the handle in `args[0]`.
-fn response<'c, T: HttpHost>(call: &'c mut HostCall<'_, T>, args: &[Val]) -> Option<&'c Response> {
-    let rep = args.first().and_then(rep_of)?;
-    call.data_mut().http().responses.get(&rep)
+/// The response of the handle `rep`.
+fn response<'c, T: HttpHost>(
+    call: &'c mut HostCall<'_, T>,
+    rep: Option<u32>,
+) -> Option<&'c Response> {
+    call.data_mut().http().responses.get(&rep?)
 }
 
 /// A new immutable `fields` resource that holds `fields`.
@@ -636,7 +678,7 @@ fn new_fields<T: HttpHost>(call: &mut HostCall<'_, T>, mut fields: Fields) -> Re
     let rep = table.rep();
     table.fields.insert(rep, fields);
     let types = table.types()?;
-    Ok(Val::Own(call.resource_new(types.fields, rep)?))
+    new_handle(call.store(), rep, types.fields)
 }
 
 /// `err` with the `header-error` case `case`.
@@ -910,112 +952,12 @@ fn discard<T: Lift + 'static, D: 'static>(
 /// The payload of a trailers future the host resolves or reads:
 /// `result<option<trailers>, error-code>`.
 ///
-/// Its `ok` holds no trailers. The host only ever writes `ok(none)`,
-/// and it reads any `ok` a guest writes without its trailers, because
-/// the subset carries none. Its `err` crosses whole, payload and all.
-struct TrailersOutcome(Result<(), ErrorCode>);
-
-impl ComponentType for TrailersOutcome {
-    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[
-        Some(CanonicalAbiInfo::variant_static(&[
-            None,
-            Some(CanonicalAbiInfo::SCALAR4),
-        ])),
-        Some(ErrorCode::ABI),
-    ]);
-
-    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let trailers = |ok: Option<&ValueType>| match ok {
-            Some(ValueType::Option(option)) => matches!(
-                option.payload(),
-                ValueType::Own(fields) if types.resource(*fields) == identity("fields")
-            ),
-            _ => false,
-        };
-        match ty {
-            ValueType::Result(result) if trailers(result.ok()) => match result.err() {
-                Some(err) => ErrorCode::typecheck(err, types),
-                None => Err(TypeCheckError::mismatch::<Self>(ty)),
-            },
-            _ => Err(TypeCheckError::mismatch::<Self>(ty)),
-        }
-    }
-}
-
-impl Lower for TrailersOutcome {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> Result<(), Error> {
-        match &self.0 {
-            Ok(()) => lower_case_flat(cx, ty, 0, out, |cx, trailers, out| {
-                lower_case_flat(cx, trailers, 0, out, |_, _, _| Ok(()))
-            }),
-            Err(code) => lower_case_flat(cx, ty, 1, out, |cx, code_ty, out| {
-                <ErrorCode as Lower>::lower_flat(code, cx, code_ty, out)
-            }),
-        }
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<(), Error> {
-        match &self.0 {
-            Ok(()) => {
-                let (payload, trailers) = lower_case_memory(cx, ty, 0, offset)?;
-                let trailers = trailers.ok_or_else(|| cx.mismatch(ty))?;
-                lower_case_memory(cx, trailers, 0, payload).map(|_| ())
-            }
-            Err(code) => {
-                let (payload, code_ty) = lower_case_memory(cx, ty, 1, offset)?;
-                let code_ty = code_ty.ok_or_else(|| cx.mismatch(ty))?;
-                <ErrorCode as Lower>::lower_memory(code, cx, code_ty, payload)
-            }
-        }
-    }
-}
-
-/// Any trailers a guest writes, which the host reads only to let the
-/// guest's write complete. The subset carries no trailers, so the lift
-/// reads the case of an `ok` and leaves its payload where it is.
-impl Lift for TrailersOutcome {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> Result<Self, Error> {
-        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
-            match (case, payload) {
-                (0, _) => Ok(TrailersOutcome(Ok(()))),
-                (1, Some((code, slots))) => {
-                    let mut cursor = 0;
-                    <ErrorCode as Lift>::lift_flat(cx, code, slots, &mut cursor)
-                        .map(|code| TrailersOutcome(Err(code)))
-                }
-                _ => Err(cx.mismatch(ty)),
-            }
-        })
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<Self, Error> {
-        match lift_case_memory(cx, ty, offset)? {
-            (0, _, _) => Ok(TrailersOutcome(Ok(()))),
-            (1, payload, Some(code)) => <ErrorCode as Lift>::lift_memory(cx, code, payload)
-                .map(|code| TrailersOutcome(Err(code))),
-            _ => Err(cx.mismatch(ty)),
-        }
-    }
-}
+/// The trailers are an `own<fields>`, a dynamic host resource, so they
+/// cross as a [`ResourceDynamic`]. The host only ever writes
+/// `ok(none)`. It reads trailers a guest writes only to let the
+/// guest's write complete, and drops them unread. The `err` crosses
+/// whole, payload and all.
+type TrailersOutcome = Result<Option<ResourceDynamic>, ErrorCode>;
 
 /// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it,
 /// case by case and in order.

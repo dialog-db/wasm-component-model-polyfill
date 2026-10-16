@@ -403,9 +403,9 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    let handle = store.resource_new(type_id, 13).expect("mint");
+    let handle = super::mint(&mut store, type_id, 13).expect("mint");
     let lend = instance.get_func("lend").expect("lend export");
-    lend.call(&mut store, &[Val::Own(handle)])
+    lend.call(&mut store, &[Val::Resource(handle)])
         .await
         .expect_err("the surrogate is not a scalar value");
 
