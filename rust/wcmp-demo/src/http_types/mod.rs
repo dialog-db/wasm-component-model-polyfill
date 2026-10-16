@@ -23,7 +23,10 @@
 //!
 //! The function types come from the component that imports the
 //! interface, so the definitions here never restate the WIT; the host
-//! checks each value it is given against the shape it reads.
+//! checks each value it is given against the shape it reads. A
+//! component's own resource types stand in those function types, so
+//! the host replaces each with the identity it registers for it, with
+//! [`host_signature`], before it defines a function.
 
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
@@ -31,9 +34,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wcmp::{
-    Component, ComponentValue, Error, ExternType, FunctionType, FutureConsumer, FutureReader,
-    HostCall, HostResource, InterfaceIdentifier, Linker, ResourceHandle, Source, StoreContext,
-    StreamConsumer, StreamReader, StreamResult, Val, ValueType,
+    Component, ComponentValue, Error, ExternType, FixedLengthListType, FunctionParameter,
+    FunctionType, FutureConsumer, FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker,
+    ListType, MapType, OptionType, RecordField, RecordType, ResourceHandle, ResourceType,
+    ResultType, Source, StoreContext, StreamConsumer, StreamReader, StreamResult, StreamType,
+    TupleType, Val, ValueType, VariantCase, VariantType,
 };
 
 mod body;
@@ -90,35 +95,22 @@ pub fn define<T: HttpHost>(
         return Ok(None);
     };
     let identifier: InterfaceIdentifier = TYPES.parse().expect("the interface's name parses");
+    let identities = identities(component);
     let mut types = linker.instance(&identifier);
-    let mut resources = HashMap::new();
-    let mut hosts = HashMap::new();
     for name in RESOURCES {
-        let label = name.to_string();
-        let host = HostResource::new(move |data: &mut T, rep| {
-            let table = data.http();
-            match label.as_str() {
-                "fields" => drop(table.fields.remove(&rep)),
-                "request" => drop(table.requests.remove(&rep)),
-                "response" => drop(table.responses.remove(&rep)),
-                _ => {}
-            }
-            Ok(())
-        });
-        resources.insert(name, types.resource_with(name, host.clone())?);
-        hosts.insert(name, host);
+        types.resource(name, identity(name), destructor::<T>(name))?;
     }
     let registered = Types {
-        fields: resources["fields"],
-        request: resources["request"],
-        response: resources["response"],
+        fields: identity("fields"),
+        request: identity("request"),
+        response: identity("response"),
     };
     for item in &items {
         let ExternType::Function(ty) = &item.ty else {
             continue;
         };
         let name = item.name.clone();
-        let ty: FunctionType = ty.clone();
+        let ty: FunctionType = host_function_type(&identities, ty);
         let function = name.clone();
         types.func_new(name, ty, move |mut call, args, results| {
             let answer = call_types(&mut call, &function, args)?;
@@ -130,8 +122,7 @@ pub fn define<T: HttpHost>(
     }
     // Another interface of `wasi:http`, such as `client` or `handler`,
     // names the resources it uses from `types`. Each such name is the
-    // same resource type, so it is registered with the same host
-    // resource.
+    // same resource type, so it is registered with the same identity.
     for import in &component.imports {
         let ExternType::Instance(instance) = &import.ty else {
             continue;
@@ -147,18 +138,146 @@ pub fn define<T: HttpHost>(
             let (ExternType::Resource(_) | ExternType::ResourceEquals(_)) = &item.ty else {
                 continue;
             };
-            if let Some(host) = hosts.get(item.name.as_str()) {
-                linker
-                    .instance(&identifier)
-                    .resource_with(item.name.clone(), host.clone())?;
+            if let Some(resource) = RESOURCES.into_iter().find(|name| *name == item.name) {
+                linker.instance(&identifier).resource(
+                    item.name.clone(),
+                    identity(resource),
+                    destructor::<T>(resource),
+                )?;
             }
         }
     }
     Ok(Some(registered))
 }
 
-/// The resources of [`TYPES`].
+/// The resources of [`TYPES`]. The host makes the identity of each at
+/// run time, keyed on its index in this list.
 const RESOURCES: [&str; 4] = ["fields", "request", "response", "request-options"];
+
+/// The identity the host registers the resource `name` of [`TYPES`]
+/// with.
+///
+/// # Panics
+///
+/// When `name` is not one of [`RESOURCES`].
+fn identity(name: &str) -> ResourceType {
+    let index = RESOURCES
+        .iter()
+        .position(|resource| *resource == name)
+        .expect("the resource is one of `wasi:http/types`");
+    ResourceType::host_dynamic(u32::try_from(index).expect("the list is short"))
+}
+
+/// The destructor of the resource `name`, which forgets what the host
+/// keeps for the representation it drops.
+fn destructor<T: HttpHost>(
+    name: &'static str,
+) -> impl for<'c> Fn(StoreContext<'c, T>, u32) -> Result<(), Error> + Send + Sync + 'static {
+    move |mut store, rep| {
+        let table = store.data_mut().http();
+        match name {
+            "fields" => drop(table.fields.remove(&rep)),
+            "request" => drop(table.requests.remove(&rep)),
+            "response" => drop(table.responses.remove(&rep)),
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// The identity the host registers for each resource type `component`
+/// declares in an interface it imports, by the resource type's
+/// identity in the component.
+fn identities(component: &Component) -> HashMap<ResourceType, ResourceType> {
+    let mut identities = HashMap::new();
+    for import in &component.imports {
+        let ExternType::Instance(instance) = &import.ty else {
+            continue;
+        };
+        for item in &instance.items {
+            let (ExternType::Resource(declared) | ExternType::ResourceEquals(declared)) = &item.ty
+            else {
+                continue;
+            };
+            if RESOURCES.contains(&item.name.as_str()) {
+                identities.insert(*declared, identity(&item.name));
+            }
+        }
+    }
+    identities
+}
+
+/// The type the host defines a function of `component` with, whose
+/// type `ty` is: the same type, with each resource type the component
+/// declares replaced by the identity the host registers for it.
+pub fn host_signature(component: &Component, ty: &FunctionType) -> FunctionType {
+    host_function_type(&identities(component), ty)
+}
+
+/// [`host_signature`], with the identities already read.
+fn host_function_type(
+    identities: &HashMap<ResourceType, ResourceType>,
+    ty: &FunctionType,
+) -> FunctionType {
+    FunctionType {
+        parameters: ty
+            .parameters
+            .iter()
+            .map(|parameter| FunctionParameter {
+                name: parameter.name.clone(),
+                ty: host_value_type(identities, &parameter.ty),
+            })
+            .collect(),
+        result: ty
+            .result
+            .as_ref()
+            .map(|result| host_value_type(identities, result)),
+        async_: ty.async_,
+    }
+}
+
+/// [`host_function_type`] for one value type.
+fn host_value_type(identities: &HashMap<ResourceType, ResourceType>, ty: &ValueType) -> ValueType {
+    let inner = |ty: &ValueType| host_value_type(identities, ty);
+    let resource = |declared: &ResourceType| identities.get(declared).copied().unwrap_or(*declared);
+    match ty {
+        ValueType::Own(declared) => ValueType::Own(resource(declared)),
+        ValueType::Borrow(declared) => ValueType::Borrow(resource(declared)),
+        ValueType::Record(record) => ValueType::Record(RecordType::new(
+            record
+                .fields()
+                .iter()
+                .map(|field| RecordField::new(field.name(), inner(field.ty()))),
+        )),
+        ValueType::Variant(variant) => ValueType::Variant(VariantType::new(
+            variant
+                .cases()
+                .iter()
+                .map(|case| VariantCase::new(case.name(), case.payload().map(inner))),
+        )),
+        ValueType::List(list) => ValueType::List(ListType::new(inner(list.element()))),
+        ValueType::Map(map) => ValueType::Map(MapType::new(inner(map.key()), inner(map.value()))),
+        ValueType::FixedLengthList(list) => ValueType::FixedLengthList(FixedLengthListType::new(
+            inner(list.element()),
+            list.length(),
+        )),
+        ValueType::Option(option) => ValueType::Option(OptionType::new(inner(option.payload()))),
+        ValueType::Result(result) => ValueType::Result(ResultType::new(
+            result.ok().map(inner),
+            result.err().map(inner),
+        )),
+        ValueType::Tuple(tuple) => {
+            ValueType::Tuple(TupleType::new(tuple.elements().iter().map(inner)))
+        }
+        ValueType::Stream(stream) => {
+            ValueType::Stream(StreamType::new(stream.payload().map(inner)))
+        }
+        ValueType::Future(future) => {
+            ValueType::Future(FutureType::new(future.payload().map(inner)))
+        }
+        other => other.clone(),
+    }
+}
 
 /// What a function of [`TYPES`] that the subset leaves out answers.
 fn unsupported(function: &str) -> Error {
@@ -799,7 +918,7 @@ impl TrailersOutcome {
 
 impl ComponentValue for TrailersOutcome {
     fn value_type() -> ValueType {
-        let fields = ValueType::Own(wcmp::ResourceType::new("fields"));
+        let fields = ValueType::Own(identity("fields"));
         ValueType::Result(wcmp::ResultType::new(
             Some(ValueType::Option(wcmp::OptionType::new(fields))),
             Some(error_code()),

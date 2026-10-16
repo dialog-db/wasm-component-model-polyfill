@@ -173,11 +173,11 @@ impl Default for HandleTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::ResourceTypeIdInternal;
+    use crate::internal::ResourceTypeInternal;
 
     fn own(rep: u32) -> HandleKind {
         HandleKind::Own {
-            type_id: crate::resource::ResourceTypeId::fresh(),
+            type_id: crate::types::ResourceType::fresh_guest(),
             guest_defined: false,
             rep,
             lend_count: 0,

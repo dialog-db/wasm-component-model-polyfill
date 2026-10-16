@@ -22,8 +22,8 @@
 //! [`Val::Borrow`]: crate::Val::Borrow
 
 use super::handle_parts::ResourceHandleParts;
-use super::identity::ResourceTypeId;
 use crate::internal::ResourceHandleInternal;
+use crate::types::ResourceType;
 
 /// An opaque handle into one of a store's handle tables.
 ///
@@ -40,7 +40,7 @@ use crate::internal::ResourceHandleInternal;
 /// is built from `ResourceHandleParts`, which `lib.rs` never
 /// re-exports, and host code that assembled a handle of its own
 /// would address an entry the store never gave it. A host reads the
-/// parts through [`Self::type_id`], [`Self::index`], and
+/// parts through [`Self::ty`], [`Self::index`], and
 /// [`Self::rep`], and writes none of them:
 ///
 /// ```rust
@@ -51,10 +51,10 @@ use crate::internal::ResourceHandleInternal;
 /// ```
 ///
 /// ```compile_fail
-/// # use wcmp::{Engine, ResourceHandle, ResourceTypeId, Store};
-/// # fn forge(type_id: ResourceTypeId) -> ResourceHandle {
+/// # use wcmp::{Engine, ResourceHandle, ResourceType, Store};
+/// # fn forge(ty: ResourceType) -> ResourceHandle {
 /// ResourceHandle {
-///     type_id,
+///     ty,
 ///     index: 999,
 ///     rep: 0,
 /// }
@@ -79,9 +79,8 @@ use crate::internal::ResourceHandleInternal;
 /// [`Store`]: crate::Store
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceHandle {
-    /// The engine-issued identity of the resource type this handle
-    /// addresses.
-    type_id: ResourceTypeId,
+    /// The identity of the resource type this handle addresses.
+    ty: ResourceType,
     /// The handle-table entry this handle names.
     index: u32,
     /// The resource's 32-bit representation, as the host's table
@@ -98,8 +97,8 @@ pub struct ResourceHandle {
 
 impl ResourceHandle {
     /// The identity of the resource type this handle addresses.
-    pub fn type_id(&self) -> ResourceTypeId {
-        self.type_id
+    pub fn ty(&self) -> ResourceType {
+        self.ty
     }
 
     /// The handle-table entry this handle names.
@@ -127,7 +126,7 @@ impl ResourceHandleInternal for ResourceHandle {
 impl From<ResourceHandleParts> for ResourceHandle {
     fn from(parts: ResourceHandleParts) -> Self {
         Self {
-            type_id: parts.type_id,
+            ty: parts.type_id,
             index: parts.index,
             rep: parts.rep,
             generation: parts.generation,

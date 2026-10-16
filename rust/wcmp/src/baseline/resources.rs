@@ -19,15 +19,28 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::internal::{ResourceHandleInternal, ResourceTypeIdInternal};
+use crate::internal::{ResourceHandleInternal, ResourceTypeInternal};
 use crate::resource::ResourceHandleParts;
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, AbiPosition, Component, Engine, Error, FunctionParameter, FunctionType, HostCall,
-    HostResource, InterfaceIdentifier, Linker, ResourceHandle, ResourceType, ResourceTypeId, Store,
-    Val, ValueType,
+    InterfaceIdentifier, Linker, ResourceHandle, ResourceType, Store, StoreContext, Val, ValueType,
 };
 use wcmp_macros::component;
+
+/// The marker the tests give the identity of a host resource type
+/// that a component imports as `thing`.
+struct Thing;
+
+/// The marker for a host resource type a component imports as `alpha`.
+struct Alpha;
+
+/// The marker for a host resource type a component imports as `beta`.
+struct Beta;
+
+/// The marker for a host resource type that the tests register on the
+/// linker's root but no component imports.
+struct Gadget;
 
 #[wcmp_macros::test]
 async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
@@ -64,11 +77,14 @@ async fn it_runs_destructors_in_drop_order_for_multiple_handles() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
         .resource(
             "thing",
-            |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| -> crate::Result<()> {
+            type_id,
+            |mut store: StoreContext<'_, Arc<Mutex<Vec<u32>>>>, rep: u32| -> crate::Result<()> {
+                let data = store.data_mut();
                 data.lock().expect("dropped lock").push(rep);
                 Ok(())
             },
@@ -99,7 +115,7 @@ async fn it_isolates_handle_tables_across_stores_with_the_same_engine() {
     let _ = linker; // unused but proves shareability of the linker
     let store_a: Store<()> = Store::new(&engine, ()).expect("store a");
     let store_b: Store<()> = Store::new(&engine, ()).expect("store b");
-    let type_id = ResourceTypeId::fresh();
+    let type_id = ResourceType::fresh_guest();
     let a0 = store_a.resource_new(type_id, 1).expect("a0");
     let a1 = store_a.resource_new(type_id, 2).expect("a1");
     let b0 = store_b.resource_new(type_id, 100).expect("b0");
@@ -141,11 +157,14 @@ async fn it_rejects_a_handle_whose_type_id_is_not_registered_in_the_store() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_store: StoreContext<'_, ()>, _rep: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
 
     let mut consumer: Store<()> = Store::new(&engine, ()).expect("consumer store");
@@ -194,11 +213,14 @@ async fn it_rejects_a_completely_fabricated_handle_index() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_data: &mut (), _rep: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_store: StoreContext<'_, ()>, _rep: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
@@ -260,17 +282,29 @@ async fn it_supports_two_distinct_resource_types_in_one_interface() {
     let mut linker: Linker<Counters> = Linker::new(&engine);
     let iface: InterfaceIdentifier = "pdd009-tests:host/multi@0.1.0".parse().expect("identifier");
     let mut iface_view = linker.instance(&iface);
-    let alpha_id = iface_view
-        .resource("alpha", |c: &mut Counters, rep: u32| -> crate::Result<()> {
-            c.alphas.push(rep);
-            Ok(())
-        })
+    let alpha_id = ResourceType::host::<Alpha>();
+    iface_view
+        .resource(
+            "alpha",
+            alpha_id,
+            |mut store: StoreContext<'_, Counters>, rep: u32| -> crate::Result<()> {
+                let c = store.data_mut();
+                c.alphas.push(rep);
+                Ok(())
+            },
+        )
         .expect("the registration");
-    let beta_id = iface_view
-        .resource("beta", |c: &mut Counters, rep: u32| -> crate::Result<()> {
-            c.betas.push(rep);
-            Ok(())
-        })
+    let beta_id = ResourceType::host::<Beta>();
+    iface_view
+        .resource(
+            "beta",
+            beta_id,
+            |mut store: StoreContext<'_, Counters>, rep: u32| -> crate::Result<()> {
+                let c = store.data_mut();
+                c.betas.push(rep);
+                Ok(())
+            },
+        )
         .expect("the registration");
     let mut store: Store<Counters> = Store::new(&engine, Counters::default()).expect("store");
     let inst = linker
@@ -323,11 +357,14 @@ async fn it_reuses_freed_handle_indices_after_drop() {
     let iface: InterfaceIdentifier = "pdd009-tests:host/resources@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let inst = linker
@@ -355,7 +392,7 @@ async fn it_reuses_freed_handle_indices_after_drop() {
 #[wcmp_macros::test]
 async fn it_rejects_a_component_that_imports_an_unsatisfied_resource() {
     // The component's import declares `thing` as a resource, but
-    // the host registers nothing under that label. The resolver
+    // the host registers nothing under that name. The resolver
     // surfaces `LinkError::UnresolvedImport` at instantiate time.
     const COMPONENT: &[u8] = component!(
         r#"
@@ -486,8 +523,8 @@ async fn it_mints_a_distinct_resource_type_identity_per_instantiation() {
     let a = make_handle(&mut store, &first, 1).await;
     let b = make_handle(&mut store, &second, 2).await;
     assert_ne!(
-        a.type_id(),
-        b.type_id(),
+        a.ty(),
+        b.ty(),
         "each instantiation carries its own resource type identity"
     );
 }
@@ -654,26 +691,31 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
-    let thing: HostResource<Vec<u32>> =
-        HostResource::new(|dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
-            dropped.push(rep);
-            Ok(())
-        });
-    let type_id = linker
-        .instance(&a)
-        .resource_with("thing", thing.clone())
-        .expect("the registration");
-    linker
-        .instance(&b)
-        .resource_with("thing", thing)
-        .expect("the registration");
+    // One identity registered in both interfaces is one resource
+    // type: a handle minted for `a` lowers through `b`.
+    let type_id = ResourceType::host::<Thing>();
+    let kept: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
+    let keeping = kept.clone();
+    for iface in [&a, &b] {
+        linker
+            .instance(iface)
+            .resource(
+                "thing",
+                type_id,
+                |mut store: StoreContext<'_, Vec<u32>>, rep: u32| -> crate::Result<()> {
+                    store.data_mut().push(rep);
+                    Ok(())
+                },
+            )
+            .expect("the registration");
+    }
     linker
         .instance(&a)
         .func_new(
             "make",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call: HostCall<'_, Vec<u32>>, _args, results| {
@@ -689,18 +731,19 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Own(ResourceType::new("thing")),
+                    ty: ValueType::Own(ResourceType::host::<Thing>()),
                 }],
                 result: None,
                 async_: false,
             },
-            |mut call: HostCall<'_, Vec<u32>>, args, _results| {
+            move |mut call: HostCall<'_, Vec<u32>>, args, _results| {
                 let Val::Own(handle) = &args[0] else {
                     panic!("expected an owned handle, got {args:?}");
                 };
                 // The handle minted under `a` arrives through `b` with the
                 // same identity; record the rep the host gave it.
                 call.data_mut().push(handle.rep());
+                *keeping.lock().expect("the kept handle") = Some(*handle);
                 Ok(())
             },
         )
@@ -713,6 +756,138 @@ async fn it_shares_a_single_resource_type_across_two_imported_interfaces() {
     let run = instance.get_func("run").expect("run export");
     run.call(&mut store, &[]).await.expect("run");
     assert_eq!(store.data(), &vec![9]);
+
+    // The handle `b` received is the one live entry of the type in the
+    // host's table: the host releases it once, its destructor runs,
+    // and a second release finds nothing.
+    let kept = kept
+        .lock()
+        .expect("the kept handle")
+        .take()
+        .expect("`consume` kept it");
+    store
+        .resource_drop(kept)
+        .expect("the one live entry releases");
+    assert_eq!(store.data(), &vec![9, 9], "the destructor ran once for it");
+    store
+        .resource_drop(kept)
+        .expect_err("no second entry of the type is live");
+}
+
+/// A component that imports two interfaces, each of which declares a
+/// resource named `error`, and exports a function that takes the
+/// second interface's.
+const TWO_ERRORS: &[u8] = component!(
+    r#"
+    (component
+      (import "pdd027-tests:host/x@0.1.0" (instance $x
+        (export "error" (type (sub resource)))))
+      (alias export $x "error" (type $x-error))
+      (import "pdd027-tests:host/y@0.1.0" (instance $y
+        (export "error" (type (sub resource)))))
+      (alias export $y "error" (type $y-error))
+      (core func $drop-y (canon resource.drop $y-error))
+      (core module $m
+        (import "host" "drop" (func $drop (param i32)))
+        (func (export "take") (param i32) local.get 0 call $drop))
+      (core instance $c (instantiate $m
+        (with "host" (instance (export "drop" (func $drop-y))))))
+      (func (export "take-y") (param "h" (own $y-error))
+        (canon lift (core func $c "take"))))
+    "#
+);
+
+/// The markers of the two `error` resource types of [`TWO_ERRORS`].
+struct XError;
+struct YError;
+
+#[wcmp_macros::test]
+async fn it_tells_two_resources_of_one_name_apart_by_identity() {
+    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+    let component = Component::new(&engine, TWO_ERRORS)
+        .await
+        .expect("component parses");
+
+    // The reflection names each resource by its own identity, so the
+    // two `error` types and their `own` types differ.
+    let declared: Vec<ResourceType> = component
+        .imports
+        .iter()
+        .filter_map(|import| match &import.ty {
+            crate::ExternType::Instance(instance) => {
+                instance.items.iter().find_map(|item| match &item.ty {
+                    crate::ExternType::Resource(ty) => Some(*ty),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    let [x_error, y_error] = declared[..] else {
+        panic!("expected one resource in each import, found {declared:?}");
+    };
+    assert_ne!(x_error, y_error);
+    assert_ne!(ValueType::Own(x_error), ValueType::Own(y_error));
+
+    let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
+    for (iface, ty) in [
+        ("pdd027-tests:host/x@0.1.0", ResourceType::host::<XError>()),
+        ("pdd027-tests:host/y@0.1.0", ResourceType::host::<YError>()),
+    ] {
+        let iface: InterfaceIdentifier = iface.parse().expect("identifier");
+        linker
+            .instance(&iface)
+            .resource(
+                "error",
+                ty,
+                |mut store: StoreContext<'_, Vec<u32>>, rep| -> crate::Result<()> {
+                    store.data_mut().push(rep);
+                    Ok(())
+                },
+            )
+            .expect("the registration");
+    }
+    let mut store: Store<Vec<u32>> = Store::new(&engine, Vec::new()).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component links");
+    let take = instance.get_func("take-y").expect("take-y export");
+
+    // A handle of the first `error` is refused where the second is
+    // declared, before it reaches the guest.
+    let wrong = store
+        .resource_new(ResourceType::host::<XError>(), 1)
+        .expect("mint a handle of the first");
+    let refused = take
+        .call(&mut store, &[Val::Own(wrong)])
+        .await
+        .expect_err("a handle of another identity does not lower");
+    let Error::Abi(abi) = &refused else {
+        panic!("expected a canonical ABI error, got {refused:?}");
+    };
+    assert!(
+        matches!(abi.cause, AbiCause::UnregisteredResourceType),
+        "{refused}"
+    );
+
+    // A handle of the second lowers, and the guest drops it. The
+    // refused call trapped, so it runs in a store of its own.
+    let mut store = Store::new(&engine, Vec::new()).expect("a fresh store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("the component links");
+    let right = store
+        .resource_new(ResourceType::host::<YError>(), 2)
+        .expect("mint a handle of the second");
+    instance
+        .get_func("take-y")
+        .expect("take-y export")
+        .call(&mut store, &[Val::Own(right)])
+        .await
+        .expect("a handle of the declared identity lowers");
+    assert_eq!(store.data(), &vec![2], "the guest dropped it");
 }
 
 #[wcmp_macros::test]
@@ -724,17 +899,26 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let a: InterfaceIdentifier = "pdd013-tests:host/a@0.1.0".parse().expect("identifier");
     let b: InterfaceIdentifier = "pdd013-tests:host/b@0.1.0".parse().expect("identifier");
-    let type_id = linker
+    // `b` declares its `thing` equal to `a`'s, but the host gives
+    // the two registrations two identities.
+    struct OtherThing;
+    let type_id = ResourceType::host::<Thing>();
+    let other = ResourceType::host::<OtherThing>();
+    linker
         .instance(&a)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&b)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            other,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&a)
@@ -742,7 +926,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
             "make",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call: HostCall<'_, ()>, _args, results| {
@@ -758,7 +942,7 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Own(ResourceType::new("thing")),
+                    ty: ValueType::Own(other),
                 }],
                 result: None,
                 async_: false,
@@ -775,6 +959,19 @@ async fn it_rejects_two_identities_for_one_declared_resource_type() {
         matches!(&err, Error::TypeMismatch(mismatch)
             if matches!(mismatch.position, crate::TypeMismatchPosition::HostFunctionRegistration { ref item, .. } if item == "thing")),
         "expected a type mismatch naming the `thing` registration, got {err:?}"
+    );
+    let Error::TypeMismatch(mismatch) = &err else {
+        unreachable!("checked above");
+    };
+    assert_eq!(
+        mismatch.expected,
+        crate::TypeRendering::Value(ValueType::Own(type_id)),
+        "the mismatch expects the identity the first registration gave"
+    );
+    assert_eq!(
+        mismatch.actual,
+        crate::TypeRendering::Value(ValueType::Own(other)),
+        "the mismatch names the identity the second registration gave"
     );
 }
 
@@ -808,11 +1005,14 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
     let iface: InterfaceIdentifier = "pdd011-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -820,7 +1020,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
             "make",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call: HostCall<'_, ()>, _args, results| {
@@ -840,7 +1040,7 @@ async fn it_lets_a_host_function_mint_a_resource_handle_during_a_guest_call() {
         panic!("expected an owned handle, got {results:?}");
     };
     assert_eq!(
-        handle.type_id(),
+        handle.ty(),
         type_id,
         "the handle carries the registered identity"
     );
@@ -863,18 +1063,20 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         .expect("identifier");
     linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            ResourceType::host::<Thing>(),
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
-    let stranger = ResourceTypeId::fresh();
+    let stranger = ResourceType::fresh_guest();
     linker
         .instance(&iface)
         .func_new(
             "make",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call: HostCall<'_, ()>, _args, results| {
@@ -895,15 +1097,17 @@ async fn it_rejects_a_host_mint_against_an_unknown_resource_type() {
         .expect_err("minting against an unknown identity fails the call");
     // The host error traps the guest, and the call gets it back as
     // the host function raised it.
+    let Error::Abi(abi) = &err else {
+        panic!("expected the unregistered-resource-type cause, got {err:?}");
+    };
     assert!(
-        matches!(&err, Error::Abi(abi) if matches!(abi.cause, AbiCause::UnregisteredResourceType)),
+        matches!(abi.cause, AbiCause::UnregisteredResourceType),
         "expected the unregistered-resource-type cause, got {err:?}"
     );
-    assert!(
-        err.to_string().contains("at result: no host registration"),
-        "an identity no registration and no instantiation of the store ever \
-         introduced has no name to render, so the refusal names no value \
-         type, got {err}"
+    assert_eq!(
+        abi.valtype,
+        Some(ValueType::Own(stranger)),
+        "the refusal names the identity the host asked to mint against"
     );
 }
 
@@ -1053,16 +1257,21 @@ const BORROWER: &[u8] = component!(
 );
 
 /// A linker carrying everything [`BORROWER`] imports, with the
-/// `thing` resource registered from `resource` under the label the
-/// component imports it by. Returns the identity to mint with.
-fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, ResourceTypeId) {
+/// `thing` resource registered under the name the component imports
+/// it by. Returns the identity to mint with.
+fn borrower_linker(engine: &Engine) -> (Linker<()>, ResourceType) {
     let mut linker: Linker<()> = Linker::new(engine);
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource_with("thing", resource)
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -1071,7 +1280,7 @@ fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, 
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
                 async_: false,
@@ -1088,15 +1297,12 @@ fn borrower_linker(engine: &Engine, resource: HostResource<()>) -> (Linker<()>, 
     (linker, type_id)
 }
 
-async fn borrower_instance() -> (Store<()>, crate::Instance, ResourceTypeId) {
+async fn borrower_instance() -> (Store<()>, crate::Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
-    let (linker, type_id) = borrower_linker(
-        &engine,
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
-    );
+    let (linker, type_id) = borrower_linker(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let instance = linker
         .instantiate(&mut store, &component)
@@ -1202,7 +1408,7 @@ type ReleaseAttempt = Option<(bool, String)>;
 async fn drop_attempt_instance(
     lent: Arc<Mutex<Option<ResourceHandle>>>,
     attempt: Arc<Mutex<ReleaseAttempt>>,
-) -> (Store<()>, crate::Instance, ResourceTypeId) {
+) -> (Store<()>, crate::Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -1211,11 +1417,14 @@ async fn drop_attempt_instance(
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -1224,7 +1433,7 @@ async fn drop_attempt_instance(
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
                 async_: false,
@@ -1329,7 +1538,7 @@ fn chain(error: &Error) -> String {
 /// and try to lower it back into a guest.
 async fn recording_borrower_instance(
     seen: Arc<Mutex<Option<ResourceHandle>>>,
-) -> (Store<()>, crate::Instance, ResourceTypeId) {
+) -> (Store<()>, crate::Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -1338,11 +1547,14 @@ async fn recording_borrower_instance(
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -1351,7 +1563,7 @@ async fn recording_borrower_instance(
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
                 async_: false,
@@ -1598,10 +1810,7 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
     let borrower = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
-    let (mut linker, type_id) = borrower_linker(
-        &engine,
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
-    );
+    let (mut linker, type_id) = borrower_linker(&engine);
     let held: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
     let release = Arc::new(AtomicBool::new(false));
     {
@@ -1617,7 +1826,7 @@ async fn it_lowers_a_borrow_the_host_lifted_out_of_a_guest_back_in_with_its_rep(
                 FunctionType {
                     parameters: vec![FunctionParameter {
                         name: "h".to_owned(),
-                        ty: ValueType::Borrow(ResourceType::new("thing")),
+                        ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                     }],
                     result: None,
                     async_: true,
@@ -1746,11 +1955,14 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     let lent: Arc<Mutex<Option<ResourceHandle>>> = Arc::new(Mutex::new(None));
     let given = lent.clone();
@@ -1760,7 +1972,7 @@ async fn it_refuses_to_lower_a_lent_handle_again_as_an_own() {
             "take",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |_: HostCall<'_, ()>, _args, results| {
@@ -2118,7 +2330,7 @@ async fn it_lends_the_owning_handle_a_borrow_leaves_the_defining_instance_on() {
 
 /// A store whose host resource `thing` records every destructor run
 /// in the host data, plus the identity to mint with.
-async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) {
+async fn disposal_store() -> (Store<Vec<u32>>, ResourceType, crate::Instance) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
@@ -2127,11 +2339,14 @@ async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) 
     let iface: InterfaceIdentifier = "pdd014-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
         .resource(
             "thing",
-            |dropped: &mut Vec<u32>, rep: u32| -> crate::Result<()> {
+            type_id,
+            |mut store: StoreContext<'_, Vec<u32>>, rep: u32| -> crate::Result<()> {
+                let dropped = store.data_mut();
                 dropped.push(rep);
                 Ok(())
             },
@@ -2144,7 +2359,7 @@ async fn disposal_store() -> (Store<Vec<u32>>, ResourceTypeId, crate::Instance) 
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "h".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: Some(ValueType::Primitive(crate::PrimitiveType::U32)),
                 async_: false,
@@ -2207,17 +2422,10 @@ async fn it_names_the_resource_type_when_it_refuses_a_released_handle() {
         panic!("expected a canonical-ABI error, got {err:?}");
     };
     assert_eq!(
-        abi.valtype.as_ref().and_then(|valtype| match valtype {
-            ValueType::Own(resource) => Some(resource.label()),
-            _ => None,
-        }),
-        Some("thing"),
-        "the refusal processes an own handle, so it names the resource type \
-         the component imported it under, got {err}"
-    );
-    assert!(
-        err.to_string().contains("label: \"thing\""),
-        "the rendered message names that type too, got {err}"
+        abi.valtype,
+        Some(ValueType::Own(type_id)),
+        "the refusal processes an own handle, so it names the identity of \
+         the handle's resource type, got {err}"
     );
 }
 
@@ -2271,233 +2479,48 @@ async fn it_lets_an_instance_drop_before_its_store() {
 }
 
 // ----------------------------------------------------------------
-// Naming: which label an error about a handle carries.
+// Naming: which resource type an error about a handle carries.
 // ----------------------------------------------------------------
 
-/// Read the label of the `own<T>` an ABI error names, or `None` when
-/// it names no value type at all.
-fn owned_label(err: &Error) -> Option<String> {
+/// Read the resource type of the `own<T>` an ABI error names, or
+/// `None` when it names no value type at all.
+fn owned_type(err: &Error) -> Option<ResourceType> {
     let Error::Abi(abi) = err else {
         panic!("expected a canonical-ABI error, got {err:?}");
     };
     match abi.valtype.as_ref() {
-        Some(ValueType::Own(resource)) => Some(resource.label().to_owned()),
+        Some(ValueType::Own(resource)) => Some(*resource),
         Some(other) => panic!("expected an own handle, got {other:?}"),
         None => None,
     }
 }
 
 #[wcmp_macros::test]
-async fn it_names_a_shared_resource_by_the_label_the_component_imported_it_under() {
-    // One `HostResource` value registered against two labels is one
-    // identity under two names, which PDD013's shared resource type
-    // identity allows. The store keeps one of them: the label the
-    // component itself imported the resource under, because an
-    // instantiation teaches the store every name the component
-    // brings in before it sweeps up the linker's remaining labels.
-    //
-    // `alias` sorts before `thing`, and the sweep visits labels in
-    // sorted order, so a store that learned the sweep's names first
-    // would render `alias` here.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, BORROWER)
-        .await
-        .expect("component parses");
-    let thing: HostResource<()> =
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
-    let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
-    linker
-        .root()
-        .resource_with("alias", thing)
-        .expect("the registration");
-
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let _instance = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate");
-    let handle = store.resource_new(type_id, 1).expect("mint");
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
-        .expect_err("a released handle is not live");
-
-    assert_eq!(
-        owned_label(&err).as_deref(),
-        Some("thing"),
-        "one identity under two labels renders the one the component \
-         imported it under, got {err}"
-    );
-}
-
-#[wcmp_macros::test]
 async fn it_names_a_host_resource_no_component_imported() {
     // A resource registered against the linker that no component
-    // ever brings in still has a label — the linker knows it — so
-    // the store learns it at instantiation and an error about one of
-    // its handles renders it rather than nothing.
+    // ever brings in still has its identity, so an error about one
+    // of its handles names that identity rather than nothing.
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROWER)
         .await
         .expect("component parses");
-    let (mut linker, _thing) = borrower_linker(
-        &engine,
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
-    );
-    let gadget = linker
-        .root()
-        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
-        .expect("the registration");
-
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let _instance = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate");
-    let handle = store.resource_new(gadget, 1).expect("mint");
-    store
-        .resource_drop(handle)
-        .expect("released; no instance of this store holds its destructor");
-    let err = store
-        .resource_drop(handle)
-        .expect_err("a released handle is not live");
-
-    assert_eq!(
-        owned_label(&err).as_deref(),
-        Some("gadget"),
-        "a host resource the component never imported renders the label it \
-         was registered under, got {err}"
-    );
-}
-
-#[wcmp_macros::test]
-async fn it_sweeps_no_label_for_a_component_that_imports_no_resource() {
-    // The sweep is work proportional to the linker, so an
-    // instantiation whose component imports no resource skips it.
-    // What shows it skipped is the one thing the sweep teaches a
-    // store: after such an instantiation, a handle of a resource the
-    // linker holds renders no label, as it does in a store no
-    // component has been instantiated into.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, LOCAL_RESOURCE)
-        .await
-        .expect("component parses");
-    let mut linker: Linker<()> = Linker::new(&engine);
-    let gadget = linker
-        .root()
-        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
-        .expect("the registration");
-
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let _instance = linker
-        .instantiate(&mut store, &component)
-        .await
-        .expect("instantiate the component that imports nothing");
-    let handle = store.resource_new(gadget, 1).expect("mint");
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
-        .expect_err("a released handle is not live");
-
-    assert_eq!(
-        owned_label(&err),
-        None,
-        "an instantiation of a component that imports no resource teaches \
-         the store no label of the linker's, got {err}"
-    );
-}
-
-#[wcmp_macros::test]
-async fn it_names_a_shared_resource_by_the_importer_after_an_earlier_instantiation() {
-    // The same identity under two labels as the test above, but the
-    // store takes two components: one that imports nothing, then
-    // `BORROWER`. The first instantiation sweeps nothing, because
-    // its component imports no resource; the second sweeps the
-    // linker and meets this identity as `alias`, a label no
-    // component in the store ever uses, and brings it in as `thing`.
-    // A swept label is only ever a fallback, so the importer's label
-    // takes over and the error still reads `thing`.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let quiet = Component::new(&engine, LOCAL_RESOURCE)
-        .await
-        .expect("component parses");
-    let borrower = Component::new(&engine, BORROWER)
-        .await
-        .expect("component parses");
-    let thing: HostResource<()> =
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
-    let (mut linker, type_id) = borrower_linker(&engine, thing.clone());
+    let (mut linker, _thing) = borrower_linker(&engine);
+    let gadget = ResourceType::host::<Gadget>();
     linker
         .root()
-        .resource_with("alias", thing)
+        .resource(
+            "gadget",
+            gadget,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
-
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    let _quiet_instance = linker
-        .instantiate(&mut store, &quiet)
-        .await
-        .expect("instantiate the component that imports nothing");
-    let _borrower_instance = linker
-        .instantiate(&mut store, &borrower)
-        .await
-        .expect("instantiate the importer");
-    let handle = store.resource_new(type_id, 1).expect("mint");
-    store.resource_drop(handle).expect("first release");
-    let err = store
-        .resource_drop(handle)
-        .expect_err("a released handle is not live");
-
-    assert_eq!(
-        owned_label(&err).as_deref(),
-        Some("thing"),
-        "an earlier instantiation's sweep does not fix the name of an \
-         identity a later component imports under its own label, got {err}"
-    );
-}
-
-#[wcmp_macros::test]
-async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
-    // One identity under two labels that no component in the store
-    // imports: both reach the store as fallbacks from the sweep, so
-    // the sweep's order is what decides between them. The linker
-    // holds its interfaces in a hash order, which must not reach a
-    // name a user reads, so the sweep sorts the labels and the store
-    // keeps the first. `gizmo` sorts before `widget`, and it is the
-    // root registration that holds `widget` here, so nothing but the
-    // sort can be producing the answer.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, BORROWER)
-        .await
-        .expect("component parses");
-    let (mut linker, _thing) = borrower_linker(
-        &engine,
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) }),
-    );
-    let spare: HostResource<()> =
-        HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) });
-    let widget = linker
-        .root()
-        .resource_with("widget", spare.clone())
-        .expect("the registration");
-    let other: InterfaceIdentifier = "pdd014-tests:host/gizmos@0.1.0"
-        .parse()
-        .expect("identifier");
-    let gizmo = linker
-        .instance(&other)
-        .resource_with("gizmo", spare)
-        .expect("the registration");
-    assert_eq!(widget, gizmo, "one host resource value is one identity");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _instance = linker
         .instantiate(&mut store, &component)
         .await
         .expect("instantiate");
-    let handle = store.resource_new(widget, 1).expect("mint");
+    let handle = store.resource_new(gadget, 1).expect("mint");
     store
         .resource_drop(handle)
         .expect("released; no instance of this store holds its destructor");
@@ -2506,18 +2529,17 @@ async fn it_names_an_unimported_resource_by_the_first_of_its_labels_in_order() {
         .expect_err("a released handle is not live");
 
     assert_eq!(
-        owned_label(&err).as_deref(),
-        Some("gizmo"),
-        "an identity no component imported renders the first of its labels \
-         in sorted order, whatever order the linker holds them in, got {err}"
+        owned_type(&err),
+        Some(gadget),
+        "a host resource the component never imported is named by the \
+         identity it was registered with, got {err}"
     );
 }
 
 #[wcmp_macros::test]
 async fn it_names_a_locally_defined_resource_when_it_refuses_a_released_handle() {
-    // A resource the component defines has no host registration to
-    // take a name from, so the name comes from the component's own
-    // resource tables — the label it exports the type under.
+    // A resource the component defines has no host registration; the
+    // instantiation gave it its identity, and the refusal names that.
     let (mut store, instance) = local_resource_instance().await;
     let handle = make_handle(&mut store, &instance, 9).await;
     store.resource_drop(handle).expect("first release");
@@ -2526,19 +2548,18 @@ async fn it_names_a_locally_defined_resource_when_it_refuses_a_released_handle()
         .expect_err("a released handle is not live");
 
     assert_eq!(
-        owned_label(&err).as_deref(),
-        Some("thing"),
-        "a locally-defined resource renders the label the component \
-         declares it under, got {err}"
+        owned_type(&err),
+        Some(handle.ty()),
+        "a locally-defined resource is named by the identity its \
+         instantiation gave it, got {err}"
     );
 }
 
 #[wcmp_macros::test]
 async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
     // The mint entry point refuses an identity the calling instance
-    // holds no table for. The refusal names that type, under the
-    // name the store knows the identity by, exactly as the lower
-    // path names the handle slot it refused.
+    // holds no table for. The refusal names that identity, exactly as
+    // the lower path names the handle slot it refused.
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, MINTER)
         .await
@@ -2549,15 +2570,20 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
         .expect("identifier");
     linker
         .instance(&iface)
-        .resource("thing", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "thing",
+            ResourceType::host::<Thing>(),
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
-    let gadget = linker
+    let gadget = ResourceType::host::<Gadget>();
+    linker
         .root()
-        .resource("gadget", |_: &mut (), _: u32| -> crate::Result<()> {
-            Ok(())
-        })
+        .resource(
+            "gadget",
+            gadget,
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -2565,7 +2591,7 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
             "make",
             FunctionType {
                 parameters: Vec::new(),
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call: HostCall<'_, ()>, _args, results| {
@@ -2597,7 +2623,7 @@ async fn it_names_the_resource_type_a_refused_host_mint_asked_for() {
             );
             assert_eq!(
                 abi.valtype,
-                Some(ValueType::Own(ResourceType::new("gadget"))),
+                Some(ValueType::Own(ResourceType::host::<Gadget>())),
                 "the refusal names the resource type the mint asked for"
             );
         }

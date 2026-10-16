@@ -16,19 +16,18 @@
 //! [`Component`] and the signatures the executor lifts and lowers
 //! against come from one source.
 //!
-//! Resource types carry a label in the polyfill's shapes. The label
-//! is the name under which the resource is imported or exported; the
-//! projector collects those names up front so that an `own<T>` or
-//! `borrow<T>` deep inside a function type can name its resource.
+//! A resource type carries its identity and no name. Before
+//! instantiation that identity is the component and the resource's
+//! index among its resources, so two resources the component names
+//! alike are two types.
 //!
 //! [`Component`]: super::Component
 
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use wasmtime_environ::component::{
-    Component as EnvironComponent, ComponentExtern, ComponentTypes, Export as EnvironExport,
-    InterfaceType, TypeComponentInstanceIndex, TypeDef, TypeFuncIndex, TypeModuleIndex,
-    TypeResourceTable, TypeResourceTableIndex, TypeTupleIndex,
+    ComponentExtern, ComponentTypes, InterfaceType, TypeComponentInstanceIndex, TypeDef,
+    TypeFuncIndex, TypeModuleIndex, TypeResourceTable, TypeResourceTableIndex, TypeTupleIndex,
 };
 use wasmtime_environ::{EngineOrModuleTypeIndex, EntityType};
 
@@ -45,73 +44,40 @@ use crate::types::{
     ValueType, VariantCase, VariantType,
 };
 
-/// The label a resource receives when no import or export names it.
-const UNNAMED_RESOURCE: &str = "resource";
-
 /// Projects translator types onto polyfill shapes.
 pub struct TypeProjector<'a> {
     types: &'a ComponentTypes,
-    labels: HashMap<TypeResourceTableIndex, String>,
+    /// A number unique to the component in the process, which the
+    /// identity of each of its resource types carries until an
+    /// instantiation gives the type an identity of its own.
+    component: u32,
 }
 
 impl<'a> TypeProjector<'a> {
-    /// Build a projector for `component`, collecting the label of
-    /// every resource the component imports or exports.
-    pub fn new(types: &'a ComponentTypes, component: &EnvironComponent) -> Self {
-        let mut projector = Self {
+    /// Build a projector for one translated component.
+    pub fn new(types: &'a ComponentTypes) -> Self {
+        static COUNTER: AtomicU32 = AtomicU32::new(1);
+        Self {
             types,
-            labels: HashMap::new(),
-        };
-        for (_, (name, extern_)) in component.import_types.iter() {
-            projector.collect_labels(name, &extern_.ty);
-        }
-        for (name, (export_index, _)) in component.exports.raw_iter() {
-            match &component.export_items[*export_index] {
-                EnvironExport::Type(def) => projector.collect_labels(name, def),
-                EnvironExport::Instance { ty, .. } => projector.collect_instance_labels(*ty),
-                EnvironExport::LiftedFunction { .. }
-                | EnvironExport::ModuleStatic { .. }
-                | EnvironExport::ModuleImport { .. } => {}
-            }
-        }
-        projector
-    }
-
-    fn collect_labels(&mut self, name: &str, def: &TypeDef) {
-        match def {
-            TypeDef::Resource(index) => {
-                self.labels.entry(*index).or_insert_with(|| name.to_owned());
-            }
-            TypeDef::ComponentInstance(index) => self.collect_instance_labels(*index),
-            _ => {}
+            component: COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 
-    fn collect_instance_labels(&mut self, index: TypeComponentInstanceIndex) {
-        let exports: Vec<(String, TypeDef)> = self.types[index]
-            .exports
-            .iter()
-            .map(|(name, extern_)| (name.clone(), extern_.ty))
-            .collect();
-        for (name, def) in exports {
-            self.collect_labels(&name, &def);
-        }
-    }
-
-    /// The resource one resource table holds, as the component names
-    /// it: the label the resource is imported or exported under, and,
-    /// for a table a concrete instance keeps, the table's index.
+    /// The identity of the resource that one resource table holds,
+    /// before instantiation: the component and the resource's index
+    /// among its resources, with the table as the position a handle
+    /// of the type is read from. An abstract table's resource has an
+    /// identity of its own and no table.
     pub fn resource(&self, index: TypeResourceTableIndex) -> ResourceType {
-        let label = self
-            .labels
-            .get(&index)
-            .map(String::as_str)
-            .unwrap_or(UNNAMED_RESOURCE);
         match &self.types[index] {
-            TypeResourceTable::Concrete { .. } => {
-                ResourceType::indexed(label, index.as_u32() as usize)
+            TypeResourceTable::Concrete { ty, .. } => ResourceType::uninstantiated(
+                self.component,
+                ty.as_u32() as usize,
+                index.as_u32() as usize,
+            ),
+            TypeResourceTable::Abstract(abstract_) => {
+                ResourceType::abstract_(self.component, abstract_.as_u32() as usize)
             }
-            TypeResourceTable::Abstract(_) => ResourceType::new(label),
         }
     }
 
@@ -279,7 +245,7 @@ impl<'a> TypeProjector<'a> {
         for (name, extern_) in self.types[index].exports.iter() {
             items.push(InstanceItem {
                 name: name.clone(),
-                ty: self.extern_type(name, extern_)?,
+                ty: self.extern_type(extern_)?,
             });
         }
         Ok(InstanceType { items })
@@ -371,26 +337,17 @@ impl<'a> TypeProjector<'a> {
     }
 
     /// Project the type of one import or export.
-    pub fn extern_type(&self, name: &str, extern_: &ComponentExtern) -> Result<ExternType> {
-        self.type_def(name, &extern_.ty)
+    pub fn extern_type(&self, extern_: &ComponentExtern) -> Result<ExternType> {
+        self.type_def(&extern_.ty)
     }
 
-    /// Project one [`TypeDef`]. `name` labels a resource type that
-    /// has no other name.
-    pub fn type_def(&self, name: &str, def: &TypeDef) -> Result<ExternType> {
+    /// Project one [`TypeDef`].
+    pub fn type_def(&self, def: &TypeDef) -> Result<ExternType> {
         Ok(match def {
             TypeDef::ComponentFunc(index) => ExternType::Function(self.function(*index)?),
             TypeDef::ComponentInstance(index) => ExternType::Instance(self.instance(*index)?),
             TypeDef::Interface(ty) => ExternType::Value(self.value_type(ty)?),
-            TypeDef::Resource(index) => ExternType::Resource(match &self.types[*index] {
-                TypeResourceTable::Concrete { .. } => ResourceType::indexed(
-                    self.labels.get(index).map(String::as_str).unwrap_or(name),
-                    index.as_u32() as usize,
-                ),
-                TypeResourceTable::Abstract(_) => {
-                    ResourceType::new(self.labels.get(index).map(String::as_str).unwrap_or(name))
-                }
-            }),
+            TypeDef::Resource(index) => ExternType::Resource(self.resource(*index)),
             TypeDef::Module(index) => ExternType::Module(self.module(*index)?),
             TypeDef::Component(_) => ExternType::Component,
             TypeDef::CoreFunc(_) => {
@@ -442,7 +399,7 @@ mod tests {
             .translate(TWO_PARAMETERS)
             .expect("the component translates");
         let (types, _) = builder.finish(&translation.component);
-        let projector = TypeProjector::new(&types, &translation.component);
+        let projector = TypeProjector::new(&types);
 
         let (_, (export_index, _)) = translation
             .component

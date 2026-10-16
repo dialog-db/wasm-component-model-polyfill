@@ -106,9 +106,8 @@ use crate::component::{
 };
 use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
 use crate::identifier::InterfaceIdentifier;
-use crate::internal::LinkerInternal;
-use crate::resource::ResourceTypeId;
-use crate::types::{ResourceType, ValueType};
+use crate::internal::{LinkerInternal, ResourceTypeInternal};
+use crate::types::{ResourceType, ValueType, value_types_match};
 
 use super::host_func_kind::HostFuncKind;
 use super::linker::Linker;
@@ -170,9 +169,11 @@ pub fn resolve_imports<T: 'static>(
 ) -> Result<Resolution> {
     let registered: Vec<&InterfaceIdentifier> = linker.registered_keys().collect();
     let mut bindings = Vec::with_capacity(component.imports.len());
-    // The resources the imports so far have defined, by the index of
-    // their table in the component.
+    // The resources the imports so far have defined, by their index
+    // among the component's resources.
     let mut defined: HashSet<usize> = HashSet::new();
+    // The identity the linker gives each of those resources.
+    let mut resources = ImportedResources::default();
     for import in component.imports.iter() {
         let binding = match (&import.name, &import.ty) {
             (ExternalName::Interface(id), ExternType::Instance(instance)) => {
@@ -193,6 +194,7 @@ pub fn resolve_imports<T: 'static>(
                         &instance.items,
                         registration,
                         &ItemPosition::interface(chosen),
+                        &mut resources,
                     )?;
                 }
                 binding
@@ -203,15 +205,73 @@ pub fn resolve_imports<T: 'static>(
             // namespace, under the name as written or under a
             // version compatible with it.
             (ExternalName::Interface(id), _) => {
-                resolve_root(import, &id.to_string(), linker, &defined)?
+                resolve_root(import, &id.to_string(), linker, &defined, &mut resources)?
             }
-            (ExternalName::Plain(name), _) => resolve_root(import, name, linker, &defined)?,
+            (ExternalName::Plain(name), _) => {
+                resolve_root(import, name, linker, &defined, &mut resources)?
+            }
         };
         define_resources(&import.ty, &mut defined);
         bindings.push(binding);
     }
-    check_shared_identities(component, linker, &bindings)?;
     Ok(Resolution { bindings })
+}
+
+/// The identity the linker gives each resource of a component that
+/// the imports have reached so far, by the resource's index among the
+/// component's resources, as Wasmtime's type checker keeps its
+/// imported resources (`component/matching.rs`).
+///
+/// A component declares the type of each imported function in terms
+/// of its own resources, which have no identity until a host supplies
+/// one. A registration supplies one, and the type check of every
+/// later function reads each resource as that identity.
+#[derive(Default)]
+struct ImportedResources {
+    /// Each resource's identity, with where it was registered first.
+    identities: HashMap<usize, (ResourceType, TypeMismatchPosition)>,
+}
+
+impl ImportedResources {
+    /// Record that the resource `declared` is registered as
+    /// `identity` at `position`. A component that declares one
+    /// resource type in several imports (an instance whose item is
+    /// `(type (eq $r))` of another's, or a root import
+    /// `(type (eq $r))` of an instance's item) needs one identity
+    /// behind all of them, or a handle that one of them lets a guest
+    /// have could not lower through the other, so a second
+    /// registration under another identity is refused.
+    fn define(
+        &mut self,
+        declared: &ResourceType,
+        identity: ResourceType,
+        position: TypeMismatchPosition,
+    ) -> Result<()> {
+        let Some(index) = declared.resource_index() else {
+            return Ok(());
+        };
+        match self.identities.get(&index) {
+            None => {
+                self.identities.insert(index, (identity, position));
+                Ok(())
+            }
+            Some((first, _)) if *first == identity => Ok(()),
+            Some((first, _)) => Err(Error::from(TypeMismatch {
+                position,
+                expected: TypeRendering::Value(ValueType::Own(*first)),
+                actual: TypeRendering::Value(ValueType::Own(identity)),
+            })),
+        }
+    }
+
+    /// The identity of the resource `declared` names: the one a
+    /// registration gave it, or its own when none has.
+    fn resolve(&self, declared: ResourceType) -> ResourceType {
+        declared
+            .resource_index()
+            .and_then(|index| self.identities.get(&index))
+            .map_or(declared, |(identity, _)| *identity)
+    }
 }
 
 /// Add the index of every resource `ty` declares to `defined`: the
@@ -220,7 +280,7 @@ pub fn resolve_imports<T: 'static>(
 fn define_resources(ty: &ExternType, defined: &mut HashSet<usize>) {
     match ty {
         ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
-            defined.extend(resource.index());
+            defined.extend(resource.resource_index());
         }
         ExternType::Instance(instance) => {
             for item in instance.items.iter() {
@@ -228,102 +288,6 @@ fn define_resources(ty: &ExternType, defined: &mut HashSet<usize>) {
             }
         }
         _ => {}
-    }
-}
-
-/// A component that declares one resource type in several imports
-/// (an instance whose item is `(type (eq $r))` of another's, or a
-/// root import `(type (eq $r))` of an instance's item) needs one
-/// identity behind all of them. Every registration for the same
-/// resource must carry the same identity, or a handle minted under
-/// one interface could not lower through the other.
-fn check_shared_identities<T: 'static>(
-    component: &Component,
-    linker: &Linker<T>,
-    bindings: &[ImportBinding],
-) -> Result<()> {
-    let mut seen: HashMap<usize, (ResourceTypeId, TypeMismatchPosition)> = HashMap::new();
-    for (import, binding) in component.imports.iter().zip(bindings) {
-        let ExternType::Instance(instance) = &import.ty else {
-            if let (
-                ExternType::Resource(resource) | ExternType::ResourceEquals(resource),
-                ImportBinding::Root { name },
-            ) = (&import.ty, binding)
-            {
-                let position = ItemPosition::root(&import.name, name);
-                let host = linker.root_registration().resource(name);
-                if let (Some(index), Some(host)) = (resource.index(), host) {
-                    check_shared_identity(
-                        &mut seen,
-                        index,
-                        host.type_id(),
-                        position.for_item(name),
-                        resource,
-                        name,
-                    )?;
-                }
-            }
-            continue;
-        };
-        let (registration, position) = match (binding, &import.name) {
-            (ImportBinding::Resolved { chosen }, _) => {
-                let Some(registration) = linker.registration_for(chosen) else {
-                    continue;
-                };
-                (registration, ItemPosition::interface(chosen))
-            }
-            (ImportBinding::Root { name }, _) => {
-                let Some(registration) = linker.root_registration().instance(name) else {
-                    continue;
-                };
-                (registration, ItemPosition::root(&import.name, name))
-            }
-            _ => continue,
-        };
-        for item in instance.items.iter() {
-            let (ExternType::Resource(resource) | ExternType::ResourceEquals(resource)) = &item.ty
-            else {
-                continue;
-            };
-            let (Some(index), Some(host)) = (resource.index(), registration.resource(&item.name))
-            else {
-                continue;
-            };
-            check_shared_identity(
-                &mut seen,
-                index,
-                host.type_id(),
-                position.for_item(&item.name),
-                resource,
-                &item.name,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Record that the resource at table `index` is registered as
-/// `identity` at `position`, or refuse a second registration of it
-/// under another identity.
-fn check_shared_identity(
-    seen: &mut HashMap<usize, (ResourceTypeId, TypeMismatchPosition)>,
-    index: usize,
-    identity: ResourceTypeId,
-    position: TypeMismatchPosition,
-    resource: &ResourceType,
-    name: &str,
-) -> Result<()> {
-    match seen.get(&index) {
-        None => {
-            seen.insert(index, (identity, position));
-            Ok(())
-        }
-        Some((first, _)) if *first == identity => Ok(()),
-        Some(_) => Err(Error::from(TypeMismatch {
-            position,
-            expected: TypeRendering::Value(ValueType::Own(resource.clone())),
-            actual: TypeRendering::Value(ValueType::Own(ResourceType::new(name.to_owned()))),
-        })),
     }
 }
 
@@ -466,6 +430,7 @@ fn resolve_root<T: 'static>(
     name: &str,
     linker: &Linker<T>,
     defined: &HashSet<usize>,
+    resources: &mut ImportedResources,
 ) -> Result<ImportBinding> {
     let root = linker.root_registration();
     let name = &root_key(root, name);
@@ -483,6 +448,7 @@ fn resolve_root<T: 'static>(
                 name,
                 declared,
                 root,
+                resources,
             )?;
             Ok(bound())
         }
@@ -490,12 +456,21 @@ fn resolve_root<T: 'static>(
             if root.resource(name).is_none()
                 && root.kind_of(name).is_none()
                 && resource
-                    .index()
+                    .resource_index()
                     .is_some_and(|index| defined.contains(&index))
             {
                 return Ok(ImportBinding::Vacuous);
             }
-            check_resource_item(name, root, &import.name, None)?;
+            let position = ItemPosition::root(&import.name, name);
+            check_resource_item(
+                name,
+                resource,
+                root,
+                &import.name,
+                None,
+                position.for_item(name),
+                resources,
+            )?;
             Ok(bound())
         }
         ExternType::Module(declared) => {
@@ -509,6 +484,7 @@ fn resolve_root<T: 'static>(
                     &instance.items,
                     registration,
                     &ItemPosition::root(&import.name, name),
+                    resources,
                 )?;
                 Ok(bound())
             }
@@ -566,19 +542,22 @@ fn check_instance_items<T: 'static>(
     items: &[InstanceItem],
     registration: &InstanceRegistration<T>,
     position: &ItemPosition<'_>,
+    resources: &mut ImportedResources,
 ) -> Result<()> {
+    // The first name each resource the instance declares goes by.
+    let mut first_names: HashMap<ResourceType, &str> = HashMap::new();
     for item in items.iter() {
         match &item.ty {
             ExternType::Function(declared) => {
-                check_function_item(position, &item.name, declared, registration)?;
+                check_function_item(position, &item.name, declared, registration, resources)?;
             }
             ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
                 // An item declared equal to a resource the instance
-                // names elsewhere carries that resource's first name
-                // as its label. It needs no registration of its own,
-                // as in Wasmtime: the registration under the first
-                // name serves both.
-                if registration.resource(&item.name).is_none() && resource.label() != item.name {
+                // names earlier needs no registration of its own, as
+                // in Wasmtime: the registration under the first name
+                // serves both.
+                let first = *first_names.entry(*resource).or_insert(&item.name);
+                let name = if registration.resource(&item.name).is_none() && first != item.name {
                     check_kind(
                         registration,
                         &item.name,
@@ -586,15 +565,19 @@ fn check_instance_items<T: 'static>(
                         import_name,
                         Some(&item.name),
                     )?;
-                    check_resource_item(
-                        resource.label(),
-                        registration,
-                        import_name,
-                        Some(&item.name),
-                    )?;
+                    first
                 } else {
-                    check_resource_item(&item.name, registration, import_name, Some(&item.name))?;
-                }
+                    &item.name
+                };
+                check_resource_item(
+                    name,
+                    resource,
+                    registration,
+                    import_name,
+                    Some(&item.name),
+                    position.for_item(&item.name),
+                    resources,
+                )?;
             }
             ExternType::Module(declared) => {
                 check_module_item(
@@ -612,6 +595,7 @@ fn check_instance_items<T: 'static>(
                         &inner.items,
                         nested,
                         &position.inside(&item.name),
+                        resources,
                     )?;
                 }
                 None => {
@@ -640,14 +624,21 @@ fn check_instance_items<T: 'static>(
     Ok(())
 }
 
+/// A resource item needs a registered host resource under its name,
+/// and the identity that registration gives the resource is the one
+/// every later function of the component reads it as.
+#[allow(clippy::too_many_arguments)]
 fn check_resource_item<T: 'static>(
     item_name: &str,
+    declared: &ResourceType,
     registration: &InstanceRegistration<T>,
     import_name: &ExternalName,
     item: Option<&str>,
+    position: TypeMismatchPosition,
+    resources: &mut ImportedResources,
 ) -> Result<()> {
-    if registration.resource(item_name).is_some() {
-        return Ok(());
+    if let Some(host) = registration.resource(item_name) {
+        return resources.define(declared, host.ty, position);
     }
     check_kind(registration, item_name, "resource", import_name, item)?;
     Err(Error::from(LinkError::UnresolvedImport {
@@ -709,6 +700,7 @@ fn check_function_item<T: 'static>(
     item_name: &str,
     declared: &FunctionType,
     registration: &InstanceRegistration<T>,
+    resources: &ImportedResources,
 ) -> Result<()> {
     let Some(host) = registration.func(item_name) else {
         let import_name = position.import_name();
@@ -726,7 +718,7 @@ fn check_function_item<T: 'static>(
         }));
     };
     check_registration_kind(position, item_name, declared, &host.kind)?;
-    if !function_types_compatible(&host.signature, declared) {
+    if !function_types_compatible(&host.signature, declared, resources) {
         return Err(Error::from(TypeMismatch {
             position: position.for_item(item_name),
             expected: TypeRendering::Function(declared.clone()),
@@ -785,13 +777,31 @@ fn check_registration_kind<T: 'static>(
 /// component's WIT description for tooling but don't affect the
 /// wire format — so the resolver compares by position rather than
 /// by `PartialEq` on the full struct.
-fn function_types_compatible(a: &FunctionType, b: &FunctionType) -> bool {
-    a.result == b.result
-        && a.parameters.len() == b.parameters.len()
-        && a.parameters
+///
+/// `host` is the type a registration names and `declared` the type
+/// the component declares, whose resources read as the identities
+/// `resources` holds for them.
+fn function_types_compatible(
+    host: &FunctionType,
+    declared: &FunctionType,
+    resources: &ImportedResources,
+) -> bool {
+    let results_match = match (&host.result, &declared.result) {
+        (Some(host), Some(declared)) => {
+            value_types_match(host, declared, &|ty| resources.resolve(ty))
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    results_match
+        && host.parameters.len() == declared.parameters.len()
+        && host
+            .parameters
             .iter()
-            .zip(b.parameters.iter())
-            .all(|(a, b)| a.ty == b.ty)
+            .zip(declared.parameters.iter())
+            .all(|(host, declared)| {
+                value_types_match(&host.ty, &declared.ty, &|ty| resources.resolve(ty))
+            })
 }
 
 fn unresolved_or_incompatible(
@@ -1181,7 +1191,13 @@ mod tests {
                 name: ExternalName::Interface(id(name)),
                 ty,
             };
-            match resolve_root(&import, name, &linker, &HashSet::new()) {
+            match resolve_root(
+                &import,
+                name,
+                &linker,
+                &HashSet::new(),
+                &mut ImportedResources::default(),
+            ) {
                 Err(Error::Link(inner)) => match *inner {
                     LinkError::UnsupportedRegistration { import, reason } => {
                         assert_eq!(import, ExternalName::Interface(id(name)));

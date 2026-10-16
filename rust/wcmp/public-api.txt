@@ -799,14 +799,8 @@ pub struct wcmp::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wcmp::HostCall<'a, T>
 pub fn wcmp::HostCall<'a, T>::data(&self) -> &T
 pub fn wcmp::HostCall<'a, T>::data_mut(&mut self) -> &mut T
-pub fn wcmp::HostCall<'a, T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
+pub fn wcmp::HostCall<'a, T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::HostCall<'a, T>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
-pub struct wcmp::HostResource<T>
-impl<T> wcmp::HostResource<T>
-pub fn wcmp::HostResource<T>::new(impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> Self
-pub fn wcmp::HostResource<T>::type_id(&self) -> wcmp::ResourceTypeId
-impl<T> core::clone::Clone for wcmp::HostResource<T>
-pub fn wcmp::HostResource<T>::clone(&self) -> Self
 pub struct wcmp::Instance
 impl wcmp::Instance
 pub fn wcmp::Instance::exports(&self) -> wcmp::InstanceExports<'_>
@@ -879,8 +873,7 @@ pub fn wcmp::LinkerInstance<'a, T>::func_wrap<Params, Ret, F>(&mut self, impl co
 pub fn wcmp::LinkerInstance<'a, T>::func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, impl core::convert::Into<alloc::string::String>, F) -> wcmp::Result<()> where Params: wcmp::ComponentParameters, Ret: wcmp::ComponentResult, F: core::ops::function::Fn(&wcmp::Accessor<T>, Params) -> Fut + core::marker::Send + core::marker::Sync + 'static, Fut: wcmp::HostFuture<wcmp::Result<Ret>>
 pub fn wcmp::LinkerInstance<'a, T>::instance(&mut self, impl core::convert::Into<alloc::string::String>) -> wcmp::LinkerInstance<'_, T>
 pub fn wcmp::LinkerInstance<'a, T>::module(&mut self, impl core::convert::Into<alloc::string::String>, &wcmp::Module) -> wcmp::Result<()>
-pub fn wcmp::LinkerInstance<'a, T>::resource(&mut self, impl core::convert::Into<alloc::string::String>, impl core::ops::function::Fn(&mut T, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<wcmp::ResourceTypeId>
-pub fn wcmp::LinkerInstance<'a, T>::resource_with(&mut self, impl core::convert::Into<alloc::string::String>, wcmp::HostResource<T>) -> wcmp::Result<wcmp::ResourceTypeId>
+pub fn wcmp::LinkerInstance<'a, T>::resource(&mut self, impl core::convert::Into<alloc::string::String>, wcmp::ResourceType, impl for<'c> core::ops::function::Fn(wcmp::StoreContext<'c, T>, u32) -> wcmp::Result<()> + core::marker::Send + core::marker::Sync + 'static) -> wcmp::Result<()>
 pub struct wcmp::ListType
 impl wcmp::ListType
 pub fn wcmp::ListType::element(&self) -> &wcmp::ValueType
@@ -1030,7 +1023,7 @@ pub struct wcmp::ResourceHandle
 impl wcmp::ResourceHandle
 pub fn wcmp::ResourceHandle::index(&self) -> u32
 pub fn wcmp::ResourceHandle::rep(&self) -> u32
-pub fn wcmp::ResourceHandle::type_id(&self) -> wcmp::ResourceTypeId
+pub fn wcmp::ResourceHandle::ty(&self) -> wcmp::ResourceType
 impl core::clone::Clone for wcmp::ResourceHandle
 pub fn wcmp::ResourceHandle::clone(&self) -> wcmp::ResourceHandle
 impl core::cmp::Eq for wcmp::ResourceHandle
@@ -1044,9 +1037,8 @@ impl core::marker::Copy for wcmp::ResourceHandle
 impl core::marker::StructuralPartialEq for wcmp::ResourceHandle
 pub struct wcmp::ResourceType
 impl wcmp::ResourceType
-pub fn wcmp::ResourceType::index(&self) -> core::option::Option<usize>
-pub fn wcmp::ResourceType::label(&self) -> &str
-pub fn wcmp::ResourceType::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn wcmp::ResourceType::host<T: 'static>() -> Self
+pub fn wcmp::ResourceType::host_dynamic(u32) -> Self
 impl core::clone::Clone for wcmp::ResourceType
 pub fn wcmp::ResourceType::clone(&self) -> wcmp::ResourceType
 impl core::cmp::Eq for wcmp::ResourceType
@@ -1056,18 +1048,7 @@ impl core::fmt::Debug for wcmp::ResourceType
 pub fn wcmp::ResourceType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::hash::Hash for wcmp::ResourceType
 pub fn wcmp::ResourceType::hash<H: core::hash::Hasher>(&self, &mut H)
-pub struct wcmp::ResourceTypeId(_)
-impl core::clone::Clone for wcmp::ResourceTypeId
-pub fn wcmp::ResourceTypeId::clone(&self) -> wcmp::ResourceTypeId
-impl core::cmp::Eq for wcmp::ResourceTypeId
-impl core::cmp::PartialEq for wcmp::ResourceTypeId
-pub fn wcmp::ResourceTypeId::eq(&self, &wcmp::ResourceTypeId) -> bool
-impl core::fmt::Debug for wcmp::ResourceTypeId
-pub fn wcmp::ResourceTypeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for wcmp::ResourceTypeId
-pub fn wcmp::ResourceTypeId::hash<__H: core::hash::Hasher>(&self, &mut __H)
-impl core::marker::Copy for wcmp::ResourceTypeId
-impl core::marker::StructuralPartialEq for wcmp::ResourceTypeId
+impl core::marker::Copy for wcmp::ResourceType
 pub struct wcmp::ResultType
 impl wcmp::ResultType
 pub fn wcmp::ResultType::err(&self) -> core::option::Option<&wcmp::ValueType>
@@ -1095,7 +1076,7 @@ pub fn wcmp::Store<T>::data(&self) -> &T
 pub fn wcmp::Store<T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::Store<T>::hostcall_fuel(&self) -> usize
 pub fn wcmp::Store<T>::resource_drop(&mut self, wcmp::ResourceHandle) -> wcmp::Result<()>
-pub fn wcmp::Store<T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
+pub fn wcmp::Store<T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
 pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, usize)
 impl<T: core::marker::Send + 'static> wcmp::Store<T>
@@ -1107,7 +1088,7 @@ impl<'a, T: 'static> wcmp::StoreContext<'a, T>
 pub fn wcmp::StoreContext<'a, T>::data(&self) -> &T
 pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
-pub fn wcmp::StoreContext<'a, T>::resource_new(&self, wcmp::ResourceTypeId, u32) -> wcmp::Result<wcmp::ResourceHandle>
+pub fn wcmp::StoreContext<'a, T>::resource_new(&self, wcmp::ResourceType, u32) -> wcmp::Result<wcmp::ResourceHandle>
 pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
 pub struct wcmp::StoreId(_)
 impl core::clone::Clone for wcmp::StoreId

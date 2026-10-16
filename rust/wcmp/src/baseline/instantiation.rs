@@ -9,8 +9,7 @@
 //!
 //! An instantiation writes to the store before it can fail: one
 //! instance record per component instance of the plan, then the
-//! destructor and the name of every resource type the plan
-//! introduces. A start function that traps and an import the
+//! destructor of every resource type the plan introduces. A start function that traps and an import the
 //! executor cannot look up both fail after that. The records they
 //! would leave are reachable from nothing — the instance the
 //! attempt would have produced does not exist — so what these tests
@@ -24,7 +23,9 @@
 
 use crate::linker::{ImportBinding, Resolution};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
-use crate::{Component, Engine, Error, HostResource, InterfaceIdentifier, Linker, Store};
+use crate::{
+    Component, Engine, Error, InterfaceIdentifier, Linker, ResourceType, Store, StoreContext,
+};
 use wcmp_macros::component;
 
 /// The interface the components below import their host resource
@@ -33,8 +34,8 @@ const THINGS: &str = "test:host/things@0.1.0";
 
 /// A component that brings in the host's resource, defines a
 /// resource of its own, and instantiates one core module: an
-/// instantiation of it registers a destructor and a name for two
-/// resource types and adds one instance record.
+/// instantiation of it registers a destructor for two resource types
+/// and adds one instance record.
 const REGISTERS_RESOURCES: &[u8] = component!(
     r#"
     (component
@@ -76,31 +77,13 @@ const TRAPS_IN_START: &[u8] = component!(
     "#
 );
 
-/// The interface [`QUIET`] imports its one resource from.
-const GADGETS: &str = "test:host/gadgets@0.1.0";
-
-/// A component that imports one resource, from an interface of its
-/// own, and uses none. An instantiation of it sweeps the linker for
-/// the labels of every host resource the linker carries, and teaches
-/// the store a name for none of them but its own import's.
-const QUIET: &[u8] = component!(
-    r#"
-    (component
-      (import "test:host/gadgets@0.1.0" (instance $i
-        (export "gadget" (type (sub resource)))))
-      (core module $m (func (export "noop")))
-      (core instance $c (instantiate $m)))
-    "#
-);
-
 /// What the store holds of the records an instantiation adds: one
-/// per component instance of the plan, the destructors its resource
-/// types registered, and the names it taught for them.
+/// per component instance of the plan and the destructors its
+/// resource types registered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Records {
     instances: usize,
     destructors: usize,
-    names: usize,
 }
 
 /// Read those records out of the store.
@@ -117,26 +100,27 @@ fn records<T: 'static>(store: &mut Store<T>) -> Records {
     Records {
         instances,
         destructors: context.internal_ref().registered_destructors(),
-        names: context.internal_ref().learned_resource_names(),
     }
 }
 
+/// The marker for the identity of the host resource type the
+/// components import as `thing`.
+struct Thing;
+
 /// A linker holding the host resource the components import, under
-/// the label they import it by.
-fn things_linker(engine: &Engine, resource: HostResource<()>) -> Linker<()> {
+/// the name they import it by, with a destructor that does nothing.
+fn things_linker(engine: &Engine) -> Linker<()> {
     let mut linker: Linker<()> = Linker::new(engine);
     let iface: InterfaceIdentifier = THINGS.parse().expect("identifier");
     linker
         .instance(&iface)
-        .resource_with("thing", resource)
+        .resource(
+            "thing",
+            ResourceType::host::<Thing>(),
+            |_: StoreContext<'_, ()>, _: u32| -> crate::Result<()> { Ok(()) },
+        )
         .expect("the registration");
     linker
-}
-
-/// The host resource the components import, with a destructor that
-/// does nothing.
-fn thing() -> HostResource<()> {
-    HostResource::new(|_: &mut (), _: u32| -> crate::Result<()> { Ok(()) })
 }
 
 #[wcmp_macros::test]
@@ -152,7 +136,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_start_function_traps() {
     let traps = Component::new(&engine, TRAPS_IN_START)
         .await
         .expect("component parses");
-    let linker = things_linker(&engine, thing());
+    let linker = things_linker(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
     let _instance = linker
@@ -161,7 +145,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_start_function_traps() {
         .expect("the component that does not trap instantiates");
     let before = records(&mut store);
     assert!(
-        before.instances > 0 && before.destructors > 0 && before.names > 0,
+        before.instances > 0 && before.destructors > 0,
         "the first instantiation left records for the second to leave alone, got {before:?}"
     );
 
@@ -193,7 +177,7 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
     let works = Component::new(&engine, REGISTERS_RESOURCES)
         .await
         .expect("component parses");
-    let linker = things_linker(&engine, thing());
+    let linker = things_linker(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
 
     let _instance = linker
@@ -229,76 +213,6 @@ async fn it_leaves_the_store_as_it_found_it_when_a_resource_runtime_does_not_lin
     );
 }
 
-#[wcmp_macros::test]
-async fn it_puts_back_the_resource_name_a_failed_instantiation_displaced() {
-    // One host resource registered under two labels is one identity
-    // under two names. An instantiation that succeeds first leaves
-    // the label no component uses as the store's fallback; the
-    // attempt that traps teaches the label its own component
-    // imports, which outranks a fallback. Taking the attempt's
-    // registrations back has to put the tier back with the label, or
-    // the store would render nothing for the identity where it
-    // rendered the fallback before.
-    let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let quiet = Component::new(&engine, QUIET)
-        .await
-        .expect("component parses");
-    let traps = Component::new(&engine, TRAPS_IN_START)
-        .await
-        .expect("component parses");
-    let resource = thing();
-    let mut linker = things_linker(&engine, resource.clone());
-    let type_id = linker
-        .root()
-        .resource_with("alias", resource)
-        .expect("the registration");
-    let gadgets: InterfaceIdentifier = GADGETS.parse().expect("identifier");
-    linker
-        .instance(&gadgets)
-        .resource_with("gadget", thing())
-        .expect("the registration");
-    let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-
-    let _instance = linker
-        .instantiate(&mut store, &quiet)
-        .await
-        .expect("the quiet component instantiates");
-    let before = records(&mut store);
-    let swept = store
-        .internal()
-        .context()
-        .internal_ref()
-        .resource_type(type_id)
-        .expect("the sweep left a label for the identity no component imported");
-    assert_eq!(
-        swept.label(),
-        "alias",
-        "the sweep takes the labels in sorted order and `alias` sorts first"
-    );
-
-    let error = match linker.instantiate(&mut store, &traps).await {
-        Ok(_) => panic!("a start function that traps fails the instantiation"),
-        Err(error) => error,
-    };
-
-    let after = store
-        .internal()
-        .context()
-        .internal_ref()
-        .resource_type(type_id)
-        .expect("the identity still has the label it had before the attempt");
-    assert_eq!(
-        after.label(),
-        "alias",
-        "the attempt taught `thing` and took it back, and failed with {error}"
-    );
-    assert_eq!(
-        records(&mut store),
-        before,
-        "the failed attempt left the store as it found it"
-    );
-}
-
 #[cfg(target_arch = "wasm32")]
 #[wcmp_macros::test]
 async fn it_leaves_the_store_as_it_found_it_when_the_instantiation_future_drops() {
@@ -311,7 +225,7 @@ async fn it_leaves_the_store_as_it_found_it_when_the_instantiation_future_drops(
     let works = Component::new(&engine, REGISTERS_RESOURCES)
         .await
         .expect("component parses");
-    let linker = things_linker(&engine, thing());
+    let linker = things_linker(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
     let _first = linker
         .instantiate(&mut store, &works)

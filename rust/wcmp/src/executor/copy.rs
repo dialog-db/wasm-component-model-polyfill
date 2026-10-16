@@ -170,11 +170,11 @@ use crate::error::{AbiPosition, CopyCause, Error, TaskCause, WaitableCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
 use crate::internal::ErrorInternal;
-use crate::resource::{HandleTables, TableId};
+use crate::resource::{HandleTables, ResourceTableRuntime, TableId};
 use crate::runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
-use crate::types::{ListType, ValueType};
+use crate::types::{ListType, ResourceType, ValueType, payloads_match};
 use crate::value::Val;
 
 use super::host_consume::serve_host_write;
@@ -244,9 +244,11 @@ pub fn build_cancel_copy<T: 'static>(
             let index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, store.internal().runtime_mut())?;
+            let resources = resource_tables(&abi_state)?;
+            let resolve = |declared| ResourceTableRuntime::identity_in(&resources, declared);
             let (waitable, host_end) = {
                 let mut guard = lock_tables(&tables)?;
-                let end = copying_end(&guard, kind, &payload, async_, table, index)?;
+                let end = copying_end(&guard, kind, &payload, &resolve, async_, table, index)?;
                 let host_end = guard.tasks.cancel_copy(kind, end).map_err(trap)?;
                 (WaitableId::from_end(kind, end), host_end)
             };
@@ -267,16 +269,32 @@ pub fn build_cancel_copy<T: 'static>(
     )
 }
 
+/// The resource tables of the instantiation `abi_state` holds, which a
+/// built-in reads a declared payload's resources through. They are
+/// fixed once the instantiation built them, so the copy is a handle on
+/// the same tables.
+pub fn resource_tables(
+    abi_state: &Arc<Mutex<AbiRuntimeState>>,
+) -> anyhow::Result<Arc<[Option<ResourceTableRuntime>]>> {
+    Ok(abi_state
+        .lock()
+        .map_err(|_| anyhow!("ABI runtime state lock poisoned"))?
+        .resource_tables
+        .clone())
+}
+
 /// The end the entry at `index` of `table` names, when a cancel of
 /// kind `kind`, declared with `payload` and `async_`, may run on it.
 /// The checks run in the reference's order: the entry must name an
 /// end of the kind, the end must carry the payload, the end must be
 /// copying with no thread waiting on it synchronously, and a
 /// synchronous cancel must not name an end in a waitable set.
+#[allow(clippy::too_many_arguments)]
 fn copying_end(
     tables: &HandleTables,
     kind: EndKind,
     payload: &Option<ValueType>,
+    resources: &dyn Fn(ResourceType) -> ResourceType,
     async_: bool,
     table: TableId,
     index: u32,
@@ -289,7 +307,7 @@ fn copying_end(
         .shared_record(end)
         .map(|record| &record.payload)
         .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-    if carried != payload {
+    if !payloads_match(carried.as_ref(), payload.as_ref(), resources) {
         return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
     }
     let record = tables
@@ -437,6 +455,8 @@ impl Builtin {
     /// list, in that order.
     fn idle_end(&self, table: TableId, index: u32, count: u32) -> anyhow::Result<EndId> {
         let kind = self.kind;
+        let resources = resource_tables(&self.abi_state)?;
+        let resolve = |declared| ResourceTableRuntime::identity_in(&resources, declared);
         let guard = lock_tables(&self.tables)?;
         let end = guard
             .end_from_handle(table, index, kind)
@@ -446,7 +466,7 @@ impl Builtin {
             .shared_record(end)
             .map(|record| &record.payload)
             .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-        if *carried != self.payload {
+        if !payloads_match(carried.as_ref(), self.payload.as_ref(), &resolve) {
             return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
         }
         let record = guard

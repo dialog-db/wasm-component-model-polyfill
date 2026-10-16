@@ -16,7 +16,7 @@
 //!
 //! [`ResourceHandle`]: super::ResourceHandle
 
-use super::identity::ResourceTypeId;
+use crate::types::ResourceType;
 
 /// The parts a [`ResourceHandle`] is built from.
 ///
@@ -24,7 +24,7 @@ use super::identity::ResourceTypeId;
 pub struct ResourceHandleParts {
     /// The engine-issued identity of the resource type the handle
     /// addresses.
-    pub type_id: ResourceTypeId,
+    pub type_id: ResourceType,
     /// The handle-table entry the handle names.
     pub index: u32,
     /// The resource's 32-bit representation.

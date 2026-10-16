@@ -8,7 +8,7 @@
 
 use crate::concurrency::{EndId, EndKind, ErrorContextId, SubtaskId, TaskId, WaitableSetId};
 
-use super::identity::ResourceTypeId;
+use crate::types::ResourceType;
 
 /// The kind of a live handle-table entry.
 ///
@@ -24,7 +24,7 @@ pub enum HandleKind {
     /// be removed while that count is above zero.
     Own {
         /// The identity of the resource's type.
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         /// Whether a component defines the type (`true`) or the host
         /// does. Only the trap message reads it.
         guest_defined: bool,
@@ -39,7 +39,7 @@ pub enum HandleKind {
     /// the guest drops the borrow.
     Borrow {
         /// The identity of the resource's type.
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         /// Whether a component defines the type (`true`) or the host
         /// does. Only the trap message reads it.
         guest_defined: bool,

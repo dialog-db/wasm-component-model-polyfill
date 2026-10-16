@@ -13,7 +13,7 @@
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
-use crate::abi::lift::declared_resource_index;
+use crate::abi::lift::declared_table_index;
 use crate::abi::strings;
 use crate::concurrency::{EndId, EndKind, ErrorContextAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, Result};
@@ -22,7 +22,7 @@ use crate::internal::{
     StreamAnyInternal,
 };
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
-use crate::types::{PrimitiveType, ValueType};
+use crate::types::{PrimitiveType, ValueType, payloads_match};
 use crate::value::Val;
 
 /// Lower `value` of declared type `ty` into the guest's linear
@@ -357,7 +357,11 @@ pub fn lower_host_end<T: 'static>(
         .shared_record(end)
         .map(|record| record.payload.as_ref())
         .ok_or_else(|| Error::internal("a readable end has no shared record"))?;
-    if carried != declared {
+    // The record carries the type as its creator named it, and the
+    // declared type names its resources by their place in the
+    // component: each is read as the identity the instance gave it.
+    let resolve = |declared| ctx.instance().resource_identity(declared);
+    if !payloads_match(carried, declared, &resolve) {
         return Err(Error::Copy(CopyCause::PayloadMismatch { kind }));
     }
     lower_readable_end(&mut guard, table, end, ty)
@@ -619,7 +623,7 @@ pub fn lower_handle<T: 'static>(
             },
         })
     })?;
-    let table = declared_resource_index(ty)
+    let table = declared_table_index(ty)
         .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
@@ -630,7 +634,7 @@ pub fn lower_handle<T: 'static>(
                 },
             })
         })?;
-    if table.type_id != handle.type_id() {
+    if table.type_id != handle.ty() {
         return Err(Error::from(AbiError {
             position,
             valtype: Some(ty.clone()),
@@ -648,7 +652,7 @@ pub fn lower_handle<T: 'static>(
         // or of a rep no handle of this store ever named: the handle
         // is a plain copyable record and says nothing about whether
         // the entry behind it is still live.
-        let host_table = guard.host_table(handle.type_id());
+        let host_table = guard.host_table(handle.ty());
         // The entry must be the one the handle records, and an index
         // on its own does not say that: the host's table frees an
         // index and gives it to the next entry, so a handle kept past
@@ -723,14 +727,14 @@ pub fn lower_handle<T: 'static>(
     }
     // Ownership moves from the host's table into the instance's: the
     // handle must name a live owning entry the host holds.
-    let host_table = guard.host_table(handle.type_id());
+    let host_table = guard.host_table(handle.ty());
     let rep = guard
         .remove_host_own(
             host_table,
             handle.index(),
             handle.generation(),
             handle.rep(),
-            handle.type_id(),
+            handle.ty(),
             table.guest_defined,
         )
         .map_err(|e| invalid_host_handle(e, ty, position))?;

@@ -107,10 +107,8 @@ use crate::abi::{lift, lower};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
-use crate::internal::{
-    AccessorInternal, ErrorInternal, HostCallInternal, HostResourceInternal, ResourceTypeIdInternal,
-};
-use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, HostResource};
+use crate::internal::{AccessorInternal, ErrorInternal, HostCallInternal, ResourceTypeInternal};
+use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, ResourceRegistration};
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
@@ -122,7 +120,7 @@ use crate::concurrency::{
     Accessor, BlockStep, BlockingBuiltin, CallStatus, HostTask, InstanceId, LowerKind, PollScope,
     Readiness, Scope, SubtaskId, SubtaskState,
 };
-use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, ResourceTypeId, TableId};
+use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
 use crate::store::{StoreContext, StoreData};
 use crate::types::{PrimitiveType, ResourceType, TupleType, ValueType};
 use crate::value::Val;
@@ -138,34 +136,25 @@ const DESTRUCTOR_FAILED: &str = "resource destructor failed";
 /// host destructor closure. The `Arc` shape is preserved so the
 /// resource trampolines for `new`/`drop`/`rep` — which all touch the
 /// same handle table — share one ledger.
-pub struct ResourceRuntime<T> {
+pub struct ResourceRuntime<T: 'static> {
     /// The identity of the resource type: the host registration's
     /// for an imported resource, a fresh one per instantiation for a
     /// locally-defined resource. It names no table. The store keys
     /// the host's own table for the type by it, and keys the
     /// destructor recorded at instantiation by it, and every handle
     /// lookup passes it as the type check the entry has to match.
-    pub type_id: ResourceTypeId,
-    /// The name an error about a handle of this resource renders,
-    /// for a resource a host registration carries: the label the
-    /// registration was made under. A resource the component defines
-    /// carries none here — nothing outside the binary names it — and
-    /// the instantiation reads its name off the component's own
-    /// resource tables instead.
-    pub name: Option<ResourceType>,
+    pub type_id: ResourceType,
     /// The destructor invoked when the guest drops the last handle
     /// to a resource.
     pub destructor: ResourceDestructor<T>,
 }
 
-impl<T> ResourceRuntime<T> {
-    /// Construct a runtime bundle from a host registration carrier
-    /// and the label the registration was found under.
-    pub fn from_registration(host: &HostResource<T>, label: &str) -> Self {
+impl<T: 'static> ResourceRuntime<T> {
+    /// Construct a runtime bundle from a host registration.
+    pub fn from_registration(host: &ResourceRegistration<T>) -> Self {
         Self {
-            type_id: host.type_id(),
-            name: Some(ResourceType::new(label)),
-            destructor: ResourceDestructor::Host(host.destructor().clone()),
+            type_id: host.ty,
+            destructor: ResourceDestructor::Host(host.destructor.clone()),
         }
     }
 
@@ -174,8 +163,7 @@ impl<T> ResourceRuntime<T> {
     /// `DefineResource` directive fills.
     pub fn local(instance: InstanceId) -> Self {
         Self {
-            type_id: ResourceTypeId::fresh(),
-            name: None,
+            type_id: ResourceType::fresh_guest(),
             destructor: ResourceDestructor::Local {
                 function: Arc::new(Mutex::new(None)),
                 instance,
@@ -184,11 +172,10 @@ impl<T> ResourceRuntime<T> {
     }
 }
 
-impl<T> Clone for ResourceRuntime<T> {
+impl<T: 'static> Clone for ResourceRuntime<T> {
     fn clone(&self) -> Self {
         Self {
             type_id: self.type_id,
-            name: self.name.clone(),
             destructor: self.destructor.clone(),
         }
     }
@@ -265,7 +252,8 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // is labelled as the destructor's, with the trap under it.
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => {
-                    body(store_ctx.data_mut().host_mut(), rep).map_err(anyhow::Error::from)?
+                    body(StoreContext::new(store_ctx.as_context_mut()), rep)
+                        .map_err(anyhow::Error::from)?
                 }
                 ResourceDestructor::Local { function, .. } => {
                     let destructor = *function

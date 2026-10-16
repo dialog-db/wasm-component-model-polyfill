@@ -16,9 +16,9 @@
 
 #![cfg(test)]
 
-use crate::internal::ResourceTypeIdInternal;
+use crate::internal::ResourceTypeInternal;
 use crate::store::StoreInternalExt;
-use crate::{Engine, Error, ResourceTypeId, Store, WaitableCause};
+use crate::{Engine, Error, ResourceType, Store, WaitableCause};
 
 /// A store with nothing instantiated in it: the records under test
 /// are the store's own, and no component is needed to reach them.
@@ -463,7 +463,7 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
     // A table of the store to hold the caller's handles. Nothing is
     // instantiated here, so the store's own table for a resource type
     // stands in for the caller instance's table.
-    let ty = ResourceTypeId::fresh();
+    let ty = ResourceType::fresh_guest();
     let table = tables.host_table(ty);
     let owned = tables.insert_own(table, ty, false, 11);
 
@@ -519,7 +519,7 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
     let mut guard = store.internal_ref().tables().lock().expect("handle tables");
     let tables = &mut *guard;
 
-    let ty = ResourceTypeId::fresh();
+    let ty = ResourceType::fresh_guest();
     let table = tables.host_table(ty);
     let subtask = tables
         .tasks

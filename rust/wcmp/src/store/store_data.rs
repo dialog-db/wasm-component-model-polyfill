@@ -15,9 +15,7 @@ use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::internal::{ErrorInternal, ResourceHandleInternal, StoreIdInternal};
-use crate::resource::{
-    HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts, ResourceTypeId,
-};
+use crate::resource::{HandleLookupError, HandleTables, ResourceHandle, ResourceHandleParts};
 use crate::runtime_layer::HostFrames;
 use crate::types::{ResourceType, ValueType};
 
@@ -57,8 +55,7 @@ pub struct StoreData<T: 'static> {
     data: T,
     id: StoreId,
     tables: Arc<Mutex<HandleTables>>,
-    destructors: HashMap<ResourceTypeId, ResourceDestructor<T>>,
-    resource_types: HashMap<ResourceTypeId, LearnedName>,
+    destructors: HashMap<ResourceType, ResourceDestructor<T>>,
     scheduler: Scheduler<T>,
     /// The provider that fills the store's suspend capability, when
     /// the engine selected one. It is installed as the store is
@@ -85,29 +82,6 @@ pub struct StoreData<T: 'static> {
 /// another: 128 MiB, Wasmtime's default hostcall fuel.
 const DEFAULT_HOSTCALL_FUEL: usize = 128 << 20;
 
-/// A name the store learned for a resource type, with who taught it,
-/// which is what settles whether a later name replaces it.
-enum LearnedName {
-    /// A component instantiated into this store imports or defines
-    /// the resource type under this label. This is a name a user of
-    /// the store can read in the component's own source.
-    Component(ResourceType),
-    /// No component in this store has named the resource type. This
-    /// is the label a linker the store was instantiated from
-    /// registered it under, kept so that an error about one of its
-    /// handles renders something rather than nothing.
-    Fallback(ResourceType),
-}
-
-impl LearnedName {
-    /// The label itself, whoever taught it.
-    fn label(&self) -> &ResourceType {
-        match self {
-            Self::Component(name) | Self::Fallback(name) => name,
-        }
-    }
-}
-
 impl<T: 'static> HostFrames for StoreData<T> {
     fn host_frames(&mut self) -> &mut usize {
         &mut self.host_frames
@@ -130,7 +104,6 @@ impl<T: 'static> StoreData<T> {
             id: StoreId::fresh(),
             tables: Arc::new(Mutex::new(tables)),
             destructors: HashMap::new(),
-            resource_types: HashMap::new(),
             scheduler,
             provider: None,
             dropped: false,
@@ -251,98 +224,26 @@ impl<T: 'static> StoreData<T> {
         self.poisoned = true;
     }
 
-    /// Record what the store knows about a resource type an
-    /// instantiation introduced: the destructor to run when a handle
-    /// to it is released, and the name an error about one of its
-    /// handles renders.
-    ///
-    /// The name is optional because a resource type reaches the
-    /// store from more than one place and not all of them carry one.
-    /// A store that never learned a name says nothing about the type
-    /// rather than inventing one for it. Workspace-internal.
-    pub fn register_resource(
-        &mut self,
-        type_id: ResourceTypeId,
-        name: Option<ResourceType>,
-        destructor: ResourceDestructor<T>,
-    ) {
-        self.destructors.entry(type_id).or_insert(destructor);
-        if let Some(name) = name {
-            self.name_resource(type_id, name);
-        }
-    }
-
-    /// Record the label a component instantiated into this store
-    /// imports or defines `type_id` under, which is the name an
-    /// error about one of its handles renders.
-    ///
-    /// One identity carries several names routinely. The shared
-    /// resource-type identity of PDD013 is one case — a single host
-    /// resource value registered against the label of two interfaces
-    /// is one identity under two labels. A component that keeps a
-    /// resource in several of its instances is another: it holds one
-    /// table per instance, and each table names the resource as its
-    /// own interface does. And a store takes more than one
-    /// instantiation, so two components can name one identity
-    /// differently.
-    ///
-    /// The store keeps one of those names rather than the set,
-    /// because the `own<T>` an error renders names exactly one
-    /// resource type: a set would have to collapse to a single name
-    /// at every rendering, and collapsing it once, here, keeps the
-    /// rule in one place.
-    ///
-    /// Which name that is follows a rule in two tiers. A label a
-    /// component's own import or definition teaches — this method —
-    /// outranks a label no component in the store has used, which
-    /// [`StoreData::fallback_resource_name`] records; teaching one
-    /// replaces a fallback already stored. Within a tier the first
-    /// name taught wins, so the first component to bring an identity
-    /// in is the one whose label the store keeps, however many
-    /// components follow it. Workspace-internal.
-    pub fn name_resource(&mut self, type_id: ResourceTypeId, name: ResourceType) {
-        if let Some(LearnedName::Component(_)) = self.resource_types.get(&type_id) {
-            return;
-        }
-        self.resource_types
-            .insert(type_id, LearnedName::Component(name));
-    }
-
-    /// Record a label to fall back on for `type_id` while no
-    /// component in this store has named it: the label a linker
-    /// registered a host resource under, which is all an error has
-    /// to render when nothing has imported the resource.
-    ///
-    /// It is the lower of the two tiers [`StoreData::name_resource`]
-    /// describes. It never displaces a name a component taught, and
-    /// a component that names the identity later displaces it.
+    /// Record the destructor of a resource type an instantiation
+    /// introduced, which runs when a handle to it is released. A type
+    /// keeps the first destructor the store learns for it.
     /// Workspace-internal.
-    pub fn fallback_resource_name(&mut self, type_id: ResourceTypeId, name: ResourceType) {
-        self.resource_types
-            .entry(type_id)
-            .or_insert(LearnedName::Fallback(name));
+    pub fn register_resource(&mut self, type_id: ResourceType, destructor: ResourceDestructor<T>) {
+        self.destructors.entry(type_id).or_insert(destructor);
     }
 
     /// What the store knows about `type_id` at this moment: whether
-    /// a destructor is registered for it, and the name it renders
-    /// for it with the tier that taught it.
+    /// a destructor is registered for it.
     ///
     /// An instantiation takes one record per resource type before it
     /// registers anything, and hands the records back through
     /// [`StoreData::restore_resource`] when its plan fails, so a
     /// failed instantiation leaves the store as it found it.
     /// Workspace-internal.
-    pub fn resource_record(&self, type_id: ResourceTypeId) -> ResourceRecord {
-        let (taught_name, fallback_name) = match self.resource_types.get(&type_id) {
-            Some(LearnedName::Component(name)) => (Some(name.clone()), None),
-            Some(LearnedName::Fallback(name)) => (None, Some(name.clone())),
-            None => (None, None),
-        };
+    pub fn resource_record(&self, type_id: ResourceType) -> ResourceRecord {
         ResourceRecord {
             type_id,
             destructor: self.destructors.contains_key(&type_id),
-            taught_name,
-            fallback_name,
         }
     }
 
@@ -352,19 +253,10 @@ impl<T: 'static> StoreData<T> {
     /// A destructor the record did not hold is forgotten, because
     /// the registration that added it is the one being taken back; a
     /// destructor the store already had is left alone, because
-    /// registering one never displaces it. The name goes back to the
-    /// label the record holds, in the tier the record holds it in,
-    /// and a store that had learned no name for the type learns none
-    /// from the attempt. Workspace-internal.
+    /// registering one never displaces it. Workspace-internal.
     pub fn restore_resource(&mut self, record: ResourceRecord) {
         if !record.destructor {
             self.destructors.remove(&record.type_id);
-        }
-        self.resource_types.remove(&record.type_id);
-        if let Some(name) = record.taught_name {
-            self.name_resource(record.type_id, name);
-        } else if let Some(name) = record.fallback_name {
-            self.fallback_resource_name(record.type_id, name);
         }
     }
 
@@ -374,24 +266,9 @@ impl<T: 'static> StoreData<T> {
         self.destructors.len()
     }
 
-    /// How many resource types the store has learned a name for,
-    /// whether a component taught it or a linker's sweep left it as
-    /// a fallback. Workspace-internal.
-    pub fn learned_resource_names(&self) -> usize {
-        self.resource_types.len()
-    }
-
-    /// The name the store renders for the resource type `type_id`,
-    /// when it learned one. Workspace-internal.
-    pub fn resource_type(&self, type_id: ResourceTypeId) -> Option<ResourceType> {
-        self.resource_types
-            .get(&type_id)
-            .map(|learned| learned.label().clone())
-    }
-
     /// The destructor recorded for `type_id`, if an instance
     /// registered one. Workspace-internal.
-    pub fn destructor(&self, type_id: ResourceTypeId) -> Option<ResourceDestructor<T>> {
+    pub fn destructor(&self, type_id: ResourceType) -> Option<ResourceDestructor<T>> {
         self.destructors.get(&type_id).cloned()
     }
 
@@ -399,7 +276,7 @@ impl<T: 'static> StoreData<T> {
     /// store knows: an instance registered an in-binary destructor
     /// for it. Read for the wrong-type trap message.
     /// Workspace-internal.
-    pub fn is_guest_defined(&self, type_id: ResourceTypeId) -> bool {
+    pub fn is_guest_defined(&self, type_id: ResourceType) -> bool {
         matches!(
             self.destructors.get(&type_id),
             Some(ResourceDestructor::Local { .. })
@@ -409,7 +286,7 @@ impl<T: 'static> StoreData<T> {
     /// Mint a fresh `own<T>` handle in this store's host table for
     /// `type_id`, with `rep` as its representation.
     /// Workspace-internal.
-    pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
         let guest_defined = self.is_guest_defined(type_id);
         let mut guard = self.lock_tables()?;
         let (index, generation) = guard.insert_host_own(type_id, guest_defined, rep);
@@ -426,16 +303,16 @@ impl<T: 'static> StoreData<T> {
     /// and report the rep the destructor runs against.
     /// Workspace-internal.
     pub fn remove_host_handle(&self, handle: ResourceHandle) -> Result<u32> {
-        let guest_defined = self.is_guest_defined(handle.type_id());
+        let guest_defined = self.is_guest_defined(handle.ty());
         let mut guard = self.lock_tables()?;
-        let table = guard.host_table(handle.type_id());
+        let table = guard.host_table(handle.ty());
         guard
             .remove_host_own(
                 table,
                 handle.index(),
                 handle.generation(),
                 handle.rep(),
-                handle.type_id(),
+                handle.ty(),
                 guest_defined,
             )
             .map_err(|e| {
@@ -450,7 +327,7 @@ impl<T: 'static> StoreData<T> {
                 };
                 Error::from(AbiError {
                     position: AbiPosition::Argument(0),
-                    valtype: self.resource_type(handle.type_id()).map(ValueType::Own),
+                    valtype: Some(ValueType::Own(handle.ty())),
                     cause: AbiCause::InvalidHandle { reason },
                 })
             })

@@ -62,10 +62,14 @@ use std::task::Wake;
 
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    AbiCause, Accessor, Component, Engine, Error, Func, HostCall, HostResource, Instance,
-    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, TaskCause, Val,
+    AbiCause, Accessor, Component, Engine, Error, Func, HostCall, Instance, InterfaceIdentifier,
+    Linker, ResourceType, Result, Store, StoreContext, TaskCause, Val,
 };
 use wcmp_macros::component;
+
+/// The marker for the identity of the host resource type the tests'
+/// components import as `thing`.
+struct Thing;
 
 /// One callback export called twice. Its core function logs the
 /// argument, keeps it in the task's own context slot, and gives way;
@@ -352,9 +356,9 @@ async fn instantiate(binary: &[u8]) -> (Store<()>, Instance, Log) {
 }
 
 /// Instantiate [`BORROW_HOLDER`] in a fresh store, with the `thing`
-/// resource registered under the label the component imports it by,
+/// resource registered under the name the component imports it by,
 /// and hand back the identity a host handle is minted against.
-async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceTypeId) {
+async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceType) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let component = Component::new(&engine, BORROW_HOLDER)
         .await
@@ -364,11 +368,13 @@ async fn instantiate_borrow_holder() -> (Store<()>, Instance, ResourceTypeId) {
     let interface: InterfaceIdentifier = "pdd020-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&interface)
-        .resource_with(
+        .resource(
             "thing",
-            HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+            type_id,
+            |_: StoreContext<'_, ()>, _: u32| -> Result<()> { Ok(()) },
         )
         .expect("the registration");
     let instance = linker
@@ -1021,11 +1027,13 @@ async fn it_gives_a_host_lend_back_when_the_call_resolves() {
         let interface: InterfaceIdentifier = "pdd020-tests:host/lends@0.1.0"
             .parse()
             .expect("the interface identifier");
-        let ty = linker
+        let ty = ResourceType::host::<Thing>();
+        linker
             .instance(&interface)
-            .resource_with(
+            .resource(
                 "thing",
-                HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+                ty,
+                |_: StoreContext<'_, ()>, _: u32| -> Result<()> { Ok(()) },
             )
             .expect("the registration of `thing`");
         let handle_slot = lent.clone();

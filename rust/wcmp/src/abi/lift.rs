@@ -18,10 +18,13 @@ use crate::concurrency::{CopyState, EndId, EndKind};
 use crate::concurrency::{ErrorContextAny, FutureAny, StreamAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, Result};
 use crate::internal::{
-    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, StreamAnyInternal,
+    ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceTypeInternal,
+    StreamAnyInternal,
 };
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
-use crate::types::{MapType, PrimitiveType, ValueType};
+use crate::types::{
+    MapType, PrimitiveType, ResourceType, ValueType, payloads_match, resolve_resources,
+};
 use crate::value::{Val, ValField};
 
 /// Lift the value of type `ty` out of the guest's linear memory at
@@ -239,15 +242,21 @@ pub fn lift_end_for_host<T: 'static>(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    let end = lift_readable_end(&mut guard, table, index, ty, |err| invalid(err.to_string()))?;
+    let resolve = |declared| ctx.instance().resource_identity(declared);
+    let end = lift_readable_end(&mut guard, table, index, ty, &resolve, |err| {
+        invalid(err.to_string())
+    })?;
     // The end is in no guest's table now: the host holds it.
     if let Some(record) = guard.tasks.end_mut(end) {
         record.handle = None;
         record.held_by_host = true;
     }
+    // The value names its payload with the identities the instantiation
+    // gave its resources, as the end's record does.
+    let payload = |payload: Option<&ValueType>| payload.map(|ty| resolve_resources(ty, &resolve));
     Ok(match ty {
-        ValueType::Future(future) => Val::Future(FutureAny::new(end, future.payload().cloned())),
-        ValueType::Stream(stream) => Val::Stream(StreamAny::new(end, stream.payload().cloned())),
+        ValueType::Future(future) => Val::Future(FutureAny::new(end, payload(future.payload()))),
+        ValueType::Stream(stream) => Val::Stream(StreamAny::new(end, payload(stream.payload()))),
         _ => {
             return Err(Error::internal(
                 "a readable end was lifted as a type that is neither",
@@ -339,9 +348,10 @@ pub fn lift_readable_end<E: From<Error>>(
     table: TableId,
     index: u32,
     ty: &ValueType,
+    resources: &dyn Fn(ResourceType) -> ResourceType,
     invalid: impl FnOnce(HandleLookupError) -> E,
 ) -> core::result::Result<EndId, E> {
-    let end = readable_end_at(tables, table, index, ty, invalid)?;
+    let end = readable_end_at(tables, table, index, ty, resources, invalid)?;
     tables.remove(table, index);
     Ok(end)
 }
@@ -366,6 +376,7 @@ pub fn readable_end_at<E: From<Error>>(
     table: TableId,
     index: u32,
     ty: &ValueType,
+    resources: &dyn Fn(ResourceType) -> ResourceType,
     invalid: impl FnOnce(HandleLookupError) -> E,
 ) -> core::result::Result<EndId, E> {
     let (kind, payload) = match ty {
@@ -386,7 +397,10 @@ pub fn readable_end_at<E: From<Error>>(
         .tasks
         .shared_record(end)
         .ok_or_else(|| Error::internal("an end's entry names an end with no shared record"))?;
-    if shared.payload.as_ref() != payload {
+    // The record keeps the type with its resources' identities, and
+    // `ty` names them by their place in the component, which
+    // `resources` reads as the identities the instantiation gave them.
+    if !payloads_match(shared.payload.as_ref(), payload, resources) {
         return Err(Error::Copy(CopyCause::PayloadMismatch { kind }).into());
     }
     if record.state.busy() {
@@ -799,7 +813,7 @@ fn read_discriminant<T: 'static>(
 /// tables: the polyfill keeps one table per component instance,
 /// shared by every handle kind that instance uses, and one table per
 /// resource type for the handles the host owns outright, keyed by
-/// [`ResourceTypeId`](crate::resource::ResourceTypeId). For an
+/// [`ResourceType`](crate::resource::ResourceType). For an
 /// `own<T>` lift the entry is removed from the instance's table and
 /// inserted into the host's table for the resource type — ownership
 /// transfers to the host. For `borrow<T>` the entry is left in
@@ -832,7 +846,7 @@ pub fn lift_handle<T: 'static>(
 
     // The declared type names the resource table by its index in the
     // component; the instance maps that to the table it keeps.
-    let table = declared_resource_index(ty)
+    let table = declared_table_index(ty)
         .and_then(|i| ctx.instance().resource_tables().get(i).copied().flatten())
         .ok_or_else(|| {
             Error::from(AbiError {
@@ -922,10 +936,12 @@ fn invalid_encoding(ty: &ValueType, position: AbiPosition, message: &str) -> Err
     })
 }
 
-/// The resource index a handle type declares, when it declares one.
-pub fn declared_resource_index(ty: &ValueType) -> Option<usize> {
+/// The resource table a handle type declares, when it declares one:
+/// the table of the instance whose position the type is at, which a
+/// handle of the type is read from or written to.
+pub fn declared_table_index(ty: &ValueType) -> Option<usize> {
     match ty {
-        ValueType::Own(resource) | ValueType::Borrow(resource) => resource.index(),
+        ValueType::Own(resource) | ValueType::Borrow(resource) => resource.table_index(),
         _ => None,
     }
 }

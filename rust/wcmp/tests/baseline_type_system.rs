@@ -19,7 +19,7 @@
 
 use wcmp::{
     Component, Engine, ExternType, ExternalName, FunctionType, InstanceType, PrimitiveType,
-    ValueType,
+    ResourceType, ValueType,
 };
 use wcmp_macros::component;
 
@@ -34,6 +34,12 @@ async fn export_signature(bytes: &[u8], wire_name: &str) -> FunctionType {
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
+    find_export_signature(&component, wire_name)
+}
+
+/// Find the [`FunctionType`] for the export named `wire_name` on a
+/// parsed component.
+fn find_export_signature(component: &Component, wire_name: &str) -> FunctionType {
     let export = component
         .exports
         .iter()
@@ -62,6 +68,12 @@ async fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
     let component = Component::new(&engine, bytes)
         .await
         .expect("component parses");
+    find_import_instance(&component, wire_name)
+}
+
+/// Find the [`InstanceType`] of an interface-typed import on a parsed
+/// component.
+fn find_import_instance(component: &Component, wire_name: &str) -> InstanceType {
     let import = component
         .imports
         .iter()
@@ -73,6 +85,34 @@ async fn import_instance(bytes: &[u8], wire_name: &str) -> InstanceType {
     match &import.ty {
         ExternType::Instance(instance) => instance.clone(),
         other => panic!("import `{wire_name}` is not an instance: {other:?}"),
+    }
+}
+
+/// Resolve the [`FunctionType`] of the export named `export`, and
+/// the [`ResourceType`] of the resource item `item` of the import
+/// `iface`, from one parse of the component. A resource type of a
+/// component is told apart by the component it belongs to, so the
+/// two can be compared only when they come from the same parse.
+async fn export_signature_and_imported_resource(
+    bytes: &[u8],
+    export: &str,
+    iface: &str,
+    item: &str,
+) -> (FunctionType, ResourceType) {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, bytes)
+        .await
+        .expect("component parses");
+    let signature = find_export_signature(&component, export);
+    let instance = find_import_instance(&component, iface);
+    let entry = instance
+        .items
+        .iter()
+        .find(|i| i.name == item)
+        .unwrap_or_else(|| panic!("instance import `{iface}` has no item `{item}`"));
+    match &entry.ty {
+        ExternType::Resource(rt) | ExternType::ResourceEquals(rt) => (signature, *rt),
+        other => panic!("import item `{iface}#{item}` is not a resource: {other:?}"),
     }
 }
 
@@ -454,8 +494,8 @@ async fn it_compares_types_structurally() {
 async fn it_supports_own_resource_handles() {
     // The component imports a resource type and declares an export
     // that consumes an owning handle of it. The polyfill projects
-    // the parameter to `ValueType::Own(ResourceType { label, .. })`.
-    use wcmp::ResourceType;
+    // the parameter to `ValueType::Own` of the imported resource
+    // type.
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -473,7 +513,13 @@ async fn it_supports_own_resource_handles() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "consume").await;
+    let (signature, thing) = export_signature_and_imported_resource(
+        COMPONENT,
+        "consume",
+        "test:guest/host@0.1.0",
+        "thing",
+    )
+    .await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Own(rt) = &signature.parameters[0].ty else {
         panic!(
@@ -481,13 +527,12 @@ async fn it_supports_own_resource_handles() {
             signature.parameters[0].ty,
         );
     };
-    assert_eq!(*rt, ResourceType::new("thing"));
+    assert_eq!(*rt, thing, "the parameter is a handle of the imported type");
 }
 
 #[wcmp_macros::test]
 async fn it_supports_borrow_resource_handles() {
     // Same shape as the `own<T>` test but with a borrow handle.
-    use wcmp::ResourceType;
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -502,7 +547,13 @@ async fn it_supports_borrow_resource_handles() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "inspect").await;
+    let (signature, thing) = export_signature_and_imported_resource(
+        COMPONENT,
+        "inspect",
+        "test:guest/host@0.1.0",
+        "thing",
+    )
+    .await;
     assert_eq!(signature.parameters.len(), 1);
     let ValueType::Borrow(rt) = &signature.parameters[0].ty else {
         panic!(
@@ -510,7 +561,7 @@ async fn it_supports_borrow_resource_handles() {
             signature.parameters[0].ty,
         );
     };
-    assert_eq!(*rt, ResourceType::new("thing"));
+    assert_eq!(*rt, thing, "the parameter is a handle of the imported type");
 }
 
 #[wcmp_macros::test]
@@ -523,7 +574,6 @@ async fn it_runs_sync_resource_destructors() {
     // signature projected as expected. The full execution-time
     // assertion lives in
     // `baseline_resources::it_defines_a_host_resource_with_a_sync_destructor`.
-    use wcmp::ResourceType;
     const COMPONENT: &[u8] = component!(
         r#"
         (component
@@ -541,11 +591,17 @@ async fn it_runs_sync_resource_destructors() {
         "#
     );
 
-    let signature = export_signature(COMPONENT, "consume").await;
+    let (signature, thing) = export_signature_and_imported_resource(
+        COMPONENT,
+        "consume",
+        "test:guest/host@0.1.0",
+        "thing",
+    )
+    .await;
     let ValueType::Own(rt) = &signature.parameters[0].ty else {
         panic!("expected own<thing> parameter");
     };
-    assert_eq!(*rt, ResourceType::new("thing"));
+    assert_eq!(*rt, thing, "the parameter is a handle of the imported type");
 }
 
 #[wcmp_macros::test]

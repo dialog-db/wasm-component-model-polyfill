@@ -32,7 +32,7 @@ use crate::concurrency::{
 use crate::error::{Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
-use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId, TableId};
+use crate::resource::{HandleTables, ResourceHandle, TableId};
 use crate::runtime_layer::{
     Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
 };
@@ -126,24 +126,13 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
 
     /// Record what the store knows about a resource type an
     /// instantiation introduced.
-    pub fn register_resource(
-        self,
-        type_id: ResourceTypeId,
-        name: Option<ResourceType>,
-        destructor: ResourceDestructor<T>,
-    ) {
-        self.context.register_resource(type_id, name, destructor);
-    }
-
-    /// Record a label to fall back on for `type_id` while no
-    /// component in this store has named it.
-    pub fn fallback_resource_name(self, type_id: ResourceTypeId, name: ResourceType) {
-        self.context.fallback_resource_name(type_id, name);
+    pub fn register_resource(self, type_id: ResourceType, destructor: ResourceDestructor<T>) {
+        self.context.register_resource(type_id, destructor);
     }
 
     /// What the store knows about `type_id` at this moment, as a
     /// record an instantiation whose plan fails hands back.
-    pub fn resource_record(self, type_id: ResourceTypeId) -> ResourceRecord {
+    pub fn resource_record(self, type_id: ResourceType) -> ResourceRecord {
         self.context.resource_record(type_id)
     }
 
@@ -533,21 +522,10 @@ impl<'b, 'a, T: 'static> StoreContextRefInternal<'b, 'a, T> {
         self.context.lock_tables()
     }
 
-    /// The name the store renders for the resource type `type_id`,
-    /// when it learned one.
-    pub fn resource_type(self, type_id: ResourceTypeId) -> Option<ResourceType> {
-        self.context.resource_type(type_id)
-    }
-
     /// How many resource types the store has a destructor
     /// registered for.
     pub fn registered_destructors(self) -> usize {
         self.context.registered_destructors()
-    }
-
-    /// How many resource types the store has learned a name for.
-    pub fn learned_resource_names(self) -> usize {
-        self.context.learned_resource_names()
     }
 }
 

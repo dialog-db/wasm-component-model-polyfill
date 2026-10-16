@@ -37,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use wcmp::{
     AbiCause, Accessor, Component, Engine, Error, FunctionType, FutureConsumer, FutureReader,
-    HostCall, Instance, InstantiationError, Linker, Module, ResourceHandle, ResourceTypeId,
+    HostCall, Instance, InstantiationError, Linker, Module, ResourceHandle, ResourceType,
     SchedulerCause, Source, Store, StoreContext, TaskCause, Val,
 };
 use wcmp_macros::{component, wasm};
@@ -196,6 +196,9 @@ const CANNOT_ENTER: &str = "cannot enter component instance";
 #[derive(Default)]
 struct Drops(Arc<AtomicU32>);
 
+/// The marker for the identity of the host's resource type `thing`.
+struct Thing;
+
 /// A store with [`TRIGGERS`] instantiated in it, the linker that
 /// instantiated it, and the type of the host's resource `thing`.
 struct Fixture {
@@ -203,7 +206,7 @@ struct Fixture {
     linker: Linker<Drops>,
     store: Store<Drops>,
     instance: Instance,
-    thing: ResourceTypeId,
+    thing: ResourceType,
     drops: Arc<AtomicU32>,
 }
 
@@ -229,12 +232,17 @@ impl Fixture {
             },
         )
         .expect("the registration of `fail`");
-        let thing = root
-            .resource("thing", |data: &mut Drops, _rep: u32| {
+        let thing = ResourceType::host::<Thing>();
+        root.resource(
+            "thing",
+            thing,
+            |mut store: StoreContext<'_, Drops>, _rep: u32| {
+                let data = store.data_mut();
                 data.0.fetch_add(1, Ordering::Relaxed);
                 Ok(())
-            })
-            .expect("the registration of `thing`");
+            },
+        )
+        .expect("the registration of `thing`");
         let drops = Arc::new(AtomicU32::new(0));
         let mut store = Store::new(&engine, Drops(drops.clone())).expect("store");
         let instance = linker

@@ -10,8 +10,8 @@
 //! The polyfill realises the canonical-ABI's runtime-state rules for
 //! `own<T>` and `borrow<T>` against the types in this module:
 //!
-//! - [`ResourceTypeId`] is the engine-issued identity that names a
-//!   registered resource type. Every host registration mints one.
+//! - [`ResourceType`] is the identity of a resource type, which
+//!   every table and every handle carries.
 //! - [`HandleTable`] is one slab the canonical ABI's
 //!   index-allocation and reuse rules govern, and [`HandleTables`]
 //!   is the store's collection of them.
@@ -29,12 +29,12 @@
 //! [`LinkerInstance`]: crate::LinkerInstance
 //! [`Val::Own`]: crate::Val::Own
 //! [`Val::Borrow`]: crate::Val::Borrow
+//! [`ResourceType`]: crate::ResourceType
 
 mod handle;
 mod handle_kind;
 mod handle_lookup_error;
 mod handle_parts;
-mod identity;
 mod table;
 mod table_id;
 mod table_runtime;
@@ -45,7 +45,6 @@ pub use handle::ResourceHandle;
 pub use handle_kind::HandleKind;
 pub use handle_lookup_error::HandleLookupError;
 pub use handle_parts::ResourceHandleParts;
-pub use identity::ResourceTypeId;
 pub use table_id::TableId;
 pub use table_runtime::ResourceTableRuntime;
 pub use tables::HandleTables;

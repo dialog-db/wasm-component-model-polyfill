@@ -9,20 +9,21 @@
 //! [`Linker`]: super::Linker
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::component::FunctionType;
 use crate::concurrency::{Accessor, HostFuture};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, LinkError, Result};
 use crate::module::Module;
-use crate::resource::ResourceTypeId;
-use crate::types::ValueType;
+use crate::store::StoreContext;
+use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
 use super::component_value::{ComponentParameters, ComponentResult, function_type_for};
 use super::host_call::HostCall;
 use super::host_func::HostFunc;
-use super::host_resource::HostResource;
 use super::registration::InstanceRegistration;
+use super::resource_registration::ResourceRegistration;
 use crate::internal::LinkerInstanceInternal;
 
 /// A borrowed view onto one interface's worth of host items inside a
@@ -55,10 +56,9 @@ use crate::internal::LinkerInstanceInternal;
 /// the two forms it is, and that is what the link rule and the
 /// trampoline read.
 ///
-/// A third mode, [`Self::resource`], registers a host-owned
-/// resource type with a synchronous destructor closure. It produces
-/// a [`HostResource<T>`] that the linker stores against the
-/// resource's label. A fourth, [`Self::module`], registers a core
+/// A third mode, [`Self::resource`], registers a host resource type
+/// by its identity, with a synchronous destructor closure, under the
+/// name the component imports it by. A fourth, [`Self::module`], registers a core
 /// [`Module`] for a module-typed import.
 ///
 /// Every mode refuses a name the view's entry already holds an item
@@ -168,54 +168,63 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         Ok(())
     }
 
-    /// Register a host-owned resource type with a synchronous
-    /// destructor.
+    /// Register a host resource type under `name`, with its identity
+    /// `ty` and a synchronous destructor, as Wasmtime's
+    /// `LinkerInstance::resource` does.
     ///
-    /// Mints a fresh [`ResourceTypeId`] under the given resource
-    /// label and stores the destructor closure for the executor's
-    /// drop trampoline to invoke when the guest drops the last
-    /// handle. The returned identity threads the registration into
-    /// any handle the host subsequently mints.
+    /// The destructor runs when a guest drops an owned handle of the
+    /// type. It receives a context for the store, which reaches the
+    /// host data, and the resource's rep.
     ///
-    /// The polyfill registers exactly one item per label per
-    /// interface, so calling `resource` twice with the same label
-    /// fails with [`Error::Link`] unless the linker was told to
-    /// allow shadowing. Registering the *same* resource type under
-    /// two labels or two interfaces is [`Self::resource_with`].
+    /// The identity is what tells the resource type from every other.
+    /// A host that uses one resource type in two interfaces registers
+    /// the same identity in each, usually [`ResourceType::host`] of
+    /// one Rust type: a handle that a guest has through one of them
+    /// lowers through the other, and the resolver accepts a component
+    /// that declares the two equal. The store keeps one destructor
+    /// for an identity, the one the first instantiation into the
+    /// store that imports the type registered.
     ///
+    /// ```rust
+    /// use wcmp::{Engine, InterfaceIdentifier, Linker, ResourceType};
+    ///
+    /// struct File;
+    ///
+    /// # fn main() -> wcmp::Result<()> {
+    /// # let engine = Engine::with_backend(wcmp_wasm_core_wasmtime::Wasmtime::new().unwrap())?;
+    /// let mut linker: Linker<Vec<u32>> = Linker::new(&engine);
+    /// let id: InterfaceIdentifier = "example:files/types".parse().unwrap();
+    /// let mut files = linker.instance(&id);
+    /// files.resource("file", ResourceType::host::<File>(), |mut store, rep| {
+    ///     store.data_mut().push(rep);
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Fails with [`Error::Link`] when the entry this view addresses
+    /// already holds an item under `name` and the linker was not
+    /// told to allow shadowing.
+    ///
+    /// [`ResourceType::host`]: crate::ResourceType::host
     /// [`Error::Link`]: crate::Error::Link
     pub fn resource(
         &mut self,
-        label: impl Into<String>,
-        destructor: impl Fn(&mut T, u32) -> Result<()> + Send + Sync + 'static,
-    ) -> Result<ResourceTypeId> {
-        self.resource_with(label, HostResource::new(destructor))
-    }
-
-    /// Register a host resource type by value. A [`HostResource`]
-    /// carries its identity and its destructor, so one value, cloned,
-    /// registers the same resource type under several interfaces: a
-    /// handle minted under one lowers through the other, and the
-    /// resolver accepts a component that declares the two as equal.
-    /// Returns the identity for [`Store::resource_new`].
-    ///
-    /// Each of those registrations is under a label of its own in an
-    /// entry of its own. Two of them in one entry under one label
-    /// fail with [`Error::Link`], as any other duplicate does,
-    /// unless the linker was told to allow shadowing.
-    ///
-    /// [`Store::resource_new`]: crate::Store::resource_new
-    /// [`Error::Link`]: crate::Error::Link
-    pub fn resource_with(
-        &mut self,
-        label: impl Into<String>,
-        resource: HostResource<T>,
-    ) -> Result<ResourceTypeId> {
-        let label = label.into();
-        self.claim(&label)?;
-        let type_id = resource.type_id();
-        self.registration.resources.insert(label, resource);
-        Ok(type_id)
+        name: impl Into<String>,
+        ty: ResourceType,
+        destructor: impl for<'c> Fn(StoreContext<'c, T>, u32) -> Result<()> + Send + Sync + 'static,
+    ) -> Result<()> {
+        let name = name.into();
+        self.claim(&name)?;
+        self.registration.resources.insert(
+            name,
+            ResourceRegistration {
+                ty,
+                destructor: Arc::new(destructor),
+            },
+        );
+        Ok(())
     }
 
     /// Register a core module for a module-typed import,

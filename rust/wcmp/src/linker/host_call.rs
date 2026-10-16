@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::HostCallInternal;
-use crate::resource::{ResourceHandle, ResourceHandleParts, ResourceTableRuntime, ResourceTypeId};
+use crate::resource::{ResourceHandle, ResourceHandleParts, ResourceTableRuntime};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
-use crate::types::ValueType;
+use crate::types::{ResourceType, ValueType};
 
 /// The context a registered host function runs against, scoped to
 /// one call from the guest.
@@ -122,7 +122,7 @@ impl<'a, T: 'static> HostCall<'a, T> {
     /// through an `own<T>` result. A `type_id` that is not one of the
     /// calling instance's resource types is refused with the
     /// unregistered-resource-type ABI cause.
-    pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
         let known = self
             .resource_tables
             .iter()
@@ -132,18 +132,10 @@ impl<'a, T: 'static> HostCall<'a, T> {
         let Some(known) = known else {
             // The refusal names the `own<T>` at issue, as every
             // unregistered-resource-type failure does: the type the
-            // host asked to mint against, under the name the store
-            // knows the identity by. An identity the store never
-            // learned a name for — one no registration and no
-            // instantiation of this store introduced — names
-            // nothing, because there is no name to give it.
+            // host asked to mint against.
             return Err(Error::from(AbiError {
                 position: AbiPosition::Result,
-                valtype: self
-                    .store
-                    .internal_ref()
-                    .resource_type(type_id)
-                    .map(ValueType::Own),
+                valtype: Some(ValueType::Own(type_id)),
                 cause: AbiCause::UnregisteredResourceType,
             }));
         };

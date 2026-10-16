@@ -298,13 +298,12 @@ pub use crate::instance::{
     ExportInstance, ExportLookup, Func, Instance, InstanceExports, TypedFunc,
 };
 pub use crate::linker::{
-    ComponentParameters, ComponentResult, ComponentValue, HostCall, HostResource, Linker,
-    LinkerInstance,
+    ComponentParameters, ComponentResult, ComponentValue, HostCall, Linker, LinkerInstance,
 };
 pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
-pub use crate::resource::{ResourceHandle, ResourceTypeId};
+pub use crate::resource::ResourceHandle;
 pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;
 pub use crate::types::{

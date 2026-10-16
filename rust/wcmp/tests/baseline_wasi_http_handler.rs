@@ -51,11 +51,10 @@ use std::sync::{Arc, Mutex};
 
 use wcmp::{
     Accessor, Component, ComponentValue, Destination, Engine, Error, FunctionParameter,
-    FunctionType, FutureConsumer, FutureReader, FutureType, HostResource, Instance,
-    InterfaceIdentifier, Linker, OptionType, PrimitiveType, RecordField, RecordType,
-    ResourceHandle, ResourceType, ResourceTypeId, ResultType, Source, Store, StoreContext,
-    StreamConsumer, StreamProducer, StreamReader, StreamResult, StreamType, TupleType, Val,
-    ValueType, VariantCase, VariantType,
+    FunctionType, FutureConsumer, FutureReader, FutureType, Instance, InterfaceIdentifier, Linker,
+    OptionType, PrimitiveType, RecordField, RecordType, ResourceHandle, ResourceType, ResultType,
+    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
+    StreamType, TupleType, Val, ValueType, VariantCase, VariantType,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -112,7 +111,7 @@ fn record_of_options(fields: [(&str, PrimitiveType); 2]) -> ValueType {
 /// `own<fields>`: `headers` and `trailers` are both the `fields`
 /// resource.
 fn fields() -> ValueType {
-    ValueType::Own(ResourceType::new("fields"))
+    ValueType::Own(ResourceType::host::<Fields>())
 }
 
 /// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it.
@@ -318,21 +317,29 @@ fn next_rep(host: &Shared) -> u32 {
     FIRST_GUEST_REP + host.next_rep - 1
 }
 
+/// The marker for the identity of the `fields` resource type. The
+/// `request` and `response` resource types take theirs from the
+/// host's [`Request`] and [`Response`] records.
+struct Fields;
+
 /// The resource types the host registered, by name.
 #[derive(Clone, Copy)]
 struct Resources {
-    request: ResourceTypeId,
-    fields: ResourceTypeId,
-    response: ResourceTypeId,
+    request: ResourceType,
+    fields: ResourceType,
+    response: ResourceType,
 }
 
 /// A destructor that records `name` and the representation it drops.
-fn records_drops(host: &Shared, name: &'static str) -> HostResource<()> {
+fn records_drops(
+    host: &Shared,
+    name: &'static str,
+) -> impl for<'c> Fn(StoreContext<'c, ()>, u32) -> wcmp::Result<()> + Send + Sync + 'static {
     let host = host.clone();
-    HostResource::new(move |_, rep| {
+    move |_, rep| {
         lock(&host).dropped.push((name, rep));
         Ok(())
-    })
+    }
 }
 
 /// Register the host's `wasi:http/types@0.3.0` with `linker`.
@@ -340,16 +347,19 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
     let id: InterfaceIdentifier = TYPES.parse().expect("the identifier parses");
     let mut types = linker.instance(&id);
     let resources = Resources {
-        request: types
-            .resource_with("request", records_drops(host, "request"))
-            .expect("the registration"),
-        fields: types
-            .resource_with("fields", records_drops(host, "fields"))
-            .expect("the registration"),
-        response: types
-            .resource_with("response", records_drops(host, "response"))
-            .expect("the registration"),
+        request: ResourceType::host::<Request>(),
+        fields: ResourceType::host::<Fields>(),
+        response: ResourceType::host::<Response>(),
     };
+    for (name, ty) in [
+        ("request", resources.request),
+        ("fields", resources.fields),
+        ("response", resources.response),
+    ] {
+        types
+            .resource(name, ty, records_drops(host, name))
+            .expect("the registration");
+    }
 
     let fields_host = host.clone();
     types
@@ -374,7 +384,7 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
             "[static]request.consume-body",
             FunctionType {
                 parameters: vec![
-                    parameter("this", ValueType::Own(ResourceType::new("request"))),
+                    parameter("this", ValueType::Own(ResourceType::host::<Request>())),
                     parameter("res", ValueType::Future(future_of::<Outcome>())),
                 ],
                 result: Some(ValueType::Tuple(TupleType::new([
@@ -425,7 +435,7 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                     parameter("trailers", ValueType::Future(future_of::<Trailers>())),
                 ],
                 result: Some(ValueType::Tuple(TupleType::new([
-                    ValueType::Own(ResourceType::new("response")),
+                    ValueType::Own(ResourceType::host::<Response>()),
                     ValueType::Future(future_of::<Outcome>()),
                 ]))),
                 async_: false,

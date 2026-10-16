@@ -24,7 +24,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::internal::ResourceTypeIdInternal;
+use crate::internal::ResourceTypeInternal;
 use crate::store::StoreInternalExt;
 use crate::{Component, Engine, HostCall, Linker, Store, Val};
 use wcmp_macros::component;
@@ -906,14 +906,14 @@ async fn it_tracks_resource_handles_in_a_handle_table() {
     // handles, drop the middle, mint a fourth, and assert the
     // canonical-ABI's index-allocation rules hold — the freed slot
     // is reused, never aliased while live.
-    use crate::ResourceTypeId;
+    use crate::ResourceType;
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
     let store: Store<()> = Store::new(&engine, ()).expect("store");
 
     // Two distinct registered resource types live in the same
     // store; their indices must not collide.
-    let type_a = ResourceTypeId::fresh();
-    let type_b = ResourceTypeId::fresh();
+    let type_a = ResourceType::fresh_guest();
+    let type_b = ResourceType::fresh_guest();
 
     let h0 = store.resource_new(type_a, 100).expect("mint a0");
     let h1 = store.resource_new(type_a, 101).expect("mint a1");

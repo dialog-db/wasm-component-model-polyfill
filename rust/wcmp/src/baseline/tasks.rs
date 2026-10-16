@@ -24,7 +24,7 @@ use crate::resource::HandleKind;
 use crate::store::StoreInternalExt;
 use crate::{
     Component, Engine, FunctionParameter, FunctionType, HostCall, InterfaceIdentifier, Linker,
-    PrimitiveType, ResourceType, Result, Store, Val, ValueType,
+    PrimitiveType, ResourceType, Result, Store, StoreContext, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -360,12 +360,19 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
     let iface: InterfaceIdentifier = "pdd018-tests:host/things@0.1.0"
         .parse()
         .expect("identifier");
-    let type_id = linker
+    // The marker for the identity of the `thing` resource type.
+    struct Thing;
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .instance(&iface)
-        .resource("thing", move |_: &mut (), rep: u32| {
-            recorded.lock().expect("record").push(rep);
-            Ok(())
-        })
+        .resource(
+            "thing",
+            type_id,
+            move |_store: StoreContext<'_, ()>, rep: u32| {
+                recorded.lock().expect("record").push(rep);
+                Ok(())
+            },
+        )
         .expect("the registration");
     linker
         .instance(&iface)
@@ -375,7 +382,7 @@ async fn it_gives_back_a_borrow_lent_to_a_host_call_whose_parameter_lift_failed(
                 parameters: vec![
                     FunctionParameter {
                         name: "h".to_owned(),
-                        ty: ValueType::Borrow(ResourceType::new("thing")),
+                        ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                     },
                     FunctionParameter {
                         name: "c".to_owned(),

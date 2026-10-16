@@ -73,8 +73,8 @@ use wast::token::Span;
 use wast::{Wast, WastArg, WastDirective, WastExecute, WastRet};
 use wcmp::{
     Accessor, Component, Engine, EngineConfig, Error, ExternType, ExternalName, FunctionParameter,
-    FunctionType, HostResource, Instance, Linker, Module, PrimitiveType, ResourceType,
-    SchedulerCause, Store, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
+    FunctionType, Instance, Linker, Module, PrimitiveType, ResourceType, SchedulerCause, Store,
+    StoreContext, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
 };
 
 use report::{Expectation, Failure, FileReport, Summary, parse_expectations, parse_overlay};
@@ -774,6 +774,25 @@ struct ResourceState {
     last_drop: AtomicU32,
 }
 
+/// The marker for the identity of the `host.resource1` resource type,
+/// which the runner registers under two names.
+struct Resource1;
+
+/// The marker for the identity of the `host.resource2` resource type.
+struct Resource2;
+
+/// The destructor of `host.resource1`, which counts drops in `state`.
+fn counts_drops(
+    state: &Arc<ResourceState>,
+) -> impl for<'c> Fn(StoreContext<'c, ()>, u32) -> wcmp::Result<()> + Send + Sync + 'static {
+    let state = state.clone();
+    move |_, rep| {
+        state.drops.fetch_add(1, Ordering::SeqCst);
+        state.last_drop.store(rep, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 /// A future that is pending the first time it is polled and ready
 /// with `value` afterwards: what a single yield on Wasmtime's
 /// executor does to the body of a host `async` function, expressed
@@ -847,14 +866,6 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         .await
         .expect("the spectest module compiles");
     let state = Arc::new(ResourceState::default());
-    let resource1 = HostResource::new({
-        let state = state.clone();
-        move |_, rep| {
-            state.drops.fetch_add(1, Ordering::SeqCst);
-            state.last_drop.store(rep, Ordering::SeqCst);
-            Ok(())
-        }
-    });
 
     let mut root = linker.root();
     let mut host = root.instance("host");
@@ -866,18 +877,22 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     host.module("simple-module", &simple_module)
         .expect("the registration");
 
-    let resource1_id = host
-        .resource_with("resource1", resource1.clone())
+    let resource1_id = ResourceType::host::<Resource1>();
+    host.resource("resource1", resource1_id, counts_drops(&state))
         .expect("the registration");
-    host.resource("resource2", |_, _| Ok(()))
-        .expect("the registration");
+    host.resource(
+        "resource2",
+        ResourceType::host::<Resource2>(),
+        |_, _| Ok(()),
+    )
+    .expect("the registration");
     // The same resource type under a second name, as the runner
     // registers it.
-    host.resource_with("resource1-again", resource1)
+    host.resource("resource1-again", resource1_id, counts_drops(&state))
         .expect("the registration");
 
-    let own = || ValueType::Own(ResourceType::new("resource1"));
-    let borrow = || ValueType::Borrow(ResourceType::new("resource1"));
+    let own = || ValueType::Own(resource1_id);
+    let borrow = || ValueType::Borrow(resource1_id);
     let u32_ty = || ValueType::Primitive(PrimitiveType::U32);
     let signature = |params: &[(&str, ValueType)], result: Option<ValueType>| FunctionType {
         parameters: params

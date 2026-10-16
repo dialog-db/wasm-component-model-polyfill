@@ -53,14 +53,17 @@ use anyhow::anyhow;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{EndKind, InstanceId, WaitableId};
 use crate::error::{CopyCause, Error, TaskCause};
+use crate::executor::copy::resource_tables;
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
+use crate::internal::ErrorInternal;
+use crate::resource::ResourceTableRuntime;
 use crate::resource::{HandleTables, TableId};
 use crate::runtime_layer::host_func;
 use crate::runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
-use crate::types::ValueType;
+use crate::types::{ValueType, payloads_match, resolve_resources};
 
 /// Build the `stream.new` built-in for `instance`: a stream carrying
 /// `payload` enters the store, and the built-in returns the indices
@@ -119,6 +122,8 @@ pub fn build_drop_end<T: 'static>(
             let index = arg_u32(args, 0)?;
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
+            let resources = resource_tables(&abi_state)?;
+            let resolve = |declared| ResourceTableRuntime::identity_in(&resources, declared);
             let mut guard = lock_tables(&tables)?;
             let end = guard
                 .end_from_handle(table, index, kind)
@@ -128,7 +133,7 @@ pub fn build_drop_end<T: 'static>(
                 .shared_record(end)
                 .map(|record| &record.payload)
                 .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-            if *carried != payload {
+            if !payloads_match(carried.as_ref(), payload.as_ref(), &resolve) {
                 return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
             }
             // An end whose other end the host serves takes the host's
@@ -177,6 +182,19 @@ fn build_new<T: 'static>(
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> crate::error::Result<RuntimeFunc> {
     let tables = store.internal().tables_handle();
+    // The record keeps the type with the identities the instantiation
+    // gave its resources, so that a component that receives an end
+    // compares the identities and not the places in a component.
+    let payload = {
+        let state = abi_state
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?;
+        payload.map(|payload| {
+            resolve_resources(&payload, &|declared| {
+                ResourceTableRuntime::identity_in(&state.resource_tables, declared)
+            })
+        })
+    };
     host_func(
         store.internal().runtime_mut(),
         core_func_type(signature),

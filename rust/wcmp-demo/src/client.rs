@@ -39,7 +39,9 @@ pub fn define<T: HttpHost>(linker: &mut Linker<T>, component: &Component) -> Res
             return None;
         }
         instance.items.iter().find_map(|item| match &item.ty {
-            ExternType::Function(ty) if item.name == "send" => Some(ty.clone()),
+            ExternType::Function(ty) if item.name == "send" => {
+                Some(http_types::host_signature(component, ty))
+            }
             _ => None,
         })
     }) else {

@@ -21,13 +21,13 @@ use std::collections::BTreeMap;
 use crate::module::Module;
 
 use super::host_func::HostFunc;
-use super::host_resource::HostResource;
+use super::resource_registration::ResourceRegistration;
 
 /// The polyfill's owned, per-interface registration entry.
 ///
 /// `T` is the [`Store`]'s host-data type. Each interface carries
 /// an ordered map from item-name to [`HostFunc<T>`] alongside an
-/// ordered map for [`HostResource<T>`] registrations; both orders
+/// ordered map for [`ResourceRegistration<T>`] registrations; both orders
 /// are insertion order so that diagnostics and iteration are
 /// deterministic.
 ///
@@ -38,9 +38,9 @@ pub struct InstanceRegistration<T: 'static> {
     /// via the `BTreeMap`'s sorted iteration; the keys are
     /// item-names which are short and inexpensive to compare.
     pub funcs: BTreeMap<String, HostFunc<T>>,
-    /// The host-resource registrations keyed by the resource-type
-    /// label the component-side import declares.
-    pub resources: BTreeMap<String, HostResource<T>>,
+    /// The host-resource registrations keyed by the name the
+    /// component-side import declares.
+    pub resources: BTreeMap<String, ResourceRegistration<T>>,
     /// The core modules registered for module-typed imports, keyed
     /// by the name the component-side import declares.
     pub modules: BTreeMap<String, Module>,
@@ -85,9 +85,9 @@ impl<T: 'static> InstanceRegistration<T> {
         self.funcs.get(name)
     }
 
-    /// Look up a registered host resource by its label.
-    pub fn resource(&self, label: &str) -> Option<&HostResource<T>> {
-        self.resources.get(label)
+    /// Look up a registered host resource by its name.
+    pub fn resource(&self, name: &str) -> Option<&ResourceRegistration<T>> {
+        self.resources.get(name)
     }
 
     /// Look up a registered core module by its name.

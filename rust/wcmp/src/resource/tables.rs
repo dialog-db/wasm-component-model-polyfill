@@ -47,9 +47,9 @@ use crate::value::Val;
 use super::TaskEnd;
 use super::handle_kind::HandleKind;
 use super::handle_lookup_error::HandleLookupError;
-use super::identity::ResourceTypeId;
 use super::table::HandleTable;
 use super::table_id::TableId;
+use crate::types::ResourceType;
 
 /// Every handle table a [`Store`] carries, with the task, subtask,
 /// and thread records the canonical ABI keeps for borrows.
@@ -61,7 +61,7 @@ pub struct HandleTables {
     /// type for the host's own handles.
     tables: HashMap<TableId, HandleTable>,
     /// The host's table for each resource type, created on first use.
-    host_tables: HashMap<ResourceTypeId, TableId>,
+    host_tables: HashMap<ResourceType, TableId>,
     /// The store's task, subtask, thread, and instance records, with
     /// the stack of current scopes. Workspace-internal.
     pub tasks: TaskTables,
@@ -762,7 +762,7 @@ impl HandleTables {
     pub fn insert_own(
         &mut self,
         table: TableId,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
     ) -> u32 {
@@ -779,7 +779,7 @@ impl HandleTables {
     /// host's handle records.
     pub fn insert_host_own(
         &mut self,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
     ) -> (u32, u32) {
@@ -794,7 +794,7 @@ impl HandleTables {
     pub fn insert_borrow(
         &mut self,
         table: TableId,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
     ) -> Option<u32> {
@@ -818,7 +818,7 @@ impl HandleTables {
         &mut self,
         scope: Option<Scope>,
         table: TableId,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
     ) -> Option<u32> {
@@ -901,7 +901,7 @@ impl HandleTables {
         &self,
         table: TableId,
         index: u32,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
     ) -> Result<HandleKind, HandleLookupError> {
         let entry = self
@@ -952,7 +952,7 @@ impl HandleTables {
     pub fn insert_host_borrow(
         &mut self,
         scope: Option<Scope>,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
     ) -> Option<(u32, u32)> {
@@ -991,7 +991,7 @@ impl HandleTables {
         index: u32,
         generation: u32,
         rep: u32,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
     ) -> Result<HandleKind, HandleLookupError> {
         let entry = self.lookup(table, index, type_id, guest_defined)?;
@@ -1017,7 +1017,7 @@ impl HandleTables {
         index: u32,
         generation: u32,
         rep: u32,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
     ) -> Result<u32, HandleLookupError> {
         self.lookup_host(table, index, generation, rep, type_id, guest_defined)?;
@@ -1031,7 +1031,7 @@ impl HandleTables {
         &mut self,
         table: TableId,
         index: u32,
-        type_id: ResourceTypeId,
+        type_id: ResourceType,
         guest_defined: bool,
     ) -> Result<u32, HandleLookupError> {
         let entry = self.lookup(table, index, type_id, guest_defined)?;
@@ -1076,7 +1076,7 @@ impl HandleTables {
     /// The host's table for a resource type, created on first access.
     /// Handles the host holds (`Store::resource_new`, an `own<T>`
     /// lifted out of a guest) live here.
-    pub fn host_table(&mut self, type_id: ResourceTypeId) -> TableId {
+    pub fn host_table(&mut self, type_id: ResourceType) -> TableId {
         *self
             .host_tables
             .entry(type_id)
@@ -1375,14 +1375,14 @@ impl Drop for SubtaskExit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::internal::ResourceTypeIdInternal;
+    use crate::internal::ResourceTypeInternal;
 
     #[wcmp_macros::test]
     fn it_rejects_an_index_of_another_resource_type() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let first = ResourceTypeId::fresh();
-        let second = ResourceTypeId::fresh();
+        let first = ResourceType::fresh_guest();
+        let second = ResourceType::fresh_guest();
         let index = tables.insert_own(table, first, true, 7);
         assert_eq!(
             tables.lookup(table, index, second, true),
@@ -1409,8 +1409,8 @@ mod tests {
     fn it_allocates_consecutive_indices_across_resource_types_in_one_table() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let first = ResourceTypeId::fresh();
-        let second = ResourceTypeId::fresh();
+        let first = ResourceType::fresh_guest();
+        let second = ResourceType::fresh_guest();
         let a = tables.insert_own(table, first, true, 1);
         let b = tables.insert_own(table, second, true, 2);
         assert_eq!(b, a + 1, "one allocator serves every resource type");
@@ -1440,7 +1440,7 @@ mod tests {
             Some(HandleKind::WaitableSet { set })
         );
 
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         assert_eq!(
             tables.lookup(table, subtask_index, ty, true),
             Err(HandleLookupError::WrongKind {
@@ -1468,7 +1468,7 @@ mod tests {
     fn it_refuses_to_remove_a_lent_entry_until_the_task_ends() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 3);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -1492,7 +1492,7 @@ mod tests {
     fn it_owes_a_lowered_borrow_to_the_current_task_and_takes_it_back_on_drop() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1549,7 +1549,7 @@ mod tests {
     fn it_refuses_a_borrow_lowered_outside_a_task() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         assert_eq!(tables.insert_borrow(table, ty, false, 1), None);
     }
 
@@ -1561,7 +1561,7 @@ mod tests {
         // task that catches the failure ends the subtask with itself.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -1664,7 +1664,7 @@ mod tests {
         // so the stale entry must not name it.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let instance = tables.tasks.insert_instance();
 
         let failed = tables
@@ -1714,7 +1714,7 @@ mod tests {
         // recorded against the later call.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 4);
 
         let failed = tables
@@ -1757,7 +1757,7 @@ mod tests {
     fn it_refuses_a_lend_with_no_call_to_give_it_back() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 5);
 
         assert_eq!(
@@ -1780,7 +1780,7 @@ mod tests {
         // gone would never be given back.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 6);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -1811,7 +1811,7 @@ mod tests {
         // running while the host side of the call runs.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let owned = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
         let caller = tables
@@ -1900,7 +1900,7 @@ mod tests {
         // two records to remove.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -1954,7 +1954,7 @@ mod tests {
     fn it_runs_the_later_steps_of_a_task_exit_a_panic_interrupted() {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -1993,7 +1993,7 @@ mod tests {
         // entry lent to the call it made.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 4);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -2040,7 +2040,7 @@ mod tests {
         // guard inside the guard.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let index = tables.insert_own(table, ty, false, 8);
         let instance = tables.tasks.insert_instance();
         let task = tables
@@ -2086,7 +2086,7 @@ mod tests {
         // owning slot alone, and the polyfill follows Wasmtime.
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
-        let ty = ResourceTypeId::fresh();
+        let ty = ResourceType::fresh_guest();
         let instance = tables.tasks.insert_instance();
         tables
             .tasks

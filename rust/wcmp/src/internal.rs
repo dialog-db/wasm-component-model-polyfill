@@ -41,7 +41,7 @@ use crate::error::{Error, Result};
 use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFunc};
-use crate::linker::{DestructorBody, InstanceRegistration, Resolution};
+use crate::linker::{InstanceRegistration, Resolution};
 use crate::module::{CoreExtern, CoreExternType, CoreValueType, Module};
 use crate::resource::ResourceTableRuntime;
 use crate::runtime_layer::{
@@ -58,11 +58,35 @@ pub trait StoreIdInternal {
 
 /// The crate-internal face of [`ResourceType`](crate::ResourceType).
 pub trait ResourceTypeInternal {
-    /// A resource type identity from a label and the index of the
-    /// resource table it lives in within its component. The index is a
-    /// position in one component's resource tables, which only the
-    /// translation of that component knows, so no host makes one.
-    fn indexed(label: impl Into<String>, index: usize) -> Self;
+    /// A fresh identity for a resource type that one instantiation of
+    /// a component defines.
+    fn fresh_guest() -> Self;
+    /// The identity of a resource type of a component that is not
+    /// instantiated: the component's number, the resource's index
+    /// among its resources, and the resource table that the position
+    /// of the type reads a handle from. Only the translation of the
+    /// component knows the three, so no host makes one.
+    fn uninstantiated(component: u32, resource: usize, table: usize) -> Self;
+    /// The identity of an abstract resource type of a component.
+    fn abstract_(component: u32, index: usize) -> Self;
+    /// The resource's index among its component's resources, for a
+    /// resource type of a component that is not instantiated.
+    fn resource_index(&self) -> Option<usize>;
+    /// The resource table that a handle of this type is read from,
+    /// for a resource type of a component that is not instantiated.
+    fn table_index(&self) -> Option<usize>;
+    /// Whether this is the identity [`ResourceType::host`] gives for
+    /// `T`.
+    ///
+    /// [`ResourceType::host`]: crate::ResourceType::host
+    fn is_host<T: 'static>(&self) -> bool;
+    /// The payload of an identity from
+    /// [`ResourceType::host_dynamic`].
+    ///
+    /// [`ResourceType::host_dynamic`]: crate::ResourceType::host_dynamic
+    fn as_host_dynamic(&self) -> Option<u32>;
+    /// Whether a component defines the resource type.
+    fn is_guest(&self) -> bool;
 }
 
 /// The crate-internal face of [`Component`](crate::Component).
@@ -291,13 +315,6 @@ pub trait HostCallInternal<'a, T: 'static> {
 }
 
 /// The crate-internal face of
-/// [`HostResource`](crate::HostResource).
-pub trait HostResourceInternal<T> {
-    /// The destructor the guest drop runs against.
-    fn destructor(&self) -> &Arc<DestructorBody<T>>;
-}
-
-/// The crate-internal face of
 /// [`LinkerInstance`](crate::LinkerInstance).
 pub trait LinkerInstanceInternal<'a, T: 'static> {
     /// A borrowed view onto the given registration, which refuses a
@@ -380,11 +397,4 @@ pub trait ResourceHandleInternal {
     /// The generation of the host-table entry the handle was minted
     /// for, which tells it from an entry that reused the same index.
     fn generation(&self) -> u32;
-}
-
-/// The crate-internal face of
-/// [`ResourceTypeId`](crate::ResourceTypeId).
-pub trait ResourceTypeIdInternal {
-    /// Mint a globally unique resource-type identity.
-    fn fresh() -> Self;
 }

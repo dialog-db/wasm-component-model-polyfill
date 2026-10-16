@@ -15,7 +15,7 @@ use crate::linker::DestructorBody;
 use crate::runtime_layer::Func as RuntimeFunc;
 
 /// The destructor a `resource.drop` runs after it removes the handle.
-pub enum ResourceDestructor<T> {
+pub enum ResourceDestructor<T: 'static> {
     /// The host closure registered for an imported resource. The
     /// host implements the resource, so the task the destructor runs
     /// as belongs to no component instance.
@@ -36,7 +36,7 @@ pub enum ResourceDestructor<T> {
     },
 }
 
-impl<T> ResourceDestructor<T> {
+impl<T: 'static> ResourceDestructor<T> {
     /// The component instance the destructor's task belongs to:
     /// the defining instance of a locally-defined resource, and
     /// none at all for a resource the host implements.
@@ -48,7 +48,7 @@ impl<T> ResourceDestructor<T> {
     }
 }
 
-impl<T> Clone for ResourceDestructor<T> {
+impl<T: 'static> Clone for ResourceDestructor<T> {
     fn clone(&self) -> Self {
         match self {
             ResourceDestructor::Host(body) => ResourceDestructor::Host(body.clone()),

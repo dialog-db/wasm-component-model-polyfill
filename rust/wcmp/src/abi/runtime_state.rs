@@ -27,6 +27,7 @@ use crate::concurrency::InstanceId;
 use crate::executor::ThreadStartTable;
 use crate::resource::{ResourceTableRuntime, TableId};
 use crate::runtime_layer::{Func as RuntimeFunc, Memory};
+use crate::types::ResourceType;
 
 /// Per-component canonical-ABI runtime state. Populated by the
 /// executor's `Extract*` directives during instantiation; consulted
@@ -76,6 +77,12 @@ pub struct AbiRuntimeState {
 }
 
 impl AbiRuntimeState {
+    /// The identity this instantiation gave `declared`, a resource
+    /// type its component declares.
+    pub fn resource_identity(&self, declared: ResourceType) -> ResourceType {
+        ResourceTableRuntime::identity_in(&self.resource_tables, declared)
+    }
+
     /// Construct a state with the requested slab sizes, every slot
     /// initially empty.
     pub fn with_slabs(

@@ -21,7 +21,7 @@ use crate::component::ExternalName;
 use crate::concurrency::{EndKind, LowerKind};
 use crate::module::Module;
 use crate::runtime_layer::{Module as RuntimeModule, Shared};
-use crate::types::{ResourceType, ValueType};
+use crate::types::ValueType;
 
 /// The executor's IR for a single parsed component.
 ///
@@ -1081,16 +1081,6 @@ pub struct ResourceTableSpec {
     /// Whether that instance is the one that defines the resource. A
     /// borrow lowered into the defining instance is the rep itself.
     pub defining: bool,
-    /// The resource the table holds, as the component names it: the
-    /// label the resource is imported or exported under, and the
-    /// index of this table. This is the only label a resource the
-    /// component defines has, so an error about a handle of such a
-    /// resource renders it. A resource the component imports is
-    /// named instead from the label the linker registered the host
-    /// resource under, which is the same label the component
-    /// imports it by, because that label is what the resolver
-    /// matched the registration on.
-    pub resource_type: ResourceType,
 }
 
 /// One stream or future table of the component: the type of the ends

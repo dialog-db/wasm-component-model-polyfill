@@ -70,9 +70,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use wcmp::{
-    Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, HostResource,
-    Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, TaskCause, Val,
-    ValueType,
+    Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, Instance, Linker,
+    PrimitiveType, ResourceType, SchedulerCause, Store, TaskCause, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -1156,6 +1155,8 @@ async fn it_fails_an_untyped_synchronous_call_with_the_same_mismatch() {
 /// mints a handle for it, and a host `async` function that takes a
 /// borrow and whose future is pending on its first poll.
 async fn lender() -> (Store<()>, Instance) {
+    // The marker for the identity of the `thing` resource type.
+    struct Thing;
     let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
     let component = Component::new(&engine, LENDS_A_BORROW_TO_A_HOST_ASYNC_FUNCTION)
         .await
@@ -1164,8 +1165,8 @@ async fn lender() -> (Store<()>, Instance) {
     {
         let mut root = linker.root();
         let mut host = root.instance("host");
-        let thing = host
-            .resource_with("thing", HostResource::new(|_, _| Ok(())))
+        let thing = ResourceType::host::<Thing>();
+        host.resource("thing", thing, |_, _| Ok(()))
             .expect("the registration");
         host.func_new(
             "[constructor]thing",
@@ -1174,7 +1175,7 @@ async fn lender() -> (Store<()>, Instance) {
                     name: "rep".to_owned(),
                     ty: ValueType::Primitive(PrimitiveType::U32),
                 }],
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call, args, results| {
@@ -1191,7 +1192,7 @@ async fn lender() -> (Store<()>, Instance) {
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "it".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: None,
                 async_: true,

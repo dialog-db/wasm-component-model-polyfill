@@ -115,7 +115,7 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
     let num_future_tables = types.num_future_tables();
     let num_error_context_tables = types.num_error_context_tables();
     let (component_types, _) = types.finish(&translation.component);
-    let projector = TypeProjector::new(&component_types, &translation.component);
+    let projector = TypeProjector::new(&component_types);
 
     let imports = project_imports(&translation, &projector)?;
     let exports = project_exports(&translation, &projector)?;
@@ -192,7 +192,6 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                         resource_index: ty.as_u32() as usize,
                         instance: instance.as_u32() as usize,
                         defining,
-                        resource_type: projector.resource(TypeResourceTableIndex::from_u32(i)),
                     })
                 }
                 TypeResourceTable::Abstract(_) => None,
@@ -926,7 +925,7 @@ fn project_imports(
 ) -> Result<Box<[ComponentImport]>> {
     let mut imports = Vec::with_capacity(translation.component.import_types.len());
     for (_, (name, extern_)) in translation.component.import_types.iter() {
-        let ty = projector.extern_type(name, extern_)?;
+        let ty = projector.extern_type(extern_)?;
         imports.push(ComponentImport {
             name: ExternalName::from_raw(name),
             ty,
@@ -970,7 +969,7 @@ fn project_exports(
                 ExternType::Function(projector.function(*ty)?)
             }
             EnvironExport::Instance { ty, .. } => ExternType::Instance(projector.instance(*ty)?),
-            EnvironExport::Type(def) => projector.type_def(name, def)?,
+            EnvironExport::Type(def) => projector.type_def(def)?,
             EnvironExport::ModuleStatic { ty, .. } | EnvironExport::ModuleImport { ty, .. } => {
                 ExternType::Module(projector.module(*ty)?)
             }

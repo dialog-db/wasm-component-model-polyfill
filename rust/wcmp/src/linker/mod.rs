@@ -30,7 +30,6 @@ mod component_value;
 mod host_call;
 mod host_func;
 mod host_func_kind;
-mod host_resource;
 #[allow(clippy::module_inception)]
 mod linker;
 mod linker_instance;
@@ -38,13 +37,14 @@ mod module_matching;
 mod numeric_list;
 mod registration;
 mod resolve;
+mod resource_registration;
 
 pub use component_value::{ComponentParameters, ComponentResult, ComponentValue};
 pub use host_call::HostCall;
 pub use host_func::HostFuncFuture;
 pub use host_func_kind::HostFuncKind;
-pub use host_resource::{DestructorBody, HostResource};
 pub use linker::Linker;
 pub use linker_instance::LinkerInstance;
 pub use registration::InstanceRegistration;
 pub use resolve::{ImportBinding, Resolution};
+pub use resource_registration::{DestructorBody, ResourceRegistration};

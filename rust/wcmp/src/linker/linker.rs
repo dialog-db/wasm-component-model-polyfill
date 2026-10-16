@@ -194,9 +194,8 @@ impl<T: 'static> Linker<T> {
     /// initializers leave behind stays in the store.
     ///
     /// An instantiation that fails leaves the store's own records as
-    /// it found them: the instance records the plan reserved, the
-    /// destructors its resource types registered, and the names it
-    /// taught for them all go back. Wasmtime keeps what a failed
+    /// it found them: the instance records the plan reserved and the
+    /// destructors its resource types registered go back. Wasmtime keeps what a failed
     /// instantiation left in its store, so this is hygiene rather
     /// than parity — no instance of either store can reach the
     /// records of an instantiation that produced none. The work the

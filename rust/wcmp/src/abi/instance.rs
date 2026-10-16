@@ -33,6 +33,7 @@ use crate::error::{Error, Result};
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::{HandleTables, ResourceTableRuntime, TableId};
+use crate::types::ResourceType;
 
 /// The component instance one crossing belongs to, with the tables
 /// the crossing resolves its handles against.
@@ -151,6 +152,14 @@ impl BoundaryInstance {
         self.resource_tables.as_deref().unwrap_or(&[])
     }
 
+    /// The identity the instantiation gave `declared`, a resource type
+    /// the component declares: the host registration's for an imported
+    /// resource, and the instance's own for one it defines. A type the
+    /// instantiation holds no table for is its own identity.
+    pub fn resource_identity(&self, declared: ResourceType) -> ResourceType {
+        ResourceTableRuntime::identity_in(self.resource_tables(), declared)
+    }
+
     /// The instantiation's resource tables as the shared vector, for
     /// a host call that keeps them for its length. Empty for a
     /// crossing that names no instantiation.
@@ -170,8 +179,8 @@ impl BoundaryInstance {
 mod tests {
     use super::*;
     use crate::executor::ir::{DataModel, StringEncoding};
-    use crate::internal::ResourceTypeIdInternal;
-    use crate::resource::ResourceTypeId;
+    use crate::internal::ResourceTypeInternal;
+    use crate::types::ResourceType;
 
     #[wcmp_macros::test]
     fn it_shares_the_instantiations_resource_tables_with_every_crossing() {
@@ -182,7 +191,7 @@ mod tests {
         // the same one rather than a copy each.
         let table = ResourceTableRuntime {
             table: TableId::fresh(),
-            type_id: ResourceTypeId::fresh(),
+            type_id: ResourceType::fresh_guest(),
             resource_index: 0,
             defining: false,
             guest_defined: false,

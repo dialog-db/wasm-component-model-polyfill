@@ -29,10 +29,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::store::StoreInternalExt;
 use crate::{
-    Component, Engine, EngineConfig, Error, Func, HostCall, HostResource, Instance,
-    InterfaceIdentifier, Linker, ResourceTypeId, Result, Store, TaskCause, Val,
+    Component, Engine, EngineConfig, Error, Func, HostCall, Instance, InterfaceIdentifier, Linker,
+    ResourceType, Result, Store, StoreContext, TaskCause, Val,
 };
 use wcmp_macros::component;
+
+/// The marker for the identity of the host resource type the tests'
+/// components import as `thing`.
+struct Thing;
 
 /// One component instance whose table holds three thread start
 /// functions:
@@ -188,7 +192,7 @@ fn threading_engine() -> Engine {
 /// What `record` noted is read on the host, so a test can read it
 /// after a trap poisoned the store and the store refuses every call
 /// into the guest, `work` among them.
-async fn instantiate() -> (Store<()>, Instance, ResourceTypeId, Arc<AtomicU32>) {
+async fn instantiate() -> (Store<()>, Instance, ResourceType, Arc<AtomicU32>) {
     let engine = threading_engine();
     let component = Component::new(&engine, LAST_THREAD)
         .await
@@ -197,11 +201,13 @@ async fn instantiate() -> (Store<()>, Instance, ResourceTypeId, Arc<AtomicU32>) 
     let mut linker: Linker<()> = Linker::new(&engine);
     let interface: InterfaceIdentifier =
         "wcmp-tests:host/things@0.1.0".parse().expect("identifier");
-    let thing = linker
+    let thing = ResourceType::host::<Thing>();
+    linker
         .instance(&interface)
-        .resource_with(
+        .resource(
             "thing",
-            HostResource::new(|_: &mut (), _: u32| -> Result<()> { Ok(()) }),
+            thing,
+            |_: StoreContext<'_, ()>, _: u32| -> Result<()> { Ok(()) },
         )
         .expect("the registration");
     let noted = Arc::new(AtomicU32::new(0));

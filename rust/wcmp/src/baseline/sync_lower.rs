@@ -52,10 +52,13 @@ use std::sync::{Arc, Mutex};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     Accessor, Component, Engine, EngineConfig, Error, Func, FunctionParameter, FunctionType,
-    HostCall, HostResource, Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store,
-    Val, ValueType,
+    HostCall, Instance, Linker, PrimitiveType, ResourceType, SchedulerCause, Store, Val, ValueType,
 };
 use wcmp_macros::component;
+
+/// The marker for the identity of the host resource type that
+/// [`lender`] registers as `thing`.
+struct Thing;
 
 /// A component whose sync-typed export calls an async-typed import
 /// through a synchronous lower and hands the result straight back.
@@ -686,8 +689,8 @@ async fn lender() -> (Store<()>, Instance) {
     {
         let mut root = linker.root();
         let mut host = root.instance("host");
-        let thing = host
-            .resource_with("thing", HostResource::new(|_, _| Ok(())))
+        let thing = ResourceType::host::<Thing>();
+        host.resource("thing", thing, |_, _| Ok(()))
             .expect("the registration");
         host.func_new(
             "[constructor]thing",
@@ -696,7 +699,7 @@ async fn lender() -> (Store<()>, Instance) {
                     name: "rep".to_owned(),
                     ty: ValueType::Primitive(PrimitiveType::U32),
                 }],
-                result: Some(ValueType::Own(ResourceType::new("thing"))),
+                result: Some(ValueType::Own(ResourceType::host::<Thing>())),
                 async_: false,
             },
             move |call, args, results| {
@@ -713,7 +716,7 @@ async fn lender() -> (Store<()>, Instance) {
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "it".to_owned(),
-                    ty: ValueType::Borrow(ResourceType::new("thing")),
+                    ty: ValueType::Borrow(ResourceType::host::<Thing>()),
                 }],
                 result: None,
                 async_: true,

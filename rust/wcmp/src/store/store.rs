@@ -15,9 +15,10 @@ use crate::concurrency::{
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::internal::EngineInternal;
-use crate::resource::{HandleTables, ResourceHandle, ResourceTypeId};
+use crate::resource::{HandleTables, ResourceHandle};
 use crate::runtime_layer::{AsContextMut, MaybeSend, Store as RuntimeStore, substrate_failure};
 use crate::suspend_provider_kind::SuspendProviderKind;
+use crate::types::ResourceType;
 
 use super::store_context::StoreContext;
 use super::store_context::internal::StoreContextInternalExt;
@@ -432,7 +433,7 @@ impl<T: 'static> Store<T> {
     /// the caller can hand to a guest export through [`Val::Own`].
     ///
     /// [`Val::Own`]: crate::Val::Own
-    pub fn resource_new(&self, type_id: ResourceTypeId, rep: u32) -> Result<ResourceHandle> {
+    pub fn resource_new(&self, type_id: ResourceType, rep: u32) -> Result<ResourceHandle> {
         self.reachable()?;
         self.store_data().resource_new(type_id, rep)
     }
@@ -627,7 +628,7 @@ mod tests {
     use crate::concurrency::{HostTask, Item, ItemKind};
     use crate::engine::Engine;
     use crate::executor::ResourceDestructor;
-    use crate::internal::ResourceTypeIdInternal;
+    use crate::internal::ResourceTypeInternal;
     use crate::value::Val;
 
     use super::*;
@@ -636,11 +637,10 @@ mod tests {
     async fn it_mints_a_handle_through_a_context_inside_a_driver() {
         let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         store.context().internal().register_resource(
             type_id,
-            None,
-            ResourceDestructor::Host(Arc::new(|_data: &mut (), _rep: u32| Ok(()))),
+            ResourceDestructor::Host(Arc::new(|_store: StoreContext<'_, ()>, _rep: u32| Ok(()))),
         );
 
         let handle = store
@@ -652,7 +652,7 @@ mod tests {
             .expect("the accessor reaches the store")
             .expect("mint a handle");
 
-        assert_eq!(handle.type_id(), type_id);
+        assert_eq!(handle.ty(), type_id);
         assert_eq!(handle.rep(), 9);
     }
 
@@ -665,11 +665,10 @@ mod tests {
         // anything released the handle.
         let destructor_runs = Arc::new(AtomicUsize::new(0));
         let counted = destructor_runs.clone();
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         store.context().internal().register_resource(
             type_id,
-            None,
-            ResourceDestructor::Host(Arc::new(move |_data: &mut (), _rep: u32| {
+            ResourceDestructor::Host(Arc::new(move |_store: StoreContext<'_, ()>, _rep: u32| {
                 counted.fetch_add(1, AtomicOrdering::Relaxed);
                 Ok(())
             })),

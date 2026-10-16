@@ -516,10 +516,16 @@ pub fn build_end_transfer<T: 'static>(
             let index = arg_u32(args, 0)?;
             let (src, src_table) = end_table_at(&end_tables, &abi_state, arg_u32(args, 1)?)?;
             let (dst, dst_table) = end_table_at(&end_tables, &abi_state, arg_u32(args, 2)?)?;
+            let resource_tables = abi_state
+                .lock()
+                .map_err(|_| anyhow!("ABI state poisoned"))?
+                .resource_tables
+                .clone();
             let mut guard = tables
                 .lock()
                 .map_err(|_| anyhow!("resource handle tables lock poisoned"))?;
-            let end = lift_readable_end(&mut guard, src_table, index, &src.ty, |err| {
+            let resolve = |declared| ResourceTableRuntime::identity_in(&resource_tables, declared);
+            let end = lift_readable_end(&mut guard, src_table, index, &src.ty, &resolve, |err| {
                 anyhow!("{err}")
             })?;
             let out = lower_readable_end(&mut guard, dst_table, end, &dst.ty)?;
@@ -634,13 +640,14 @@ mod tests {
     use crate::concurrency::{Item, ItemKind};
     use crate::engine::Engine;
     use crate::error::AbiCause;
-    use crate::internal::ResourceTypeIdInternal;
-    use crate::resource::{ResourceTypeId, TableId};
+    use crate::internal::ResourceTypeInternal;
+    use crate::resource::TableId;
     use crate::runtime_layer::{AsContextMut, Memory, MemoryType};
     use crate::store::Store;
     use crate::store::{StoreContextInternalExt, StoreInternalExt};
+    use crate::types::ResourceType;
 
-    fn runtime(table: TableId, type_id: ResourceTypeId) -> ResourceTableRuntime {
+    fn runtime(table: TableId, type_id: ResourceType) -> ResourceTableRuntime {
         ResourceTableRuntime {
             table,
             type_id,
@@ -653,7 +660,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_moves_an_owned_handle_from_the_source_table_to_the_destination_table() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         let src_table = TableId::fresh();
         let dst_table = TableId::fresh();
         let src = runtime(src_table, type_id);
@@ -700,7 +707,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_inserts_a_borrow_entry_in_the_destination_table_for_the_call() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         let src_table = TableId::fresh();
         let dst_table = TableId::fresh();
         let src = runtime(src_table, type_id);
@@ -749,7 +756,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_an_owned_transfer_of_an_unknown_index_with_wasmtimes_message() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         let src = runtime(TableId::fresh(), type_id);
         let dst = runtime(TableId::fresh(), type_id);
 
@@ -761,7 +768,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_an_owned_transfer_of_a_lent_entry_with_wasmtimes_message() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         let src_table = TableId::fresh();
         let src = runtime(src_table, type_id);
         let dst = runtime(TableId::fresh(), type_id);
@@ -788,7 +795,7 @@ mod tests {
     #[wcmp_macros::test]
     fn it_fails_a_borrow_transfer_of_an_unknown_index_with_wasmtimes_message() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let type_id = ResourceTypeId::fresh();
+        let type_id = ResourceType::fresh_guest();
         let src = runtime(TableId::fresh(), type_id);
         let dst = runtime(TableId::fresh(), type_id);
 
@@ -801,8 +808,8 @@ mod tests {
     fn it_fails_a_borrow_transfer_of_the_wrong_type_with_wasmtimes_message() {
         let tables = Arc::new(Mutex::new(HandleTables::new()));
         let src_table = TableId::fresh();
-        let held = ResourceTypeId::fresh();
-        let src = runtime(src_table, ResourceTypeId::fresh());
+        let held = ResourceType::fresh_guest();
+        let src = runtime(src_table, ResourceType::fresh_guest());
         let dst = runtime(TableId::fresh(), held);
         let index = tables.lock().unwrap().insert_own(src_table, held, true, 7);
 

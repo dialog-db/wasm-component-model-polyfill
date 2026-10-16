@@ -50,6 +50,14 @@ use wcmp::{
 };
 use wcmp_macros::component;
 
+/// The marker for the identity of the host resource type the smoke
+/// components import as `thing`.
+struct Thing;
+
+/// The marker for the identity of the host resource type the
+/// deadline component imports as `request`.
+struct Request;
+
 pub use crate::host_state::HostState;
 pub use crate::outcome::Outcome;
 pub use crate::outside::Outside;
@@ -1287,11 +1295,14 @@ async fn host_resource(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
-    let thing = linker
+    let thing = ResourceType::host::<Thing>();
+    linker
         .instance(&resources)
         .resource(
             "thing",
-            |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
+            thing,
+            |mut store: StoreContext<'_, HostState>, rep: u32| -> wcmp::Result<()> {
+                let state = store.data_mut();
                 state.dropped.push(rep);
                 Ok(())
             },
@@ -1326,11 +1337,14 @@ async fn disposal(engine: &Engine) -> Result<String, String> {
     let component = Component::new(engine, DROPPER).await.map_err(fail)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     let resources: InterfaceIdentifier = "wcmp:smoke/resources@0.1.0".parse().map_err(fail)?;
-    let thing = linker
+    let thing = ResourceType::host::<Thing>();
+    linker
         .instance(&resources)
         .resource(
             "thing",
-            |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
+            thing,
+            |mut store: StoreContext<'_, HostState>, rep: u32| -> wcmp::Result<()> {
+                let state = store.data_mut();
                 state.dropped.push(rep);
                 Ok(())
             },
@@ -2694,10 +2708,13 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
     let watch = Arc::new(Mutex::new(FetchWatch::default()));
     let request = {
         let mut upstream = linker.instance(&upstream_id);
-        let request = upstream
+        let request = ResourceType::host::<Request>();
+        upstream
             .resource(
                 "request",
-                |state: &mut HostState, rep: u32| -> wcmp::Result<()> {
+                request,
+                |mut store: StoreContext<'_, HostState>, rep: u32| -> wcmp::Result<()> {
+                    let state = store.data_mut();
                     state.dropped.push(rep);
                     Ok(())
                 },
@@ -2706,7 +2723,7 @@ async fn cancel_a_slow_host_call_on(engine: &Engine) -> Result<String, String> {
         let fetch_type = FunctionType {
             parameters: vec![FunctionParameter {
                 name: "req".to_owned(),
-                ty: ValueType::Borrow(ResourceType::new("request")),
+                ty: ValueType::Borrow(ResourceType::host::<Request>()),
             }],
             result: Some(ValueType::Primitive(PrimitiveType::String)),
             async_: true,

@@ -2097,7 +2097,7 @@ struct Sweep {
     module: crate::Module,
     func: Func,
     typed: crate::TypedFunc<(), u32>,
-    resource: crate::ResourceTypeId,
+    resource: crate::ResourceType,
     handle: crate::ResourceHandle,
     /// A stream the host made while the store was its own, which the
     /// sweep tries to close.
@@ -2209,9 +2209,12 @@ async fn it_refuses_every_fallible_operation_of_a_store_a_host_function_reaches_
             },
         )
         .expect("the registration of `reach-store`");
-    let resource = linker
+    // The marker for the identity of the `thing` resource type.
+    struct Thing;
+    let resource = crate::ResourceType::host::<Thing>();
+    linker
         .root()
-        .resource("thing", |_: &mut NotesItsDrop, _| Ok(()))
+        .resource("thing", resource, |_, _| Ok(()))
         .expect("the registration of `thing`");
     let component = Component::new(&engine, REACHES_THE_STORE_AFTER_A_BLOCK)
         .await

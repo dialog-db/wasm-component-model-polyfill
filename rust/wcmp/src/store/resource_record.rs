@@ -6,21 +6,15 @@
 
 //! What a store knew about one resource type at one moment.
 
-use crate::resource::ResourceTypeId;
 use crate::types::ResourceType;
 
 /// What a store knew about one resource type at one moment: whether
-/// a destructor was registered for it, and the name it rendered for
-/// it, with who taught that name.
+/// a destructor was registered for it.
 ///
 /// An instantiation takes one of these for every resource type it is
 /// about to register, and hands them back if the plan fails, so that
 /// a failed instantiation leaves the store's registrations as it
-/// found them. The two names are the store's two tiers, and at most
-/// one of them is ever set: a label a component taught outranks a
-/// label the linker's sweep left as a fallback, and the record has
-/// to put back the tier as well as the label, or a later component
-/// would find a taught name where the store held a fallback.
+/// found them.
 ///
 /// A record is taken once per resource type, before the
 /// instantiation registers anything for it. A second record of the
@@ -28,13 +22,7 @@ use crate::types::ResourceType;
 /// that back instead of what preceded it.
 pub struct ResourceRecord {
     /// The resource type the record is about.
-    pub type_id: ResourceTypeId,
+    pub type_id: ResourceType,
     /// Whether the store had a destructor registered for it.
     pub destructor: bool,
-    /// The label a component instantiated into the store had taught
-    /// for it, if one had.
-    pub taught_name: Option<ResourceType>,
-    /// The label the store had to fall back on for it while no
-    /// component had named it, if it held one.
-    pub fallback_name: Option<ResourceType>,
 }

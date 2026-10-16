@@ -15,10 +15,21 @@
 use std::sync::{Arc, Mutex};
 use wcmp::{
     Accessor, Component, Engine, Error, ExternType, ExternalName, FunctionParameter, FunctionType,
-    HostCall, HostResource, InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType,
-    ResourceType, Store, Val, ValueType,
+    HostCall, InterfaceIdentifier, LinkError, Linker, Module, PrimitiveType, ResourceType, Store,
+    StoreContext, Val, ValueType,
 };
 use wcmp_macros::{component, wasm};
+
+/// The marker the tests give the identity of a host resource type
+/// that a component imports as `thing`.
+struct Thing;
+
+/// The marker for the identity of the `request` resource type that
+/// [`register_types`] registers.
+struct Request;
+
+/// The marker for a second host resource type identity.
+struct Widget;
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -467,11 +478,17 @@ async fn it_defines_a_host_resource_with_a_sync_destructor() {
         .parse()
         .expect("identifier parses");
     let mut linker_iface = linker.instance(&iface);
-    let type_id = linker_iface
-        .resource("thing", |data: &mut HostData, rep: u32| {
-            data.dropped.lock().expect("dropped lock").push(rep);
-            Ok(())
-        })
+    let type_id = ResourceType::host::<Thing>();
+    linker_iface
+        .resource(
+            "thing",
+            type_id,
+            |mut store: StoreContext<'_, HostData>, rep: u32| {
+                let data = store.data_mut();
+                data.dropped.lock().expect("dropped lock").push(rep);
+                Ok(())
+            },
+        )
         .expect("the registration");
 
     let mut store: Store<HostData> = Store::new(&engine, host_data).expect("store construction");
@@ -1745,17 +1762,18 @@ async fn it_links_a_resource_nested_two_levels() {
     let mut root = linker.root();
     let mut a = root.instance("a");
     let mut b = a.instance("b");
-    let r = b
-        .resource("r", |drops, _rep| {
-            *drops += 1;
-            Ok(())
-        })
-        .expect("the registration");
+    struct R;
+    let r = ResourceType::host::<R>();
+    b.resource("r", r, |mut store, _rep| {
+        *store.data_mut() += 1;
+        Ok(())
+    })
+    .expect("the registration");
     b.func_new(
         "make",
         FunctionType {
             parameters: vec![],
-            result: Some(ValueType::Own(ResourceType::new("r"))),
+            result: Some(ValueType::Own(ResourceType::host::<R>())),
             async_: false,
         },
         move |call, _, results| {
@@ -1813,9 +1831,10 @@ const WORLD_LEVEL_USE: &[u8] = component!(
 fn register_types(linker: &mut Linker<u32>) {
     let interface: InterfaceIdentifier = "test:guest/types".parse().expect("identifier");
     let mut types = linker.instance(&interface);
-    let request = types
-        .resource("request", |drops, _rep| {
-            *drops += 1;
+    let request = ResourceType::host::<Request>();
+    types
+        .resource("request", request, |mut store, _rep| {
+            *store.data_mut() += 1;
             Ok(())
         })
         .expect("the registration");
@@ -1824,7 +1843,7 @@ fn register_types(linker: &mut Linker<u32>) {
             "make",
             FunctionType {
                 parameters: vec![],
-                result: Some(ValueType::Own(ResourceType::new("request"))),
+                result: Some(ValueType::Own(ResourceType::host::<Request>())),
                 async_: false,
             },
             move |call, _, results| {
@@ -1869,9 +1888,12 @@ async fn it_refuses_a_root_alias_of_a_resource_registered_under_another_identity
         .expect("component parses");
     let mut linker: Linker<u32> = Linker::new(&engine);
     register_types(&mut linker);
+    struct OtherRequest;
     linker
         .root()
-        .resource("request", |_, _| Ok(()))
+        .resource("request", ResourceType::host::<OtherRequest>(), |_, _| {
+            Ok(())
+        })
         .expect("the registration");
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store");
     match linker.instantiate(&mut store, &component).await {
@@ -2026,7 +2048,7 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
     linker
         .root()
         .instance("host")
-        .resource("f", |_, _| Ok(()))
+        .resource("f", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect("the registration");
 
     let kind_mismatch = |err: Error| match err {
@@ -2524,7 +2546,7 @@ const THING: &str = "pdd-tests:host/thing@0.1.0";
 #[wcmp_macros::test]
 async fn it_links_a_resource_import_under_an_interface_name_through_the_root_namespace() {
     // The host registers the resource on the root view under the
-    // import's whole name, and the identity it gets back mints a
+    // import's whole name, and the identity it registers mints a
     // handle the guest can drop: the destructor sees the host's rep.
     let engine =
         Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
@@ -2533,12 +2555,17 @@ async fn it_links_a_resource_import_under_an_interface_name_through_the_root_nam
         .expect("component parses");
 
     let mut linker: Linker<Arc<Mutex<Vec<u32>>>> = Linker::new(&engine);
-    let type_id = linker
+    let type_id = ResourceType::host::<Thing>();
+    linker
         .root()
-        .resource(THING, |data: &mut Arc<Mutex<Vec<u32>>>, rep: u32| {
-            data.lock().expect("dropped lock").push(rep);
-            Ok(())
-        })
+        .resource(
+            THING,
+            type_id,
+            |mut store: StoreContext<'_, Arc<Mutex<Vec<u32>>>>, rep: u32| {
+                store.data_mut().lock().expect("dropped lock").push(rep);
+                Ok(())
+            },
+        )
         .expect("the registration");
 
     let dropped = Arc::new(Mutex::new(Vec::<u32>::new()));
@@ -2596,7 +2623,7 @@ async fn it_refuses_a_resource_import_under_an_interface_name_with_no_root_regis
     let mut by_interface: Linker<()> = Linker::new(&engine);
     by_interface
         .instance(&thing)
-        .resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect("the registration");
     let err = match by_interface.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a linker instance must not satisfy a resource import"),
@@ -2863,8 +2890,8 @@ async fn it_refuses_a_second_function_registration_under_one_name() {
 
 #[wcmp_macros::test]
 async fn it_refuses_a_second_resource_or_module_registration_under_one_name() {
-    // The two resource entries and the module entry take a name the
-    // same way the function entries do, and give it out once.
+    // The resource entry and the module entry take a name the same
+    // way the function entries do, and give it out once.
     let engine =
         Engine::with_backend(crate::test_backend::backend()).expect("engine construction succeeds");
     let module = Module::new(&engine, PROVIDES_F)
@@ -2875,25 +2902,22 @@ async fn it_refuses_a_second_resource_or_module_registration_under_one_name() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let mut view = linker.instance(&iface);
 
-    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+    view.resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect("the first resource registration");
     let error = view
-        .resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+        .resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect_err("the second resource registration is refused");
     assert_defined_twice(&error, "thing");
 
-    // A resource registered by value is refused under a taken name
-    // too. Registering one `HostResource` under two *names* is the
-    // point of the by-value entry and stays allowed; what is refused
-    // is the second item under one name.
-    let shared = HostResource::new(|_data: &mut (), _rep: u32| Ok(()));
-    view.resource_with("widget", shared.clone())
-        .expect("the first by-value resource registration");
-    view.resource_with("gadget", shared.clone())
+    // One identity under two *names* stays allowed; what is refused
+    // is the second item under one name, whatever its identity.
+    view.resource("widget", ResourceType::host::<Widget>(), |_, _| Ok(()))
+        .expect("the first registration of the identity");
+    view.resource("gadget", ResourceType::host::<Widget>(), |_, _| Ok(()))
         .expect("the same resource type under a second name");
     let error = view
-        .resource_with("widget", shared)
-        .expect_err("the second by-value registration under one name is refused");
+        .resource("widget", ResourceType::host::<Widget>(), |_, _| Ok(()))
+        .expect_err("the second registration under one name is refused");
     assert_defined_twice(&error, "widget");
 
     view.module("m", &module)
@@ -2928,7 +2952,7 @@ async fn it_refuses_a_registration_under_a_name_another_kind_took() {
         .expect_err("a module under a function's name is refused");
     assert_defined_twice(&error, "taken");
     let error = root
-        .resource("taken", |_data: &mut (), _rep: u32| Ok(()))
+        .resource("taken", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect_err("a resource under a function's name is refused");
     assert_defined_twice(&error, "taken");
 
@@ -3066,20 +3090,14 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
         |_accessor: &Accessor<()>, (): ()| async move { Ok(2u32) },
     )
     .expect("the second typed concurrent registration replaces the first");
-    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+    view.resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect("the first resource registration");
-    view.resource("thing", |_data: &mut (), _rep: u32| Ok(()))
+    view.resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
         .expect("the second resource registration replaces the first");
-    view.resource_with(
-        "widget",
-        HostResource::new(|_data: &mut (), _rep: u32| Ok(())),
-    )
-    .expect("the first by-value resource registration");
-    view.resource_with(
-        "widget",
-        HostResource::new(|_data: &mut (), _rep: u32| Ok(())),
-    )
-    .expect("the second by-value resource registration replaces the first");
+    view.resource("widget", ResourceType::host::<Widget>(), |_, _| Ok(()))
+        .expect("the first registration of another identity");
+    view.resource("widget", ResourceType::host::<Thing>(), |_, _| Ok(()))
+        .expect("a registration under another identity replaces the first");
     view.module("m", &module)
         .expect("the first module registration");
     view.module("m", &module)

@@ -6,7 +6,7 @@
 
 //! The resource types of `wasi:http/types`.
 
-use wcmp::ResourceTypeId;
+use wcmp::ResourceType;
 
 /// The resource types [`define`] registered, which a store's
 /// [`HttpTable`] needs before the host makes a handle.
@@ -16,17 +16,17 @@ use wcmp::ResourceTypeId;
 #[derive(Debug, Clone, Copy)]
 pub struct Types {
     /// The resource type of `fields`.
-    pub fields: ResourceTypeId,
+    pub fields: ResourceType,
     /// The resource type of `request`.
-    pub request: ResourceTypeId,
+    pub request: ResourceType,
     /// The resource type of `response`.
-    pub response: ResourceTypeId,
+    pub response: ResourceType,
 }
 
 impl Types {
     /// The resource type of `request`, for a handle the host makes with
     /// `Store::resource_new` before a driver runs.
-    pub fn request(&self) -> ResourceTypeId {
+    pub fn request(&self) -> ResourceType {
         self.request
     }
 }
