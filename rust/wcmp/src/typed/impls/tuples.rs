@@ -51,6 +51,9 @@ impl<'t> Members<'t> {
     ) -> Result<Self> {
         let members = match (named, ty) {
             (Some(named), _) => Self::Named(named),
+            // The unit value crosses as nothing whatever the type says,
+            // which is how a case with no payload lifts and lowers it.
+            (None, _) if count == 0 => Self::Tuple(&[]),
             (None, ValueType::Tuple(tuple)) => Self::Tuple(tuple.elements()),
             (None, _) => return Err(declared_mismatch(ty, position)),
         };

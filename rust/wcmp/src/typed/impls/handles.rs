@@ -21,15 +21,17 @@ use wasmtime_environ::component::CanonicalAbiInfo;
 use crate::abi::{
     lift_end_id_for_host, lift_error_context_id, lower_error_context, lower_host_end,
 };
-use crate::concurrency::{ErrorContext, ErrorContextAny, FutureReader, StreamReader};
+use crate::concurrency::{
+    EndId, ErrorContext, ErrorContextAny, FutureAny, FutureReader, StreamAny, StreamReader,
+};
 use crate::error::{AbiPosition, Error, InstantiationError, Result, TypePathStep};
 use crate::internal::{
-    ErrorContextAnyInternal, ErrorContextInternal, FutureReaderInternal, LiftContextInternal,
-    LowerContextInternal, StreamReaderInternal,
+    ErrorContextAnyInternal, ErrorContextInternal, FutureAnyInternal, FutureReaderInternal,
+    LiftContextInternal, LowerContextInternal, StreamAnyInternal, StreamReaderInternal,
 };
 use crate::runtime_layer::Val as CoreVal;
 use crate::store::StoreId;
-use crate::types::ValueType;
+use crate::types::{ValueType, resolve_resources};
 
 use super::super::component_type::ComponentType;
 use super::super::flat::take_i32;
@@ -221,5 +223,115 @@ impl Lift for ErrorContext {
         let boundary = cx.boundary();
         let context = lift_error_context_id(boundary, index, ty, position)?;
         Ok(ErrorContext::new(boundary.store_id(), context))
+    }
+}
+
+/// The untyped readers of a stream and of a future, as Wasmtime's
+/// `StreamAny` and `FutureAny` cross: their type check accepts any
+/// `stream` or `future`, whatever its payload, and the lowering checks
+/// the payload the end's record carries against the declared one.
+macro_rules! any_reader {
+    ($any:ident, $declared:ident, $internal:ident) => {
+        impl ComponentType for $any {
+            const ABI: CanonicalAbiInfo = CanonicalAbiInfo::SCALAR4;
+
+            fn typecheck(
+                ty: &ValueType,
+                _: &TypeChecker<'_>,
+            ) -> core::result::Result<(), TypeCheckError> {
+                match ty {
+                    ValueType::$declared(_) => Ok(()),
+                    _ => Err(TypeCheckError::mismatch::<Self>(ty)),
+                }
+            }
+        }
+
+        impl Lower for $any {
+            fn lower_flat<D: 'static>(
+                &self,
+                cx: &mut LowerContext<'_, '_, D>,
+                ty: &ValueType,
+                out: &mut Vec<CoreVal>,
+            ) -> Result<()> {
+                let position = cx.position();
+                let index = lower_host_end(cx.boundary(), $internal::end(self), ty, position)?;
+                out.push(CoreVal::I32(index as i32));
+                Ok(())
+            }
+
+            fn lower_memory<D: 'static>(
+                &self,
+                cx: &mut LowerContext<'_, '_, D>,
+                ty: &ValueType,
+                offset: usize,
+            ) -> Result<()> {
+                let position = cx.position();
+                let index = lower_host_end(cx.boundary(), $internal::end(self), ty, position)?;
+                write_index(cx, ty, offset, index)
+            }
+        }
+
+        impl Lift for $any {
+            fn lift_flat<D: 'static>(
+                cx: &mut LiftContext<'_, '_, D>,
+                ty: &ValueType,
+                slots: &[CoreVal],
+                cursor: &mut usize,
+            ) -> Result<Self> {
+                let position = cx.position();
+                let index = index_flat(ty, slots, cursor, position)?;
+                lift_any(cx, ty, index)
+            }
+
+            fn lift_memory<D: 'static>(
+                cx: &mut LiftContext<'_, '_, D>,
+                ty: &ValueType,
+                offset: usize,
+            ) -> Result<Self> {
+                let index = index_memory(cx, ty, offset)?;
+                lift_any(cx, ty, index)
+            }
+        }
+    };
+}
+
+any_reader!(StreamAny, Stream, StreamAnyInternal);
+any_reader!(FutureAny, Future, FutureAnyInternal);
+
+/// Lift the readable end at `index` toward the host as an untyped
+/// reader of `ty`, whose payload names its resources with the
+/// identities the instantiation gave them, as the end's record does.
+fn lift_any<D: 'static, A: AnyReader>(
+    cx: &mut LiftContext<'_, '_, D>,
+    ty: &ValueType,
+    index: u32,
+) -> Result<A> {
+    let position = cx.position();
+    let boundary = cx.boundary();
+    let end = lift_end_id_for_host(boundary, index, ty, position)?;
+    let payload = match ty {
+        ValueType::Stream(stream) => stream.payload(),
+        ValueType::Future(future) => future.payload(),
+        _ => None,
+    };
+    let resolve = |declared| boundary.instance().resource_identity(declared);
+    let payload = payload.map(|payload| resolve_resources(payload, &resolve));
+    Ok(A::from_end(end, payload))
+}
+
+/// A `StreamAny` or a `FutureAny`, as [`lift_any`] makes one.
+trait AnyReader {
+    fn from_end(end: EndId, payload: Option<ValueType>) -> Self;
+}
+
+impl AnyReader for StreamAny {
+    fn from_end(end: EndId, payload: Option<ValueType>) -> Self {
+        <StreamAny as StreamAnyInternal>::new(end, payload)
+    }
+}
+
+impl AnyReader for FutureAny {
+    fn from_end(end: EndId, payload: Option<ValueType>) -> Self {
+        <FutureAny as FutureAnyInternal>::new(end, payload)
     }
 }

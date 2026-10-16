@@ -7,10 +7,12 @@
 //! The typed value traits for the Rust forms the polyfill gives each
 //! component value type.
 
+mod forms;
 mod handles;
 mod lists;
 mod maps;
 mod options;
+mod results;
 mod scalars;
 mod strings;
 mod tuples;

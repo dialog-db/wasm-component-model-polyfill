@@ -778,6 +778,9 @@ pub fn wcmp::FutureAny::eq(&self, &wcmp::FutureAny) -> bool
 impl core::fmt::Debug for wcmp::FutureAny
 pub fn wcmp::FutureAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for wcmp::FutureAny
+impl wcmp::ComponentType for wcmp::FutureAny
+impl wcmp::Lift for wcmp::FutureAny
+impl wcmp::Lower for wcmp::FutureAny
 pub struct wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType + 'static> wcmp::FutureReader<T>
 pub fn wcmp::FutureReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::FutureProducer<D, Item = T>) -> wcmp::Result<Self> where T: wcmp::Lower
@@ -1143,6 +1146,9 @@ pub fn wcmp::StreamAny::eq(&self, &wcmp::StreamAny) -> bool
 impl core::fmt::Debug for wcmp::StreamAny
 pub fn wcmp::StreamAny::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for wcmp::StreamAny
+impl wcmp::ComponentType for wcmp::StreamAny
+impl wcmp::Lift for wcmp::StreamAny
+impl wcmp::Lower for wcmp::StreamAny
 pub struct wcmp::StreamReader<T>
 impl<T: wcmp::ComponentType + 'static> wcmp::StreamReader<T>
 pub fn wcmp::StreamReader<T>::new<D: 'static>(&mut wcmp::StoreContext<'_, D>, impl wcmp::StreamProducer<D, Item = T>) -> wcmp::Result<Self> where T: wcmp::Lower
@@ -1272,11 +1278,14 @@ impl wcmp::ComponentType for i16
 impl wcmp::ComponentType for i32
 impl wcmp::ComponentType for i64
 impl wcmp::ComponentType for i8
+impl wcmp::ComponentType for str
 impl wcmp::ComponentType for u16
 impl wcmp::ComponentType for u32
 impl wcmp::ComponentType for u64
 impl wcmp::ComponentType for u8
 impl wcmp::ComponentType for wcmp::ErrorContext
+impl wcmp::ComponentType for wcmp::FutureAny
+impl wcmp::ComponentType for wcmp::StreamAny
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType, Q: wcmp::ComponentType, R: wcmp::ComponentType> wcmp::ComponentType for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType, Q: wcmp::ComponentType> wcmp::ComponentType for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType> wcmp::ComponentType for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P)
@@ -1295,7 +1304,12 @@ impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType> wcm
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType> wcmp::ComponentType for (A, B)
 impl<A: wcmp::ComponentType> wcmp::ComponentType for (A)
 impl<K: wcmp::ComponentType, V: wcmp::ComponentType> wcmp::ComponentType for std::collections::hash::map::HashMap<K, V>
+impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for &T
+impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for alloc::boxed::Box<T>
+impl<T: wcmp::ComponentType + ?core::marker::Sized> wcmp::ComponentType for alloc::sync::Arc<T>
+impl<T: wcmp::ComponentType, E: wcmp::ComponentType> wcmp::ComponentType for core::result::Result<T, E>
 impl<T: wcmp::ComponentType, const N: usize> wcmp::ComponentType for [T; N]
+impl<T: wcmp::ComponentType> wcmp::ComponentType for [T]
 impl<T: wcmp::ComponentType> wcmp::ComponentType for alloc::vec::Vec<T>
 impl<T: wcmp::ComponentType> wcmp::ComponentType for core::option::Option<T>
 impl<T: wcmp::ComponentType> wcmp::ComponentType for wcmp::FutureReader<T>
@@ -1325,7 +1339,9 @@ pub trait wcmp::HostFuture<Out>: core::future::future::Future<Output = Out> + co
 impl<Out, F> wcmp::HostFuture<Out> for F where F: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 pub trait wcmp::Lift: core::marker::Sized + wcmp::ComponentType
 impl wcmp::Lift for ()
+impl wcmp::Lift for alloc::boxed::Box<str>
 impl wcmp::Lift for alloc::string::String
+impl wcmp::Lift for alloc::sync::Arc<str>
 impl wcmp::Lift for bool
 impl wcmp::Lift for char
 impl wcmp::Lift for f32
@@ -1339,6 +1355,8 @@ impl wcmp::Lift for u32
 impl wcmp::Lift for u64
 impl wcmp::Lift for u8
 impl wcmp::Lift for wcmp::ErrorContext
+impl wcmp::Lift for wcmp::FutureAny
+impl wcmp::Lift for wcmp::StreamAny
 impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift, E: wcmp::Lift, F: wcmp::Lift, G: wcmp::Lift, H: wcmp::Lift, I: wcmp::Lift, J: wcmp::Lift, K: wcmp::Lift, L: wcmp::Lift, M: wcmp::Lift, N: wcmp::Lift, O: wcmp::Lift, P: wcmp::Lift, Q: wcmp::Lift, R: wcmp::Lift> wcmp::Lift for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift, E: wcmp::Lift, F: wcmp::Lift, G: wcmp::Lift, H: wcmp::Lift, I: wcmp::Lift, J: wcmp::Lift, K: wcmp::Lift, L: wcmp::Lift, M: wcmp::Lift, N: wcmp::Lift, O: wcmp::Lift, P: wcmp::Lift, Q: wcmp::Lift> wcmp::Lift for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
 impl<A: wcmp::Lift, B: wcmp::Lift, C: wcmp::Lift, E: wcmp::Lift, F: wcmp::Lift, G: wcmp::Lift, H: wcmp::Lift, I: wcmp::Lift, J: wcmp::Lift, K: wcmp::Lift, L: wcmp::Lift, M: wcmp::Lift, N: wcmp::Lift, O: wcmp::Lift, P: wcmp::Lift> wcmp::Lift for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P)
@@ -1359,7 +1377,10 @@ impl<A: wcmp::Lift> wcmp::Lift for (A)
 impl<K: wcmp::Lift + core::cmp::Eq + core::hash::Hash, V: wcmp::Lift> wcmp::Lift for std::collections::hash::map::HashMap<K, V>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::StreamReader<T>
+impl<T: wcmp::Lift, E: wcmp::Lift> wcmp::Lift for core::result::Result<T, E>
 impl<T: wcmp::Lift, const N: usize> wcmp::Lift for [T; N]
+impl<T: wcmp::Lift> wcmp::Lift for alloc::boxed::Box<[T]>
+impl<T: wcmp::Lift> wcmp::Lift for alloc::sync::Arc<[T]>
 impl<T: wcmp::Lift> wcmp::Lift for alloc::vec::Vec<T>
 impl<T: wcmp::Lift> wcmp::Lift for core::option::Option<T>
 pub trait wcmp::Lower: wcmp::ComponentType
@@ -1373,11 +1394,14 @@ impl wcmp::Lower for i16
 impl wcmp::Lower for i32
 impl wcmp::Lower for i64
 impl wcmp::Lower for i8
+impl wcmp::Lower for str
 impl wcmp::Lower for u16
 impl wcmp::Lower for u32
 impl wcmp::Lower for u64
 impl wcmp::Lower for u8
 impl wcmp::Lower for wcmp::ErrorContext
+impl wcmp::Lower for wcmp::FutureAny
+impl wcmp::Lower for wcmp::StreamAny
 impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower, E: wcmp::Lower, F: wcmp::Lower, G: wcmp::Lower, H: wcmp::Lower, I: wcmp::Lower, J: wcmp::Lower, K: wcmp::Lower, L: wcmp::Lower, M: wcmp::Lower, N: wcmp::Lower, O: wcmp::Lower, P: wcmp::Lower, Q: wcmp::Lower, R: wcmp::Lower> wcmp::Lower for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
 impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower, E: wcmp::Lower, F: wcmp::Lower, G: wcmp::Lower, H: wcmp::Lower, I: wcmp::Lower, J: wcmp::Lower, K: wcmp::Lower, L: wcmp::Lower, M: wcmp::Lower, N: wcmp::Lower, O: wcmp::Lower, P: wcmp::Lower, Q: wcmp::Lower> wcmp::Lower for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q)
 impl<A: wcmp::Lower, B: wcmp::Lower, C: wcmp::Lower, E: wcmp::Lower, F: wcmp::Lower, G: wcmp::Lower, H: wcmp::Lower, I: wcmp::Lower, J: wcmp::Lower, K: wcmp::Lower, L: wcmp::Lower, M: wcmp::Lower, N: wcmp::Lower, O: wcmp::Lower, P: wcmp::Lower> wcmp::Lower for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P)
@@ -1398,7 +1422,12 @@ impl<A: wcmp::Lower> wcmp::Lower for (A)
 impl<K: wcmp::Lower, V: wcmp::Lower> wcmp::Lower for std::collections::hash::map::HashMap<K, V>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::StreamReader<T>
+impl<T: wcmp::Lower + ?core::marker::Sized> wcmp::Lower for &T
+impl<T: wcmp::Lower + ?core::marker::Sized> wcmp::Lower for alloc::boxed::Box<T>
+impl<T: wcmp::Lower + ?core::marker::Sized> wcmp::Lower for alloc::sync::Arc<T>
+impl<T: wcmp::Lower, E: wcmp::Lower> wcmp::Lower for core::result::Result<T, E>
 impl<T: wcmp::Lower, const N: usize> wcmp::Lower for [T; N]
+impl<T: wcmp::Lower> wcmp::Lower for [T]
 impl<T: wcmp::Lower> wcmp::Lower for alloc::vec::Vec<T>
 impl<T: wcmp::Lower> wcmp::Lower for core::option::Option<T>
 pub trait wcmp::StreamConsumer<D: 'static>: core::marker::Send + 'static
