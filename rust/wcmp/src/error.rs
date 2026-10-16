@@ -653,28 +653,14 @@ pub enum TypeMismatchPosition {
         /// the whole signature is compared at once.
         path: Vec<TypePathStep>,
     },
-    /// A typed export call asserted a signature against an export
-    /// whose declared component-level signature does not match.
-    TypedExportCall {
-        /// The name the component declares the export under.
-        export: String,
-    },
-    /// A typed export call's argument or result is the wrong shape
-    /// for the slot it is being lowered or lifted into. This is the
-    /// per-slot complement to [`Self::TypedExportCall`].
-    TypedExportSlot {
-        /// The name the component declares the export under.
-        export: String,
-        /// Which slot the mismatch occurred at.
-        slot: AbiPosition,
-    },
     /// The typed-conversion entry point on an export's [`Func`]
     /// rejected the requested Rust parameter tuple and return type:
     /// the export's declared component-level signature does not
-    /// match the signature the caller asked for. The `expected` and
-    /// `actual` [`TypeRendering::Function`]s on the enclosing
-    /// [`TypeMismatch`] carry the component-side and Rust-side
-    /// signatures, respectively.
+    /// match the signature the caller asked for. `path` leads to the
+    /// first part that differs. The enclosing [`TypeMismatch`]
+    /// carries the component's type of that part as its `expected`
+    /// rendering, and the Rust type, a count, or a name that stands
+    /// in its place as its `actual` one.
     ///
     /// [`Func`]: crate::Func
     TypedConversion {
@@ -700,12 +686,6 @@ impl core::fmt::Display for TypeMismatchPosition {
             Self::HostFunctionRegistrationPlain { name, path } => {
                 write!(f, "host registration for `{name}`")?;
                 write_path(f, path)
-            }
-            Self::TypedExportCall { export } => {
-                write!(f, "typed export call for `{export}`")
-            }
-            Self::TypedExportSlot { export, slot } => {
-                write!(f, "typed export call for `{export}` at {slot}")
             }
             Self::TypedConversion { export, path } => {
                 write!(f, "typed conversion for export `{export}`")?;
@@ -787,14 +767,16 @@ impl core::fmt::Display for TypePathStep {
 /// [`FunctionType`], or a count of values, for inclusion in a
 /// [`TypeMismatch`].
 ///
-/// Three renderings exist so a function-vs-function mismatch can be
+/// Five renderings exist so a function-vs-function mismatch can be
 /// reported with the full signature on each side, a value-vs-value
-/// mismatch can be reported with the offending value type only, and
-/// a disagreement over how many values crossed can be reported as
-/// the two counts. The last one names no type on purpose: a value
+/// mismatch with the offending value type only, a disagreement over
+/// how many values crossed as the two counts, a typed value's
+/// mismatch with the Rust type that does not stand for the declared
+/// one, and a disagreement over a field's, a case's, or a flag's
+/// name as the two names. A count names no type on purpose: a value
 /// list of the wrong length disagrees before any one slot's type is
 /// consulted, so a type there would be invented rather than
-/// observed. All three shapes are owned, polyfill-typed data.
+/// observed. Every rendering is owned, polyfill-typed data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TypeRendering {

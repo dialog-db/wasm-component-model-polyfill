@@ -446,11 +446,6 @@ pub wcmp::TypeMismatchPosition::HostFunctionRegistrationPlain::path: alloc::vec:
 pub wcmp::TypeMismatchPosition::TypedConversion
 pub wcmp::TypeMismatchPosition::TypedConversion::export: alloc::string::String
 pub wcmp::TypeMismatchPosition::TypedConversion::path: alloc::vec::Vec<wcmp::TypePathStep>
-pub wcmp::TypeMismatchPosition::TypedExportCall
-pub wcmp::TypeMismatchPosition::TypedExportCall::export: alloc::string::String
-pub wcmp::TypeMismatchPosition::TypedExportSlot
-pub wcmp::TypeMismatchPosition::TypedExportSlot::export: alloc::string::String
-pub wcmp::TypeMismatchPosition::TypedExportSlot::slot: wcmp::AbiPosition
 impl core::clone::Clone for wcmp::TypeMismatchPosition
 pub fn wcmp::TypeMismatchPosition::clone(&self) -> wcmp::TypeMismatchPosition
 impl core::cmp::Eq for wcmp::TypeMismatchPosition

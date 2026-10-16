@@ -807,8 +807,8 @@ async fn it_refuses_a_typed_export_whose_types_differ_and_names_the_first_part()
         TypeRendering::Value(ValueType::Primitive(PrimitiveType::U16))
     );
     assert_eq!(mismatch.actual, TypeRendering::Rust("u8".to_owned()));
-    // The guest's core function traps if it runs, and the store is
-    // not poisoned: no call reached the guest.
+    // The guest's core function traps if it runs, and the refusal
+    // came before any call reached the guest.
 }
 
 /// A guest that imports a function over a list of `u16`.
