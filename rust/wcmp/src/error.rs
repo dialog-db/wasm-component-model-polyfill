@@ -1151,12 +1151,14 @@ pub enum SchedulerCause {
     StoreNotInPoll,
 }
 
-/// The structured reason the store's table of records refused a new
-/// record.
+/// The structured reason a table of records refused an operation: the
+/// store's table of tasks, threads, and other records, or a host's
+/// [`ResourceTable`](crate::ResourceTable).
 ///
-/// Carried by [`Error::ResourceTable`]. The name is Wasmtime's, for the
-/// error of the table its store keeps its tasks, threads, and other
-/// records in.
+/// Carried by [`Error::ResourceTable`] for the store's table, and
+/// answered directly by a [`ResourceTable`](crate::ResourceTable). The
+/// name, the cases, and the messages are those of Wasmtime's
+/// `ResourceTableError`, in `src/runtime/component/resource_table.rs`.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ResourceTableError {
@@ -1170,8 +1172,23 @@ pub enum ResourceTableError {
     /// `ResourceTableError::Full`, in
     /// `src/runtime/component/resource_table.rs`, so the conformance
     /// corpus can match it by substring.
+    ///
+    /// A [`ResourceTable`](crate::ResourceTable) answers it for a push
+    /// that finds no free slot with the table at its maximum capacity.
     #[error("resource table has no free keys")]
     Full,
+    /// A handle names no value of a [`ResourceTable`](crate::ResourceTable):
+    /// its slot is free, or past the table's end.
+    #[error("resource not present")]
+    NotPresent,
+    /// A handle's type is not the type of the value in its slot of a
+    /// [`ResourceTable`](crate::ResourceTable).
+    #[error("resource is of another type")]
+    WrongType,
+    /// A value of a [`ResourceTable`](crate::ResourceTable) has children,
+    /// which must be deleted before it is.
+    #[error("resource has children")]
+    HasChildren,
 }
 
 impl SchedulerCause {

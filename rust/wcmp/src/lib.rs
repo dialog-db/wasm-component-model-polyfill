@@ -303,7 +303,7 @@ pub use crate::linker::{HostCall, Linker, LinkerInstance};
 pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
-pub use crate::resource::{Resource, ResourceAny, ResourceDynamic};
+pub use crate::resource::{Resource, ResourceAny, ResourceDynamic, ResourceTable};
 pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;
 pub use crate::typed::{ComponentNamedList, ComponentType, Lift, Lower};

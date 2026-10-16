@@ -339,6 +339,9 @@ impl core::marker::Copy for wcmp::PrimitiveType
 impl core::marker::StructuralPartialEq for wcmp::PrimitiveType
 #[non_exhaustive] pub enum wcmp::ResourceTableError
 pub wcmp::ResourceTableError::Full
+pub wcmp::ResourceTableError::HasChildren
+pub wcmp::ResourceTableError::NotPresent
+pub wcmp::ResourceTableError::WrongType
 impl core::error::Error for wcmp::ResourceTableError
 impl core::fmt::Debug for wcmp::ResourceTableError
 pub fn wcmp::ResourceTableError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -1101,6 +1104,28 @@ pub fn wcmp::ResourceDynamic::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl wcmp::ComponentType for wcmp::ResourceDynamic
 impl wcmp::Lift for wcmp::ResourceDynamic
 impl wcmp::Lower for wcmp::ResourceDynamic
+pub struct wcmp::ResourceTable
+impl wcmp::ResourceTable
+pub fn wcmp::ResourceTable::add_child<T: 'static, U: 'static>(&mut self, wcmp::Resource<T>, wcmp::Resource<U>) -> core::result::Result<(), wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::delete<T: core::any::Any>(&mut self, wcmp::Resource<T>) -> core::result::Result<T, wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::get<T: core::any::Any + core::marker::Sized>(&self, &wcmp::Resource<T>) -> core::result::Result<&T, wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::get_any_mut(&mut self, u32) -> core::result::Result<&mut dyn core::any::Any, wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::get_mut<T: core::any::Any + core::marker::Sized>(&mut self, &wcmp::Resource<T>) -> core::result::Result<&mut T, wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::is_empty(&self) -> bool
+pub fn wcmp::ResourceTable::iter_children<T: 'static>(&self, &wcmp::Resource<T>) -> core::result::Result<impl core::iter::traits::iterator::Iterator<Item = &(dyn core::any::Any + core::marker::Send)> + use<'_, T>, wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::iter_entries<T>(&mut self, alloc::collections::btree::map::BTreeMap<u32, T>) -> impl core::iter::traits::iterator::Iterator<Item = (core::result::Result<&mut dyn core::any::Any, wcmp::ResourceTableError>, T)>
+pub fn wcmp::ResourceTable::iter_mut(&mut self) -> impl core::iter::traits::iterator::Iterator<Item = &mut (dyn core::any::Any + core::marker::Send)>
+pub fn wcmp::ResourceTable::max_capacity(&self) -> usize
+pub fn wcmp::ResourceTable::new() -> Self
+pub fn wcmp::ResourceTable::push<T>(&mut self, T) -> core::result::Result<wcmp::Resource<T>, wcmp::ResourceTableError> where T: core::marker::Send + 'static
+pub fn wcmp::ResourceTable::push_child<T, U>(&mut self, T, &wcmp::Resource<U>) -> core::result::Result<wcmp::Resource<T>, wcmp::ResourceTableError> where T: core::marker::Send + 'static, U: 'static
+pub fn wcmp::ResourceTable::remove_child<T: 'static, U: 'static>(&mut self, wcmp::Resource<T>, wcmp::Resource<U>) -> core::result::Result<(), wcmp::ResourceTableError>
+pub fn wcmp::ResourceTable::set_max_capacity(&mut self, usize)
+pub fn wcmp::ResourceTable::with_capacity(usize) -> Self
+impl core::default::Default for wcmp::ResourceTable
+pub fn wcmp::ResourceTable::default() -> Self
+impl core::fmt::Debug for wcmp::ResourceTable
+pub fn wcmp::ResourceTable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ResourceType
 impl wcmp::ResourceType
 pub fn wcmp::ResourceType::host<T: 'static>() -> Self
