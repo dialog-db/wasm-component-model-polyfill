@@ -669,8 +669,11 @@ for these concepts:
 - `Val::Resource` holds a handle. No `Val::Own` or `Val::Borrow` exists.
 
 A typed value has no conversion to or from a `Val`, and no method that gives its
-`ValueType`. Wasmtime has no such conversion. A host that needs both forms uses
-the typed path for typed values and the dynamic path for `Val`.
+`ValueType`, except `ErrorContext`, which has Wasmtime's `into_val` and
+`from_val`. Wasmtime has no other such conversion. Every other typed handle
+reaches a `Val` through its untyped form, as `Resource<T>` does through
+`ResourceAny`. A host that needs both forms uses the typed path for typed values
+and the dynamic path for `Val`.
 
 ## Revisions to Earlier Designs
 
@@ -778,9 +781,11 @@ The `name` attribute renames a field and a case. A derived record and a derived
 variant with renamed parts cross both ways, and the type check uses the WIT
 names.
 
-A flags type crosses through `flags!`. A flags type with 1, 8, 9, 32, and 33
-flags crosses in both directions. The test exercises each constant, `empty`,
-`all`, `contains`, `intersects`, and each operator.
+A flags type crosses through `flags!`. A flags type with 1, 8, 9, and 32 flags
+crosses in both directions. A 33-flag type has Wasmtime's layout, checked
+without a guest, because the Component Model caps a flags type at 32 flags. The
+test exercises each constant, `empty`, `all`, `contains`, `intersects`, and each
+operator.
 
 Every value type of the table crosses on both targets. A test crosses each Rust
 form in the value types table in each direction that the table allows. A
