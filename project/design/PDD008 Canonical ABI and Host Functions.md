@@ -89,9 +89,14 @@ rejected at call time.
 A host function that returns `Err(_)` traps the guest. The error reaches the
 host's call as a `wcmp::Error` on every supported target.
 
+A host reports an error of its own with `Error::Host`. The variant holds an
+`anyhow::Error` as its source, and `Error` implements `From<anyhow::Error>`. A
+host function therefore applies `?` to its own errors. The host's call returns
+the `Error::Host` with its source chain, so the host can downcast the source.
+
 ## Error Model Growth
 
-`wcmp::Error` grows with two variants:
+`wcmp::Error` grows with three variants:
 
 - A type-mismatch variant for a host registration whose declared type does not
   unify with the component's import, and for a typed export call whose declared
@@ -101,6 +106,8 @@ host's call as a `wcmp::Error` on every supported target.
   structured cause: an out-of-bounds memory access, a missing `cabi_realloc`, a
   failed `cabi_realloc` call, an invalid encoding, or a host value that does not
   match the declared type.
+- A host variant, `Error::Host`, for an error that a host function reports for
+  itself. Its source is an `anyhow::Error`.
 
 Each variant carries a `#[source]` cause where one exists. [PDD005]'s note about
 `anyhow::Error` applies.

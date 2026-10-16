@@ -176,6 +176,7 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 | Host function definition, asynchronous                                            | Implement                    | ✅       | [`LinkerInstance::func_wrap_concurrent`] |
 | Host resource definition, synchronous destructor                                  | Implement                    | ✅       | [`wasmtime::component::ResourceType`]    |
 | Host resource definition, asynchronous destructor                                 | Implement                    | ✅       | [`wasmtime::component::Accessor`]        |
+| Host data projection: `HasData`, `HasSelf`, `Access`, and `Accessor<T, D>`        | Implement                    | ✅       | [`wasmtime::component::HasData`]         |
 | Typed values: `ComponentType`, `Lift`, `Lower`, and their derive macros           | Implement                    | ✅       | [`wasmtime::component::ComponentType`]   |
 | Typed flags through `flags!`                                                      | Implement                    | ✅       | [`wasmtime::component::flags!`]          |
 | Typed resource handles: `Resource<T>` and `ResourceAny`                           | Implement                    | ✅       | [`wasmtime::component::Resource`]        |
@@ -396,6 +397,8 @@ has at least one directive in the vendored corpora that exercises it.
   https://docs.wasmtime.dev/api/wasmtime/component/struct.Accessor.html
 [`wasmtime::component::bindgen!`]:
   https://docs.wasmtime.dev/api/wasmtime/component/macro.bindgen.html
+[`wasmtime::component::HasData`]:
+  https://docs.wasmtime.dev/api/wasmtime/component/trait.HasData.html
 [`wasmtime::component::ComponentType`]:
   https://docs.wasmtime.dev/api/wasmtime/component/trait.ComponentType.html
 [`wasmtime::component::flags!`]:

@@ -82,7 +82,9 @@ Public functions return `Result<T, Error>`, through a crate-level `Result<T>`
 alias. A cause from the runtime layer is captured as a `#[source]` field, so
 that the origin of an error is preserved without leaking the runtime layer's
 types. The runtime layer surfaces its failures as `anyhow::Error`. That type
-appears in `#[source]` fields only, and consumers treat it as opaque.
+appears in `#[source]` fields only, and consumers treat it as opaque. The one
+exception is `Error::Host`, whose source is a host's own error. A host can
+downcast that source to its own type.
 
 A polyfill entry point never panics on input that a user can produce. An input
 the polyfill does not support yet returns a structured error that names the

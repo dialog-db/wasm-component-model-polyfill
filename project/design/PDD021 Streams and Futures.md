@@ -524,8 +524,8 @@ impl<T: ComponentType> StreamReader<T> {
     pub fn pipe<D: 'static>(self, store: &mut StoreContext<'_, D>,
                             consumer: impl StreamConsumer<D, Item = T>) -> Result<()>;
     pub fn close<D: 'static>(&mut self, store: &mut StoreContext<'_, D>) -> Result<()>;
-    pub fn close_with<D: 'static>(&mut self, accessor: &Accessor<D>) -> Result<()>;
-    pub fn guard<D: 'static>(self, accessor: Accessor<D>) -> GuardedStreamReader<T, D>;
+    pub fn close_with<D: 'static>(&mut self, accessor: impl AsAccessor<Data = D>) -> Result<()>;
+    pub fn guard<D: 'static>(self, accessor: impl AsAccessor<Data = D>) -> GuardedStreamReader<T, D>;
     pub fn try_into_stream_any<D: 'static>(self, store: &mut StoreContext<'_, D>) -> Result<StreamAny>;
     pub fn try_from_stream_any(stream: StreamAny) -> Result<Self>;
 }

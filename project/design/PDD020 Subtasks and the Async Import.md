@@ -429,10 +429,27 @@ fn with(accessor, body) -> Result<R>:
     store = slot.take()                       // empty outside a poll, and inside `with`
     fail_if(store is none, StoreNotInPoll)
     fail_if(store.id != accessor.store_id, StoreNotInPoll)
-    result = body(store)
+    result = body(Access::new(store, accessor.getter))
     slot.put(store)
     return Ok(result)
 ```
+
+The accessor also carries a projection, as Wasmtime's does. A projection is a
+function pointer from the host data to one part of it. Its type is
+`fn(&mut T) -> D::Data<'_>`, where `D` implements `HasData`. The full type is
+`Accessor<T, D = HasSelf<T>>`, and `HasSelf<T>` projects to `&mut T`. `with`
+gives its body an `Access<'_, T, D>`. Its `get` method applies the projection,
+`data` and `data_mut` give the host data, and `store` gives the store context.
+`getter` gives the projection, and `with_getter::<D2>` gives an accessor of the
+same store with another projection. A registration hands its closure
+`&Accessor<T>`, whose projection is the identity. The accessor is `Clone`,
+because a host task's future is `'static` and owns its copy.
+
+`AsAccessor` is the trait of any accessor, whatever its projection. `Accessor`
+and a reference to an `AsAccessor` implement it. It names the host data as
+`Data` and the projection as `AccessorData`. An entry that takes an accessor
+takes an `impl AsAccessor`, as in Wasmtime, so that an accessor with any
+projection reaches it.
 
 Every rule of [PDD018] stays. A body reaches the store only inside `with`. A
 value taken from the host data must be cloned out. `with` inside `with` finds
@@ -491,11 +508,11 @@ shaped as the polyfill's own calls are:
 
 ```rust
 impl Func {
-    pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, args: &[Val]) -> Result<Box<[Val]>>;
+    pub async fn call_concurrent(&self, accessor: impl AsAccessor, args: &[Val]) -> Result<Box<[Val]>>;
 }
 
 impl<P: ComponentNamedList + Lower, R: ComponentNamedList + Lift> TypedFunc<P, R> {
-    pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, params: P) -> Result<R>;
+    pub async fn call_concurrent(&self, accessor: impl AsAccessor, params: P) -> Result<R>;
 }
 ```
 
