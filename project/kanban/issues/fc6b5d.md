@@ -21,8 +21,13 @@ PDD027, "Value Types". Give the typed value traits the Rust forms that the PDD's
 Not in scope: `bytes::Bytes` and `Rc`, which the PDD excludes.
 
 ## Acceptance criteria
-- [ ] Every value type of the table crosses on both targets. A test crosses each Rust form in the PDD's value types table in each direction that the table allows.
-- [ ] A fixed-length list with the wrong length fails the type check.
-- [ ] A `Result` with `()` matches a case with no payload, and a `Result` whose payload type differs fails the type check with a path that names the `ok` or `error` payload.
-- [ ] `lint` passes, and `tests all` is green on both targets with the conformance summary unchanged.
+- [x] Every value type of the table crosses on both targets. A test crosses each Rust form in the PDD's value types table in each direction that the table allows.
+- [x] A fixed-length list with the wrong length fails the type check.
+- [x] A `Result` with `()` matches a case with no payload, and a `Result` whose payload type differs fails the type check with a path that names the `ok` or `error` payload.
+- [x] `lint` passes, and `tests all` is green on both targets with the conformance summary unchanged.
 
+## Notes
+
+- 2026-10-16: `Result<T, E>`, `str`, `[T]`, `&T`, `Box<T>`, `Arc<T>`, the boxed and shared strings and lists, and the `StreamAny`/`FutureAny` readers live in `rust/wcmp/src/typed/impls/{results,forms,handles}.rs`. `tests/baseline_typed_forms.rs` crosses each one (the scalars, options, tuples, maps, and readers come from 3e9e67's tests). A unit `Result` payload lifts against a case with no payload, and a mismatch names `ResultOk` or `ResultErr`.
+- 2026-10-16: the public API listing for these impls was recorded late and folded into this commit.
+- 2026-10-16: `tests all` is green on the composed tip (zulsyvvw): native 1768, web 1755, wasmi 1475, fidelity 264/267/264, demo 69/69, Zena Browser 18/18. The conformance progress record is unchanged.
