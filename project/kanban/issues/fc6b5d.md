@@ -31,3 +31,6 @@ Not in scope: `bytes::Bytes` and `Rc`, which the PDD excludes.
 - 2026-10-16: `Result<T, E>`, `str`, `[T]`, `&T`, `Box<T>`, `Arc<T>`, the boxed and shared strings and lists, and the `StreamAny`/`FutureAny` readers live in `rust/wcmp/src/typed/impls/{results,forms,handles}.rs`. `tests/baseline_typed_forms.rs` crosses each one (the scalars, options, tuples, maps, and readers come from 3e9e67's tests). A unit `Result` payload lifts against a case with no payload, and a mismatch names `ResultOk` or `ResultErr`.
 - 2026-10-16: the public API listing for these impls was recorded late and folded into this commit.
 - 2026-10-16: `tests all` is green on the composed tip (zulsyvvw): native 1768, web 1755, wasmi 1475, fidelity 264/267/264, demo 69/69, Zena Browser 18/18. The conformance progress record is unchanged.
+- 2026-10-16 (review 2): a context-free reviewer returned ACCEPTED for the whole series (vlxntqqn to pmltqmly). The stale error docs and the two unbuilt `TypeMismatchPosition` variants it noted are gone (ytrmqkyl).
+- 2026-10-16 (review 2): Open for the owner: `TypedFunc::call` requires `P: 'static` where Wasmtime's does not, so `&str`, `[T]`, and `&T` lower only as `'static` borrows. This predates the series.
+- 2026-10-16: the open review-2 items above are filed as 3684f4 (borrowed typed-call parameters).
