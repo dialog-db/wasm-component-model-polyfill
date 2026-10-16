@@ -46,15 +46,10 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wcmp::__private::{
-    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
-    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
-};
 use wcmp::{
     Accessor, ComponentType, Error, FunctionParameter, FunctionType, FutureAny, FutureProducer,
     FutureReader, FutureType, HostCall, InterfaceIdentifier, Lift, Linker, Lower, PrimitiveType,
-    Source, StoreContext, StreamConsumer, StreamReader, StreamResult, StreamType, TypePathStep,
-    Val, ValueType,
+    Source, StoreContext, StreamConsumer, StreamReader, StreamResult, StreamType, Val, ValueType,
 };
 use wcmp_scenario::SourceBundle;
 
@@ -274,7 +269,7 @@ impl FutureProducer<Host> for Finishes {
     ) -> Poll<Result<Option<WriteResult>, Error>> {
         let mut end = lock(&self.0);
         if end.ended {
-            return Poll::Ready(Ok(Some(WriteResult)));
+            return Poll::Ready(Ok(Some(Ok(()))));
         }
         if finish {
             return Poll::Ready(Ok(None));
@@ -287,83 +282,26 @@ impl FutureProducer<Host> for Finishes {
 /// The payload of the future `write-via-stream` answers:
 /// `result<_, error-code>`. The host never fails a write, so it only
 /// ever holds `ok`.
-struct WriteResult;
+type WriteResult = Result<(), ErrorCode>;
+
+/// `wasi:cli/types.error-code`, the error of a write.
+#[derive(ComponentType, Lift, Lower, Debug)]
+#[component(enum)]
+#[repr(u8)]
+enum ErrorCode {
+    #[component(name = "io")]
+    Io,
+    #[component(name = "illegal-byte-sequence")]
+    IllegalByteSequence,
+    #[component(name = "pipe")]
+    Pipe,
+}
 
 /// The type `write-via-stream`'s future carries:
 /// `result<_, error-code>`.
 fn write_result_type() -> ValueType {
     let codes = wcmp::EnumType::new(ERROR_CODES.map(str::to_string));
     ValueType::Result(wcmp::ResultType::new(None, Some(ValueType::Enum(codes))))
-}
-
-impl ComponentType for WriteResult {
-    const ABI: CanonicalAbiInfo =
-        CanonicalAbiInfo::variant_static(&[None, Some(CanonicalAbiInfo::enum_(ERROR_CODES.len()))]);
-
-    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let ValueType::Result(result) = ty else {
-            return Err(TypeCheckError::mismatch::<Self>(ty));
-        };
-        if let Some(ok) = result.ok() {
-            return Err(TypeCheckError::mismatch::<()>(ok).at(TypePathStep::ResultOk));
-        }
-        match result.err() {
-            Some(ValueType::Enum(codes)) if codes.cases() == ERROR_CODES => Ok(()),
-            Some(err) => Err(TypeCheckError::mismatch::<Self>(err).at(TypePathStep::ResultErr)),
-            None => Err(TypeCheckError::mismatch::<Self>(ty)),
-        }
-    }
-}
-
-impl Lower for WriteResult {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> wcmp::Result<()> {
-        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<()> {
-        lower_case_memory(cx, ty, 0, offset).map(|_| ())
-    }
-}
-
-impl Lift for WriteResult {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> wcmp::Result<Self> {
-        lift_case_flat(cx, ty, slots, cursor, |_, case, _| only_ok(case))
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<Self> {
-        let (case, _, _) = lift_case_memory(cx, ty, offset)?;
-        only_ok(case)
-    }
-}
-
-/// The write result of case `case`, which the host only ever writes as
-/// `ok`.
-fn only_ok(case: usize) -> wcmp::Result<WriteResult> {
-    match case {
-        0 => Ok(WriteResult),
-        other => Err(Error::Internal {
-            message: format!("the host writes only `ok` to an output, not case {other}"),
-        }),
-    }
 }
 
 /// The monotonic clock of `wasi:clocks/monotonic-clock` on the target

@@ -189,20 +189,131 @@ fn parameter(name: &str, ty: ValueType) -> FunctionParameter {
 }
 
 /// The payload of a trailers future:
-/// `result<option<trailers>, error-code>`. The error code is the name
-/// of its case, without the case's payload, because the handler never
-/// sends one.
+/// `result<option<trailers>, error-code>`.
 ///
 /// A resource handle is not a typed value, so only trailers that are
-/// `none` cross. A crossing of `some` trailers fails.
+/// `none` cross. A crossing of `some` trailers fails. The error code
+/// crosses whole, payload and all.
 #[derive(Debug, PartialEq)]
-struct Trailers(Result<Option<ResourceHandle>, String>);
+struct Trailers(Result<Option<ResourceHandle>, ErrorCode>);
 
 /// The payload of the future that reports how a body was handled:
-/// `result<_, error-code>`. The error code is the name of its case, as
-/// in [`Trailers`].
-#[derive(Debug, PartialEq)]
-struct Outcome(Result<(), String>);
+/// `result<_, error-code>`.
+type Outcome = Result<(), ErrorCode>;
+
+/// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it,
+/// case by case and in order.
+#[derive(ComponentType, Lift, Lower, Debug, PartialEq)]
+#[component(variant)]
+enum ErrorCode {
+    #[component(name = "DNS-timeout")]
+    DnsTimeout,
+    #[component(name = "DNS-error")]
+    DnsError(DnsErrorPayload),
+    #[component(name = "destination-not-found")]
+    DestinationNotFound,
+    #[component(name = "destination-unavailable")]
+    DestinationUnavailable,
+    #[component(name = "destination-IP-prohibited")]
+    DestinationIpProhibited,
+    #[component(name = "destination-IP-unroutable")]
+    DestinationIpUnroutable,
+    #[component(name = "connection-refused")]
+    ConnectionRefused,
+    #[component(name = "connection-terminated")]
+    ConnectionTerminated,
+    #[component(name = "connection-timeout")]
+    ConnectionTimeout,
+    #[component(name = "connection-read-timeout")]
+    ConnectionReadTimeout,
+    #[component(name = "connection-write-timeout")]
+    ConnectionWriteTimeout,
+    #[component(name = "connection-limit-reached")]
+    ConnectionLimitReached,
+    #[component(name = "TLS-protocol-error")]
+    TlsProtocolError,
+    #[component(name = "TLS-certificate-error")]
+    TlsCertificateError,
+    #[component(name = "TLS-alert-received")]
+    TlsAlertReceived(TlsAlertReceivedPayload),
+    #[component(name = "HTTP-request-denied")]
+    HttpRequestDenied,
+    #[component(name = "HTTP-request-length-required")]
+    HttpRequestLengthRequired,
+    #[component(name = "HTTP-request-body-size")]
+    HttpRequestBodySize(Option<u64>),
+    #[component(name = "HTTP-request-method-invalid")]
+    HttpRequestMethodInvalid,
+    #[component(name = "HTTP-request-URI-invalid")]
+    HttpRequestUriInvalid,
+    #[component(name = "HTTP-request-URI-too-long")]
+    HttpRequestUriTooLong,
+    #[component(name = "HTTP-request-header-section-size")]
+    HttpRequestHeaderSectionSize(Option<u32>),
+    #[component(name = "HTTP-request-header-size")]
+    HttpRequestHeaderSize(Option<FieldSizePayload>),
+    #[component(name = "HTTP-request-trailer-section-size")]
+    HttpRequestTrailerSectionSize(Option<u32>),
+    #[component(name = "HTTP-request-trailer-size")]
+    HttpRequestTrailerSize(FieldSizePayload),
+    #[component(name = "HTTP-response-incomplete")]
+    HttpResponseIncomplete,
+    #[component(name = "HTTP-response-header-section-size")]
+    HttpResponseHeaderSectionSize(Option<u32>),
+    #[component(name = "HTTP-response-header-size")]
+    HttpResponseHeaderSize(FieldSizePayload),
+    #[component(name = "HTTP-response-body-size")]
+    HttpResponseBodySize(Option<u64>),
+    #[component(name = "HTTP-response-trailer-section-size")]
+    HttpResponseTrailerSectionSize(Option<u32>),
+    #[component(name = "HTTP-response-trailer-size")]
+    HttpResponseTrailerSize(FieldSizePayload),
+    #[component(name = "HTTP-response-transfer-coding")]
+    HttpResponseTransferCoding(Option<String>),
+    #[component(name = "HTTP-response-content-coding")]
+    HttpResponseContentCoding(Option<String>),
+    #[component(name = "HTTP-response-timeout")]
+    HttpResponseTimeout,
+    #[component(name = "HTTP-upgrade-failed")]
+    HttpUpgradeFailed,
+    #[component(name = "HTTP-protocol-error")]
+    HttpProtocolError,
+    #[component(name = "loop-detected")]
+    LoopDetected,
+    #[component(name = "configuration-error")]
+    ConfigurationError,
+    #[component(name = "internal-error")]
+    InternalError(Option<String>),
+}
+
+/// The payload of [`ErrorCode::DnsError`].
+#[derive(ComponentType, Lift, Lower, Debug, PartialEq)]
+#[component(record)]
+struct DnsErrorPayload {
+    rcode: Option<String>,
+    #[component(name = "info-code")]
+    info_code: Option<u16>,
+}
+
+/// The payload of [`ErrorCode::TlsAlertReceived`].
+#[derive(ComponentType, Lift, Lower, Debug, PartialEq)]
+#[component(record)]
+struct TlsAlertReceivedPayload {
+    #[component(name = "alert-id")]
+    alert_id: Option<u8>,
+    #[component(name = "alert-message")]
+    alert_message: Option<String>,
+}
+
+/// The payload of the error codes about the size of one field.
+#[derive(ComponentType, Lift, Lower, Debug, PartialEq)]
+#[component(record)]
+struct FieldSizePayload {
+    #[component(name = "field-name")]
+    field_name: Option<String>,
+    #[component(name = "field-size")]
+    field_size: Option<u32>,
+}
 
 /// `result<option<trailers>, error-code>`, the type of [`Trailers`].
 fn trailers_type() -> ValueType {
@@ -214,164 +325,11 @@ fn outcome_type() -> ValueType {
     ValueType::Result(ResultType::new(None, Some(error_code())))
 }
 
-/// No payload, for a case of [`ERROR_CODE_ABI`] that has none.
-const NO_PAYLOAD: Option<CanonicalAbiInfo> = None;
-
-/// The layout of `option<string>`.
-const OPTION_STRING: CanonicalAbiInfo = <Option<String> as ComponentType>::ABI;
-
-/// The layout of a record of two options, as [`record_of_options`]
-/// builds it.
-const fn options_record(first: CanonicalAbiInfo, second: CanonicalAbiInfo) -> CanonicalAbiInfo {
-    CanonicalAbiInfo::record_static(&[first, second])
-}
-
-/// The layout of `wasi:http/types.error-code`, case by case as
-/// [`error_code`] declares it.
-const ERROR_CODE_ABI: CanonicalAbiInfo = {
-    const DNS_ERROR: CanonicalAbiInfo =
-        options_record(OPTION_STRING, <Option<u16> as ComponentType>::ABI);
-    const TLS_ALERT: CanonicalAbiInfo =
-        options_record(<Option<u8> as ComponentType>::ABI, OPTION_STRING);
-    const FIELD_SIZE: CanonicalAbiInfo =
-        options_record(OPTION_STRING, <Option<u32> as ComponentType>::ABI);
-    const OPTION_FIELD_SIZE: CanonicalAbiInfo =
-        CanonicalAbiInfo::variant_static(&[None, Some(FIELD_SIZE)]);
-    const U32_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u32> as ComponentType>::ABI);
-    const U64_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u64> as ComponentType>::ABI);
-    const TEXT: Option<CanonicalAbiInfo> = Some(OPTION_STRING);
-    CanonicalAbiInfo::variant_static(&[
-        NO_PAYLOAD,
-        Some(DNS_ERROR),
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        Some(TLS_ALERT),
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        U64_SIZE,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        U32_SIZE,
-        Some(OPTION_FIELD_SIZE),
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        NO_PAYLOAD,
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        U64_SIZE,
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        TEXT,
-        TEXT,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        NO_PAYLOAD,
-        TEXT,
-    ])
-};
-
-/// The failure of a crossing of a value the test's typed payloads
-/// cannot carry: a resource handle, or the payload of an error code.
-fn not_typed(what: &str) -> Error {
+/// The failure of a crossing of a resource handle, which the test's
+/// typed payloads cannot carry.
+fn not_typed() -> Error {
     Error::Unsupported {
-        feature: format!("{what} in a typed `wasi:http` future payload"),
-    }
-}
-
-/// The name of case `case` of the error code `ty`.
-fn code_name(ty: &ValueType, case: usize) -> wcmp::Result<String> {
-    match ty {
-        ValueType::Variant(variant) => variant
-            .cases()
-            .get(case)
-            .map(|case| case.name().to_owned())
-            .ok_or_else(|| not_typed("an error code out of range")),
-        _ => Err(not_typed("an error code that is not a variant")),
-    }
-}
-
-/// The index of the case `name` of the error code `ty`.
-fn code_case(ty: &ValueType, name: &str) -> wcmp::Result<usize> {
-    match ty {
-        ValueType::Variant(variant) => variant
-            .cases()
-            .iter()
-            .position(|case| case.name() == name)
-            .ok_or_else(|| not_typed("an error code the type does not declare")),
-        _ => Err(not_typed("an error code that is not a variant")),
-    }
-}
-
-/// Lower the error code `name`, declared `ty`, into flat values.
-fn lower_code_flat<D: 'static>(
-    cx: &mut LowerContext<'_, '_, D>,
-    ty: &ValueType,
-    name: &str,
-    out: &mut Vec<CoreVal>,
-) -> wcmp::Result<()> {
-    let case = code_case(ty, name)?;
-    lower_case_flat(cx, ty, case, out, |_, _, _| {
-        Err(not_typed("the payload of an error code"))
-    })
-}
-
-/// Lower the error code `name`, declared `ty`, into memory at
-/// `offset`.
-fn lower_code_memory<D: 'static>(
-    cx: &mut LowerContext<'_, '_, D>,
-    ty: &ValueType,
-    name: &str,
-    offset: usize,
-) -> wcmp::Result<()> {
-    let case = code_case(ty, name)?;
-    match lower_case_memory(cx, ty, case, offset)? {
-        (_, None) => Ok(()),
-        (_, Some(_)) => Err(not_typed("the payload of an error code")),
-    }
-}
-
-/// Lift the name of an error code, declared `ty`, out of flat values.
-fn lift_code_flat<D: 'static>(
-    cx: &mut LiftContext<'_, '_, D>,
-    ty: &ValueType,
-    slots: &[CoreVal],
-) -> wcmp::Result<String> {
-    let mut cursor = 0;
-    lift_case_flat(cx, ty, slots, &mut cursor, |_, case, _| code_name(ty, case))
-}
-
-/// Lift the name of an error code, declared `ty`, out of memory at
-/// `offset`.
-fn lift_code_memory<D: 'static>(
-    cx: &mut LiftContext<'_, '_, D>,
-    ty: &ValueType,
-    offset: usize,
-) -> wcmp::Result<String> {
-    let (case, _, _) = lift_case_memory(cx, ty, offset)?;
-    code_name(ty, case)
-}
-
-/// Compare the error payload of the result `ty` with `error-code`.
-fn typecheck_code<R>(ty: &ResultType) -> Result<(), TypeCheckError> {
-    match ty.err() {
-        Some(err) if *err == error_code() => Ok(()),
-        Some(err) => Err(TypeCheckError::mismatch::<R>(err).at(TypePathStep::ResultErr)),
-        None => Err(TypeCheckError::mismatch::<R>(&ValueType::Result(
-            ty.clone(),
-        ))),
+        feature: "a resource handle in a typed `wasi:http` future payload".to_owned(),
     }
 }
 
@@ -381,7 +339,7 @@ impl ComponentType for Trailers {
             None,
             Some(CanonicalAbiInfo::SCALAR4),
         ])),
-        Some(ERROR_CODE_ABI),
+        Some(ErrorCode::ABI),
     ]);
 
     fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
@@ -404,7 +362,12 @@ impl ComponentType for Trailers {
             }
             None => return Err(TypeCheckError::mismatch::<Self>(ty)),
         }
-        typecheck_code::<Self>(result)
+        match result.err() {
+            Some(err) => {
+                ErrorCode::typecheck(err, types).map_err(|error| error.at(TypePathStep::ResultErr))
+            }
+            None => Err(TypeCheckError::mismatch::<Self>(ty)),
+        }
     }
 }
 
@@ -419,9 +382,9 @@ impl Lower for Trailers {
             Ok(None) => lower_case_flat(cx, ty, 0, out, |cx, option, out| {
                 lower_case_flat(cx, option, 0, out, |_, _, _| Ok(()))
             }),
-            Ok(Some(_)) => Err(not_typed("a resource handle")),
-            Err(name) => lower_case_flat(cx, ty, 1, out, |cx, code, out| {
-                lower_code_flat(cx, code, name, out)
+            Ok(Some(_)) => Err(not_typed()),
+            Err(code) => lower_case_flat(cx, ty, 1, out, |cx, code_ty, out| {
+                <ErrorCode as Lower>::lower_flat(code, cx, code_ty, out)
             }),
         }
     }
@@ -438,11 +401,11 @@ impl Lower for Trailers {
                 let option = option.ok_or_else(|| cx.mismatch(ty))?;
                 lower_case_memory(cx, option, 0, payload).map(|_| ())
             }
-            Ok(Some(_)) => Err(not_typed("a resource handle")),
-            Err(name) => {
-                let (payload, code) = lower_case_memory(cx, ty, 1, offset)?;
-                let code = code.ok_or_else(|| cx.mismatch(ty))?;
-                lower_code_memory(cx, code, name, payload)
+            Ok(Some(_)) => Err(not_typed()),
+            Err(code) => {
+                let (payload, code_ty) = lower_case_memory(cx, ty, 1, offset)?;
+                let code_ty = code_ty.ok_or_else(|| cx.mismatch(ty))?;
+                <ErrorCode as Lower>::lower_memory(code, cx, code_ty, payload)
             }
         }
     }
@@ -461,11 +424,13 @@ impl Lift for Trailers {
                     let mut cursor = 0;
                     lift_case_flat(cx, option, slots, &mut cursor, |_, case, _| match case {
                         0 => Ok(Self(Ok(None))),
-                        _ => Err(not_typed("a resource handle")),
+                        _ => Err(not_typed()),
                     })
                 }
                 (1, Some((code, slots))) => {
-                    lift_code_flat(cx, code, slots).map(|name| Self(Err(name)))
+                    let mut cursor = 0;
+                    <ErrorCode as Lift>::lift_flat(cx, code, slots, &mut cursor)
+                        .map(|code| Self(Err(code)))
                 }
                 _ => Err(cx.mismatch(ty)),
             }
@@ -480,89 +445,10 @@ impl Lift for Trailers {
         match lift_case_memory(cx, ty, offset)? {
             (0, payload, Some(option)) => match lift_case_memory(cx, option, payload)? {
                 (0, _, None) => Ok(Self(Ok(None))),
-                _ => Err(not_typed("a resource handle")),
+                _ => Err(not_typed()),
             },
             (1, payload, Some(code)) => {
-                lift_code_memory(cx, code, payload).map(|name| Self(Err(name)))
-            }
-            _ => Err(cx.mismatch(ty)),
-        }
-    }
-}
-
-impl ComponentType for Outcome {
-    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[None, Some(ERROR_CODE_ABI)]);
-
-    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let ValueType::Result(result) = ty else {
-            return Err(TypeCheckError::mismatch::<Self>(ty));
-        };
-        if let Some(ok) = result.ok() {
-            return Err(TypeCheckError::mismatch::<()>(ok).at(TypePathStep::ResultOk));
-        }
-        typecheck_code::<Self>(result)
-    }
-}
-
-impl Lower for Outcome {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> wcmp::Result<()> {
-        match &self.0 {
-            Ok(()) => lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(())),
-            Err(name) => lower_case_flat(cx, ty, 1, out, |cx, code, out| {
-                lower_code_flat(cx, code, name, out)
-            }),
-        }
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<()> {
-        match &self.0 {
-            Ok(()) => lower_case_memory(cx, ty, 0, offset).map(|_| ()),
-            Err(name) => {
-                let (payload, code) = lower_case_memory(cx, ty, 1, offset)?;
-                let code = code.ok_or_else(|| cx.mismatch(ty))?;
-                lower_code_memory(cx, code, name, payload)
-            }
-        }
-    }
-}
-
-impl Lift for Outcome {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> wcmp::Result<Self> {
-        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
-            match (case, payload) {
-                (0, None) => Ok(Self(Ok(()))),
-                (1, Some((code, slots))) => {
-                    lift_code_flat(cx, code, slots).map(|name| Self(Err(name)))
-                }
-                _ => Err(cx.mismatch(ty)),
-            }
-        })
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> wcmp::Result<Self> {
-        match lift_case_memory(cx, ty, offset)? {
-            (0, _, None) => Ok(Self(Ok(()))),
-            (1, payload, Some(code)) => {
-                lift_code_memory(cx, code, payload).map(|name| Self(Err(name)))
+                <ErrorCode as Lift>::lift_memory(cx, code, payload).map(|code| Self(Err(code)))
             }
             _ => Err(cx.mismatch(ty)),
         }
@@ -769,7 +655,7 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                     },
                 );
                 let sent =
-                    FutureReader::new(call.store(), async { Ok::<_, Error>(Outcome(Ok(()))) })?;
+                    FutureReader::new(call.store(), async { Ok::<_, Error>(Outcome::Ok(())) })?;
                 results[0] = Val::Tuple(Box::new([
                     Val::Own(call.resource_new(resources.response, rep)?),
                     Val::Future(FutureAny::try_from_future_reader(call.store(), sent)?),
@@ -1217,7 +1103,7 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
     }
     assert_eq!(
         *outcomes.lock().expect("the outcomes"),
-        [Outcome(Ok(()))],
+        [Ok(())],
         "the handler reported through `consume-body`'s future that it \
          handled the body"
     );

@@ -30,10 +30,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use wcmp::__private::{
-    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
-    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
-};
 use wcmp::{
     Accessor, ComponentType, EnumType, Error, FunctionParameter, FunctionType, FutureAny,
     FutureProducer, FutureReader, FutureType, HostCall, InterfaceIdentifier, Lift, Linker, Lower,
@@ -122,9 +118,9 @@ fn define_output<T: 'static>(
                     PrimitiveType::U8,
                 )))),
             }],
-            result: Some(ValueType::Future(FutureType::new(Some(
-                WriteResult::declared(),
-            )))),
+            result: Some(ValueType::Future(FutureType::new(
+                Some(write_result_type()),
+            ))),
             async_: false,
         },
         move |mut call: HostCall<'_, T>, args, results| {
@@ -248,7 +244,7 @@ impl<T: 'static> FutureProducer<T> for Finishes {
     ) -> Poll<Result<Option<WriteResult>, Error>> {
         let mut end = lock(&self.0);
         if end.ended {
-            return Poll::Ready(Ok(Some(WriteResult)));
+            return Poll::Ready(Ok(Some(Ok(()))));
         }
         if finish {
             return Poll::Ready(Ok(None));
@@ -261,90 +257,26 @@ impl<T: 'static> FutureProducer<T> for Finishes {
 /// The payload of the future `write-via-stream` answers:
 /// `result<_, error-code>`. The demo never fails a write, so it only
 /// ever holds `ok`.
-struct WriteResult;
+type WriteResult = Result<(), ErrorCode>;
 
-impl WriteResult {
-    /// The type the payload is declared as: `result<_, error-code>`.
-    fn declared() -> ValueType {
-        let codes = EnumType::new(ERROR_CODES.map(str::to_string));
-        ValueType::Result(ResultType::new(None, Some(ValueType::Enum(codes))))
-    }
-
-    /// The failure of a lift that finds `err`, which the demo never
-    /// writes to an output.
-    fn not_ok() -> Error {
-        Error::Internal {
-            message: "the demo writes only `ok` to an output, not `err`".to_string(),
-        }
-    }
+/// `wasi:cli/types.error-code`, the error of a write.
+#[derive(ComponentType, Lift, Lower, Debug)]
+#[component(enum)]
+#[repr(u8)]
+enum ErrorCode {
+    #[component(name = "io")]
+    Io,
+    #[component(name = "illegal-byte-sequence")]
+    IllegalByteSequence,
+    #[component(name = "pipe")]
+    Pipe,
 }
 
-impl ComponentType for WriteResult {
-    const ABI: CanonicalAbiInfo =
-        CanonicalAbiInfo::variant_static(&[None, Some(CanonicalAbiInfo::enum_(ERROR_CODES.len()))]);
-
-    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let matches = match ty {
-            ValueType::Result(result) => {
-                result.ok().is_none()
-                    && matches!(
-                        result.err(),
-                        Some(ValueType::Enum(codes)) if codes.cases().iter().map(String::as_str).eq(ERROR_CODES)
-                    )
-            }
-            _ => false,
-        };
-        if matches {
-            Ok(())
-        } else {
-            Err(TypeCheckError::mismatch::<Self>(ty))
-        }
-    }
-}
-
-impl Lower for WriteResult {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> Result<(), Error> {
-        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<(), Error> {
-        lower_case_memory(cx, ty, 0, offset).map(|_| ())
-    }
-}
-
-impl Lift for WriteResult {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> Result<Self, Error> {
-        lift_case_flat(cx, ty, slots, cursor, |_, case, _| match case {
-            0 => Ok(WriteResult),
-            _ => Err(WriteResult::not_ok()),
-        })
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<Self, Error> {
-        match lift_case_memory(cx, ty, offset)? {
-            (0, _, _) => Ok(WriteResult),
-            _ => Err(WriteResult::not_ok()),
-        }
-    }
+/// The type `write-via-stream`'s future carries:
+/// `result<_, error-code>`.
+fn write_result_type() -> ValueType {
+    let codes = EnumType::new(ERROR_CODES.map(str::to_string));
+    ValueType::Result(ResultType::new(None, Some(ValueType::Enum(codes))))
 }
 
 /// Lock `shared`, whatever a panic elsewhere left in it.

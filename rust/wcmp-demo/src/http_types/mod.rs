@@ -460,7 +460,7 @@ fn call_types<T: HttpHost>(
             let types = table.types()?;
             let request = Val::Own(call.resource_new(types.request, rep)?);
             let transmitted = FutureReader::new(call.store(), async {
-                Ok::<_, Error>(ErrorCodeOutcome::ok())
+                Ok::<_, Error>(Ok::<(), ErrorCode>(()))
             })?;
             let transmitted = FutureAny::try_from_future_reader(call.store(), transmitted)?;
             Val::Tuple(Box::new([request, Val::Future(transmitted)]))
@@ -534,7 +534,7 @@ fn call_types<T: HttpHost>(
             let types = table.types()?;
             let response = Val::Own(call.resource_new(types.response, rep)?);
             let transmitted = FutureReader::new(call.store(), async {
-                Ok::<_, Error>(ErrorCodeOutcome::ok())
+                Ok::<_, Error>(Ok::<(), ErrorCode>(()))
             })?;
             let transmitted = FutureAny::try_from_future_reader(call.store(), transmitted)?;
             Val::Tuple(Box::new([response, Val::Future(transmitted)]))
@@ -560,7 +560,7 @@ fn call_types<T: HttpHost>(
             let rep = args.first().and_then(rep_of).ok_or_else(bad)?;
             // How the guest's receipt of the body went: read, and kept
             // nowhere.
-            discard::<ErrorCodeOutcome, T>(call.store(), args.get(1).ok_or_else(bad)?)?;
+            discard::<Result<(), ErrorCode>, T>(call.store(), args.get(1).ok_or_else(bad)?)?;
             let table = call.data_mut().http();
             let body = if function == "[static]request.consume-body" {
                 table.requests.remove(&rep).map(|request| request.body)
@@ -576,7 +576,7 @@ fn call_types<T: HttpHost>(
                 Body::Bytes(bytes) => host_stream(call.store(), bytes)?,
             };
             let trailers = FutureReader::new(call.store(), async {
-                Ok::<_, Error>(TrailersOutcome::none())
+                Ok::<_, Error>(TrailersOutcome(Ok(())))
             })?;
             let trailers = FutureAny::try_from_future_reader(call.store(), trailers)?;
             Val::Tuple(Box::new([stream, Val::Future(trailers)]))
@@ -907,82 +907,13 @@ fn discard<T: Lift + 'static, D: 'static>(
         .pipe(store, Discards::<T>(core::marker::PhantomData))
 }
 
-/// The payload of a future `result<_, error-code>` the host resolves:
-/// only ever `ok`.
-struct ErrorCodeOutcome;
-
-impl ErrorCodeOutcome {
-    fn ok() -> Self {
-        ErrorCodeOutcome
-    }
-}
-
-impl ComponentType for ErrorCodeOutcome {
-    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[None, Some(ERROR_CODE_ABI)]);
-
-    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        match ty {
-            ValueType::Result(result)
-                if result.ok().is_none() && result.err() == Some(&error_code()) =>
-            {
-                Ok(())
-            }
-            _ => Err(TypeCheckError::mismatch::<Self>(ty)),
-        }
-    }
-}
-
-impl Lower for ErrorCodeOutcome {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> Result<(), Error> {
-        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<(), Error> {
-        lower_case_memory(cx, ty, 0, offset).map(|_| ())
-    }
-}
-
-/// Any outcome a guest writes, which the host reads only to let the
-/// guest's write complete. The lift reads the case and leaves the
-/// payload where it is.
-impl Lift for ErrorCodeOutcome {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> Result<Self, Error> {
-        lift_case_flat(cx, ty, slots, cursor, |_, _, _| Ok(ErrorCodeOutcome))
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> Result<Self, Error> {
-        lift_case_memory(cx, ty, offset).map(|_| ErrorCodeOutcome)
-    }
-}
-
-/// The payload of a trailers future the host resolves:
-/// `result<option<trailers>, error-code>`, only ever `ok(none)`.
-struct TrailersOutcome;
-
-impl TrailersOutcome {
-    fn none() -> Self {
-        TrailersOutcome
-    }
-}
+/// The payload of a trailers future the host resolves or reads:
+/// `result<option<trailers>, error-code>`.
+///
+/// Its `ok` holds no trailers. The host only ever writes `ok(none)`,
+/// and it reads any `ok` a guest writes without its trailers, because
+/// the subset carries none. Its `err` crosses whole, payload and all.
+struct TrailersOutcome(Result<(), ErrorCode>);
 
 impl ComponentType for TrailersOutcome {
     const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[
@@ -990,7 +921,7 @@ impl ComponentType for TrailersOutcome {
             None,
             Some(CanonicalAbiInfo::SCALAR4),
         ])),
-        Some(ERROR_CODE_ABI),
+        Some(ErrorCode::ABI),
     ]);
 
     fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
@@ -1002,11 +933,10 @@ impl ComponentType for TrailersOutcome {
             _ => false,
         };
         match ty {
-            ValueType::Result(result)
-                if trailers(result.ok()) && result.err() == Some(&error_code()) =>
-            {
-                Ok(())
-            }
+            ValueType::Result(result) if trailers(result.ok()) => match result.err() {
+                Some(err) => ErrorCode::typecheck(err, types),
+                None => Err(TypeCheckError::mismatch::<Self>(ty)),
+            },
             _ => Err(TypeCheckError::mismatch::<Self>(ty)),
         }
     }
@@ -1019,9 +949,14 @@ impl Lower for TrailersOutcome {
         ty: &ValueType,
         out: &mut Vec<CoreVal>,
     ) -> Result<(), Error> {
-        lower_case_flat(cx, ty, 0, out, |cx, trailers, out| {
-            lower_case_flat(cx, trailers, 0, out, |_, _, _| Ok(()))
-        })
+        match &self.0 {
+            Ok(()) => lower_case_flat(cx, ty, 0, out, |cx, trailers, out| {
+                lower_case_flat(cx, trailers, 0, out, |_, _, _| Ok(()))
+            }),
+            Err(code) => lower_case_flat(cx, ty, 1, out, |cx, code_ty, out| {
+                <ErrorCode as Lower>::lower_flat(code, cx, code_ty, out)
+            }),
+        }
     }
 
     fn lower_memory<D: 'static>(
@@ -1030,15 +965,24 @@ impl Lower for TrailersOutcome {
         ty: &ValueType,
         offset: usize,
     ) -> Result<(), Error> {
-        let (payload, trailers) = lower_case_memory(cx, ty, 0, offset)?;
-        let trailers = trailers.ok_or_else(|| cx.mismatch(ty))?;
-        lower_case_memory(cx, trailers, 0, payload).map(|_| ())
+        match &self.0 {
+            Ok(()) => {
+                let (payload, trailers) = lower_case_memory(cx, ty, 0, offset)?;
+                let trailers = trailers.ok_or_else(|| cx.mismatch(ty))?;
+                lower_case_memory(cx, trailers, 0, payload).map(|_| ())
+            }
+            Err(code) => {
+                let (payload, code_ty) = lower_case_memory(cx, ty, 1, offset)?;
+                let code_ty = code_ty.ok_or_else(|| cx.mismatch(ty))?;
+                <ErrorCode as Lower>::lower_memory(code, cx, code_ty, payload)
+            }
+        }
     }
 }
 
 /// Any trailers a guest writes, which the host reads only to let the
 /// guest's write complete. The subset carries no trailers, so the lift
-/// reads the case and leaves the payload where it is.
+/// reads the case of an `ok` and leaves its payload where it is.
 impl Lift for TrailersOutcome {
     fn lift_flat<D: 'static>(
         cx: &mut LiftContext<'_, '_, D>,
@@ -1046,7 +990,17 @@ impl Lift for TrailersOutcome {
         slots: &[CoreVal],
         cursor: &mut usize,
     ) -> Result<Self, Error> {
-        lift_case_flat(cx, ty, slots, cursor, |_, _, _| Ok(TrailersOutcome))
+        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
+            match (case, payload) {
+                (0, _) => Ok(TrailersOutcome(Ok(()))),
+                (1, Some((code, slots))) => {
+                    let mut cursor = 0;
+                    <ErrorCode as Lift>::lift_flat(cx, code, slots, &mut cursor)
+                        .map(|code| TrailersOutcome(Err(code)))
+                }
+                _ => Err(cx.mismatch(ty)),
+            }
+        })
     }
 
     fn lift_memory<D: 'static>(
@@ -1054,141 +1008,125 @@ impl Lift for TrailersOutcome {
         ty: &ValueType,
         offset: usize,
     ) -> Result<Self, Error> {
-        lift_case_memory(cx, ty, offset).map(|_| TrailersOutcome)
+        match lift_case_memory(cx, ty, offset)? {
+            (0, _, _) => Ok(TrailersOutcome(Ok(()))),
+            (1, payload, Some(code)) => <ErrorCode as Lift>::lift_memory(cx, code, payload)
+                .map(|code| TrailersOutcome(Err(code))),
+            _ => Err(cx.mismatch(ty)),
+        }
     }
 }
 
-/// The Canonical ABI layout of [`error_code`], case by case.
-const ERROR_CODE_ABI: CanonicalAbiInfo = {
-    const DNS_ERROR: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
-        <Option<String> as ComponentType>::ABI,
-        <Option<u16> as ComponentType>::ABI,
-    ]);
-    const TLS_ALERT: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
-        <Option<u8> as ComponentType>::ABI,
-        <Option<String> as ComponentType>::ABI,
-    ]);
-    const FIELD_SIZE: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
-        <Option<String> as ComponentType>::ABI,
-        <Option<u32> as ComponentType>::ABI,
-    ]);
-    const U32_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u32> as ComponentType>::ABI);
-    const U64_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u64> as ComponentType>::ABI);
-    const TEXT: Option<CanonicalAbiInfo> = Some(<Option<String> as ComponentType>::ABI);
-    CanonicalAbiInfo::variant_static(&[
-        None,
-        Some(DNS_ERROR),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(TLS_ALERT),
-        None,
-        None,
-        U64_SIZE,
-        None,
-        None,
-        None,
-        U32_SIZE,
-        Some(CanonicalAbiInfo::variant_static(&[None, Some(FIELD_SIZE)])),
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        None,
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        U64_SIZE,
-        U32_SIZE,
-        Some(FIELD_SIZE),
-        TEXT,
-        TEXT,
-        None,
-        None,
-        None,
-        None,
-        None,
-        TEXT,
-    ])
-};
+/// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it,
+/// case by case and in order.
+#[derive(ComponentType, Lift, Lower)]
+#[component(variant)]
+enum ErrorCode {
+    #[component(name = "DNS-timeout")]
+    DnsTimeout,
+    #[component(name = "DNS-error")]
+    DnsError(DnsErrorPayload),
+    #[component(name = "destination-not-found")]
+    DestinationNotFound,
+    #[component(name = "destination-unavailable")]
+    DestinationUnavailable,
+    #[component(name = "destination-IP-prohibited")]
+    DestinationIpProhibited,
+    #[component(name = "destination-IP-unroutable")]
+    DestinationIpUnroutable,
+    #[component(name = "connection-refused")]
+    ConnectionRefused,
+    #[component(name = "connection-terminated")]
+    ConnectionTerminated,
+    #[component(name = "connection-timeout")]
+    ConnectionTimeout,
+    #[component(name = "connection-read-timeout")]
+    ConnectionReadTimeout,
+    #[component(name = "connection-write-timeout")]
+    ConnectionWriteTimeout,
+    #[component(name = "connection-limit-reached")]
+    ConnectionLimitReached,
+    #[component(name = "TLS-protocol-error")]
+    TlsProtocolError,
+    #[component(name = "TLS-certificate-error")]
+    TlsCertificateError,
+    #[component(name = "TLS-alert-received")]
+    TlsAlertReceived(TlsAlertReceivedPayload),
+    #[component(name = "HTTP-request-denied")]
+    HttpRequestDenied,
+    #[component(name = "HTTP-request-length-required")]
+    HttpRequestLengthRequired,
+    #[component(name = "HTTP-request-body-size")]
+    HttpRequestBodySize(Option<u64>),
+    #[component(name = "HTTP-request-method-invalid")]
+    HttpRequestMethodInvalid,
+    #[component(name = "HTTP-request-URI-invalid")]
+    HttpRequestUriInvalid,
+    #[component(name = "HTTP-request-URI-too-long")]
+    HttpRequestUriTooLong,
+    #[component(name = "HTTP-request-header-section-size")]
+    HttpRequestHeaderSectionSize(Option<u32>),
+    #[component(name = "HTTP-request-header-size")]
+    HttpRequestHeaderSize(Option<FieldSizePayload>),
+    #[component(name = "HTTP-request-trailer-section-size")]
+    HttpRequestTrailerSectionSize(Option<u32>),
+    #[component(name = "HTTP-request-trailer-size")]
+    HttpRequestTrailerSize(FieldSizePayload),
+    #[component(name = "HTTP-response-incomplete")]
+    HttpResponseIncomplete,
+    #[component(name = "HTTP-response-header-section-size")]
+    HttpResponseHeaderSectionSize(Option<u32>),
+    #[component(name = "HTTP-response-header-size")]
+    HttpResponseHeaderSize(FieldSizePayload),
+    #[component(name = "HTTP-response-body-size")]
+    HttpResponseBodySize(Option<u64>),
+    #[component(name = "HTTP-response-trailer-section-size")]
+    HttpResponseTrailerSectionSize(Option<u32>),
+    #[component(name = "HTTP-response-trailer-size")]
+    HttpResponseTrailerSize(FieldSizePayload),
+    #[component(name = "HTTP-response-transfer-coding")]
+    HttpResponseTransferCoding(Option<String>),
+    #[component(name = "HTTP-response-content-coding")]
+    HttpResponseContentCoding(Option<String>),
+    #[component(name = "HTTP-response-timeout")]
+    HttpResponseTimeout,
+    #[component(name = "HTTP-upgrade-failed")]
+    HttpUpgradeFailed,
+    #[component(name = "HTTP-protocol-error")]
+    HttpProtocolError,
+    #[component(name = "loop-detected")]
+    LoopDetected,
+    #[component(name = "configuration-error")]
+    ConfigurationError,
+    #[component(name = "internal-error")]
+    InternalError(Option<String>),
+}
 
-/// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it.
-fn error_code() -> ValueType {
-    use wcmp::{OptionType, PrimitiveType, RecordField, RecordType, VariantCase, VariantType};
-    let option = |ty: ValueType| ValueType::Option(OptionType::new(ty));
-    let primitive = ValueType::Primitive;
-    let record = |fields: [(&str, PrimitiveType); 2]| {
-        ValueType::Record(RecordType::new(
-            fields
-                .into_iter()
-                .map(|(name, ty)| RecordField::new(name, option(primitive(ty)))),
-        ))
-    };
-    let dns_error = record([
-        ("rcode", PrimitiveType::String),
-        ("info-code", PrimitiveType::U16),
-    ]);
-    let tls_alert = record([
-        ("alert-id", PrimitiveType::U8),
-        ("alert-message", PrimitiveType::String),
-    ]);
-    let field_size = record([
-        ("field-name", PrimitiveType::String),
-        ("field-size", PrimitiveType::U32),
-    ]);
-    let u32_size = || Some(option(primitive(PrimitiveType::U32)));
-    let u64_size = || Some(option(primitive(PrimitiveType::U64)));
-    let text = || Some(option(primitive(PrimitiveType::String)));
-    let cases: [(&str, Option<ValueType>); 39] = [
-        ("DNS-timeout", None),
-        ("DNS-error", Some(dns_error)),
-        ("destination-not-found", None),
-        ("destination-unavailable", None),
-        ("destination-IP-prohibited", None),
-        ("destination-IP-unroutable", None),
-        ("connection-refused", None),
-        ("connection-terminated", None),
-        ("connection-timeout", None),
-        ("connection-read-timeout", None),
-        ("connection-write-timeout", None),
-        ("connection-limit-reached", None),
-        ("TLS-protocol-error", None),
-        ("TLS-certificate-error", None),
-        ("TLS-alert-received", Some(tls_alert)),
-        ("HTTP-request-denied", None),
-        ("HTTP-request-length-required", None),
-        ("HTTP-request-body-size", u64_size()),
-        ("HTTP-request-method-invalid", None),
-        ("HTTP-request-URI-invalid", None),
-        ("HTTP-request-URI-too-long", None),
-        ("HTTP-request-header-section-size", u32_size()),
-        ("HTTP-request-header-size", Some(option(field_size.clone()))),
-        ("HTTP-request-trailer-section-size", u32_size()),
-        ("HTTP-request-trailer-size", Some(field_size.clone())),
-        ("HTTP-response-incomplete", None),
-        ("HTTP-response-header-section-size", u32_size()),
-        ("HTTP-response-header-size", Some(field_size.clone())),
-        ("HTTP-response-body-size", u64_size()),
-        ("HTTP-response-trailer-section-size", u32_size()),
-        ("HTTP-response-trailer-size", Some(field_size)),
-        ("HTTP-response-transfer-coding", text()),
-        ("HTTP-response-content-coding", text()),
-        ("HTTP-response-timeout", None),
-        ("HTTP-upgrade-failed", None),
-        ("HTTP-protocol-error", None),
-        ("loop-detected", None),
-        ("configuration-error", None),
-        ("internal-error", text()),
-    ];
-    ValueType::Variant(VariantType::new(
-        cases
-            .into_iter()
-            .map(|(name, payload)| VariantCase::new(name, payload)),
-    ))
+/// The payload of [`ErrorCode::DnsError`].
+#[derive(ComponentType, Lift, Lower)]
+#[component(record)]
+struct DnsErrorPayload {
+    rcode: Option<String>,
+    #[component(name = "info-code")]
+    info_code: Option<u16>,
+}
+
+/// The payload of [`ErrorCode::TlsAlertReceived`].
+#[derive(ComponentType, Lift, Lower)]
+#[component(record)]
+struct TlsAlertReceivedPayload {
+    #[component(name = "alert-id")]
+    alert_id: Option<u8>,
+    #[component(name = "alert-message")]
+    alert_message: Option<String>,
+}
+
+/// The payload of the error codes about the size of one field.
+#[derive(ComponentType, Lift, Lower)]
+#[component(record)]
+struct FieldSizePayload {
+    #[component(name = "field-name")]
+    field_name: Option<String>,
+    #[component(name = "field-size")]
+    field_size: Option<u32>,
 }

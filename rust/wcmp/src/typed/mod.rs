@@ -26,6 +26,7 @@
 mod component_named_list;
 mod component_type;
 mod crossing;
+mod derived;
 mod flat;
 mod impls;
 mod lift;
@@ -41,6 +42,9 @@ pub use component_type::ComponentType;
 pub use crossing::{
     lift_parameters, lift_results, lift_returned, lower_parameters, lower_results,
     typecheck_function,
+};
+pub use derived::{
+    TypeCheckFn, format_flags, typecheck_enum, typecheck_flags, typecheck_record, typecheck_variant,
 };
 pub use flat::{align_to, lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory};
 pub use lift::Lift;

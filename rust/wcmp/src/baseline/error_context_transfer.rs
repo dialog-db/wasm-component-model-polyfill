@@ -33,9 +33,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 
-use crate::__private::{
-    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker, align_to,
-};
+use crate::__private::TypeChecker;
 use crate::concurrency::ErrorContextId;
 use crate::internal::{
     ErrorContextAnyInternal, ErrorContextInternal, FuncInternal, TypeCheckerInternal,
@@ -45,8 +43,8 @@ use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
     AbiCause, Component, ComponentType, Engine, EngineConfig, Error, ErrorContext, ErrorContextAny,
     Func, FunctionParameter, FunctionType, FutureReader, HostCall, Instance, InstantiationError,
-    Lift, Linker, Lower, PrimitiveType, Source, Store, StoreContext, StoreId, StreamConsumer,
-    StreamReader, StreamResult, TypePathStep, Val, ValueType,
+    Linker, PrimitiveType, Source, Store, StoreContext, StreamConsumer, StreamReader, StreamResult,
+    Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -1027,120 +1025,15 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
 }
 
 /// The receiver's record, `record { tag: u8, context: error-context,
-/// tail: u8 }`, as a host writes it with no help from the crate: it
-/// implements `ComponentType`, `Lift`, and `Lower` itself, through the
-/// public API, and overrides `check_store` to check the error context
-/// it holds.
+/// tail: u8 }`, as a host derives it. The derived `check_store` checks
+/// every field, so it checks the error context the record holds.
+#[derive(crate::ComponentType, crate::Lift, crate::Lower)]
+#[component(record)]
+#[component(wcmp_crate = crate)]
 struct Tagged {
     tag: u8,
     context: ErrorContext,
     tail: u8,
-}
-
-/// The names of [`Tagged`]'s fields, in order.
-const TAGGED_FIELDS: [&str; 3] = ["tag", "context", "tail"];
-
-/// The declared types of [`Tagged`]'s fields, when `ty` is a record of
-/// three fields.
-fn tagged_fields(ty: &ValueType) -> Option<[&ValueType; 3]> {
-    match ty {
-        ValueType::Record(record) => match record.fields() {
-            [tag, context, tail] => Some([tag.ty(), context.ty(), tail.ty()]),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-impl ComponentType for Tagged {
-    const ABI: CanonicalAbiInfo =
-        CanonicalAbiInfo::record_static(&[u8::ABI, ErrorContext::ABI, u8::ABI]);
-
-    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
-        let ValueType::Record(record) = ty else {
-            return Err(TypeCheckError::mismatch::<Self>(ty));
-        };
-        let fields = record.fields();
-        if fields.len() != TAGGED_FIELDS.len() {
-            return Err(TypeCheckError::count(fields.len(), TAGGED_FIELDS.len()));
-        }
-        for (field, name) in fields.iter().zip(TAGGED_FIELDS) {
-            if field.name() != name {
-                return Err(TypeCheckError::name(field.name(), name));
-            }
-        }
-        let at = |name: &str| {
-            let step = TypePathStep::Field(name.to_owned());
-            move |error: TypeCheckError| error.at(step)
-        };
-        u8::typecheck(fields[0].ty(), types).map_err(at("tag"))?;
-        ErrorContext::typecheck(fields[1].ty(), types).map_err(at("context"))?;
-        u8::typecheck(fields[2].ty(), types).map_err(at("tail"))
-    }
-}
-
-impl Lower for Tagged {
-    fn lower_flat<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        out: &mut Vec<CoreVal>,
-    ) -> crate::Result<()> {
-        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
-        self.tag.lower_flat(cx, tag, out)?;
-        self.context.lower_flat(cx, context, out)?;
-        self.tail.lower_flat(cx, tail, out)
-    }
-
-    fn lower_memory<D: 'static>(
-        &self,
-        cx: &mut LowerContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> crate::Result<()> {
-        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
-        let mut field = offset;
-        self.tag.lower_memory(cx, tag, field)?;
-        field = align_to(field + u8::SIZE32, ErrorContext::ALIGN32);
-        self.context.lower_memory(cx, context, field)?;
-        field = align_to(field + ErrorContext::SIZE32, u8::ALIGN32);
-        self.tail.lower_memory(cx, tail, field)
-    }
-
-    fn check_store(&self, store: StoreId) -> crate::Result<()> {
-        self.context.check_store(store)
-    }
-}
-
-impl Lift for Tagged {
-    fn lift_flat<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        slots: &[CoreVal],
-        cursor: &mut usize,
-    ) -> crate::Result<Self> {
-        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
-        Ok(Self {
-            tag: u8::lift_flat(cx, tag, slots, cursor)?,
-            context: ErrorContext::lift_flat(cx, context, slots, cursor)?,
-            tail: u8::lift_flat(cx, tail, slots, cursor)?,
-        })
-    }
-
-    fn lift_memory<D: 'static>(
-        cx: &mut LiftContext<'_, '_, D>,
-        ty: &ValueType,
-        offset: usize,
-    ) -> crate::Result<Self> {
-        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
-        let mut field = offset;
-        let tag = u8::lift_memory(cx, tag, field)?;
-        field = align_to(field + u8::SIZE32, ErrorContext::ALIGN32);
-        let context = ErrorContext::lift_memory(cx, context, field)?;
-        field = align_to(field + ErrorContext::SIZE32, u8::ALIGN32);
-        let tail = u8::lift_memory(cx, tail, field)?;
-        Ok(Self { tag, context, tail })
-    }
 }
 
 #[wcmp_macros::test]

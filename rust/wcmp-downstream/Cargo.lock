@@ -1674,6 +1674,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-encoder 0.258.0",
  "wasmtime-environ",
+ "wcmp-macros",
  "wcmp-wasm-core",
 ]
 

@@ -59,3 +59,69 @@ async fn it_runs_the_type_check_when_a_typed_function_is_acquired_and_never_on_a
         "a thousand calls ran the type check no more"
     );
 }
+
+/// A record whose fields have every alignment, derived inside the
+/// polyfill with `wcmp_crate`.
+#[derive(crate::ComponentType, crate::Lift, crate::Lower)]
+#[component(record)]
+#[component(wcmp_crate = crate)]
+struct Mixed {
+    a: u8,
+    b: u64,
+    c: String,
+    d: Option<u16>,
+    e: [u32; 3],
+    f: Choice,
+}
+
+/// A variant whose cases have payloads of different alignments.
+#[derive(crate::ComponentType, crate::Lift, crate::Lower)]
+#[component(variant)]
+#[component(wcmp_crate = crate)]
+enum Choice {
+    Small(u8),
+    Wide(u64),
+    Empty,
+}
+
+#[wcmp_macros::test]
+fn it_states_the_canonical_abi_layout_of_a_derived_type_as_its_constants() {
+    use crate::abi::layout::{alignment_of, size_of};
+    use crate::typed::ComponentType;
+    use crate::types::{
+        FixedLengthListType, OptionType, PrimitiveType, RecordField, RecordType, ValueType,
+        VariantCase, VariantType,
+    };
+
+    let primitive = ValueType::Primitive;
+    let choice = ValueType::Variant(VariantType::new([
+        VariantCase::new("Small", Some(primitive(PrimitiveType::U8))),
+        VariantCase::new("Wide", Some(primitive(PrimitiveType::U64))),
+        VariantCase::new("Empty", None),
+    ]));
+    let mixed = ValueType::Record(RecordType::new([
+        RecordField::new("a", primitive(PrimitiveType::U8)),
+        RecordField::new("b", primitive(PrimitiveType::U64)),
+        RecordField::new("c", primitive(PrimitiveType::String)),
+        RecordField::new(
+            "d",
+            ValueType::Option(OptionType::new(primitive(PrimitiveType::U16))),
+        ),
+        RecordField::new(
+            "e",
+            ValueType::FixedLengthList(FixedLengthListType::new(primitive(PrimitiveType::U32), 3)),
+        ),
+        RecordField::new("f", choice.clone()),
+    ]));
+
+    assert_eq!(<Choice as ComponentType>::SIZE32, size_of(&choice));
+    assert_eq!(
+        <Choice as ComponentType>::ALIGN32 as usize,
+        alignment_of(&choice)
+    );
+    assert_eq!(<Mixed as ComponentType>::SIZE32, size_of(&mixed));
+    assert_eq!(
+        <Mixed as ComponentType>::ALIGN32 as usize,
+        alignment_of(&mixed)
+    );
+}

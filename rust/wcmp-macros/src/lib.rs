@@ -18,6 +18,9 @@
 //! - [`component!`] — assemble inline WebAssembly Text Format into a
 //!   component-format byte slice at compile time.
 
+mod component;
+mod flags;
+
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
@@ -377,4 +380,48 @@ fn matches_kind(actual: BinaryKind, expected: BinaryKind) -> bool {
 
 fn error(span: Span, message: String) -> TokenStream2 {
     syn::Error::new(span, message).to_compile_error()
+}
+
+/// Derive `wcmp::ComponentType` for a record, a variant, or an enum,
+/// with Wasmtime's attributes: `#[component(record)]`,
+/// `#[component(variant)]`, or `#[component(enum)]` on the type,
+/// `#[component(name = "…")]` on a field or a case, and
+/// `#[component(wcmp_crate = path)]` for a crate that re-exports the
+/// polyfill. `wcmp` documents the shape rules.
+#[proc_macro_derive(ComponentType, attributes(component))]
+pub fn derive_component_type(input: TokenStream) -> TokenStream {
+    derive(component::Trait::ComponentType, input)
+}
+
+/// Derive `wcmp::Lift`, with the attributes of [`ComponentType`].
+#[proc_macro_derive(Lift, attributes(component))]
+pub fn derive_lift(input: TokenStream) -> TokenStream {
+    derive(component::Trait::Lift, input)
+}
+
+/// Derive `wcmp::Lower`, with the attributes of [`ComponentType`].
+#[proc_macro_derive(Lower, attributes(component))]
+pub fn derive_lower(input: TokenStream) -> TokenStream {
+    derive(component::Trait::Lower, input)
+}
+
+/// Expand one of the three derives, or the compile error of a type the
+/// shape rules refuse.
+fn derive(which: component::Trait, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    component::expand(which, &input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Declare a flags type with Wasmtime's syntax and API: one constant
+/// for each flag, `empty`, `all`, `contains`, `intersects`, `as_array`,
+/// the bitwise operators, and the three typed value traits. `wcmp`
+/// documents it.
+#[proc_macro]
+pub fn flags(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as flags::Flags);
+    flags::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

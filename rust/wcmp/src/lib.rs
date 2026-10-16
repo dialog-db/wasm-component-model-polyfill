@@ -311,6 +311,7 @@ pub use crate::types::{
     ValueType, VariantCase, VariantType,
 };
 pub use crate::value::{Val, ValField};
+pub use wcmp_macros::{ComponentType, Lift, Lower, flags};
 
 // The crate's own conformance harness registers the item Wasmtime's
 // wast runner lowers the store's record cap through. The harness is
@@ -331,8 +332,9 @@ pub use crate::wast_runner::set_max_table_capacity;
 pub mod __private {
     pub use crate::runtime_layer::Val as CoreVal;
     pub use crate::typed::{
-        LiftContext, LowerContext, TypeCheckError, TypeChecker, align_to, lift_case_flat,
-        lift_case_memory, lower_case_flat, lower_case_memory,
+        LiftContext, LowerContext, TypeCheckError, TypeCheckFn, TypeChecker, align_to,
+        format_flags, lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
+        typecheck_enum, typecheck_flags, typecheck_record, typecheck_variant,
     };
     pub use wasmtime_environ::component::CanonicalAbiInfo;
 }

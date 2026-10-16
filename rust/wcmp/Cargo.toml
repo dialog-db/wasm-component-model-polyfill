@@ -36,6 +36,9 @@ wasm-encoder = { workspace = true }
 # target lets the polyfill share one component-translation path
 # instead of maintaining a parallel hand-rolled walker on the web.
 wasmtime-environ = { workspace = true, features = ["component-model", "compile"] }
+# The derive macros of the typed value traits and `flags!`, which the
+# crate re-exports, and the crate's own test attribute and fixtures.
+wcmp-macros = { workspace = true }
 # The runtime layer the polyfill runs core WebAssembly through, over
 # whichever backend the host hands the engine.
 wcmp-wasm-core = { workspace = true }
@@ -62,7 +65,6 @@ wast = { workspace = true }
 # no longer spells, and tells which Zena components need GC or exception
 # handling.
 wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
-wcmp-macros = { workspace = true }
 # The scenario model the `zena` test judges each Zena scenario with.
 wcmp-scenario = { workspace = true }
 

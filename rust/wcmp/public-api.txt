@@ -1,4 +1,8 @@
 pub mod wcmp
+pub use wcmp::ComponentType
+pub use wcmp::Lift
+pub use wcmp::Lower
+pub use wcmp::flags
 #[non_exhaustive] pub enum wcmp::AbiCause
 pub wcmp::AbiCause::CopyBudgetSpent
 pub wcmp::AbiCause::HostValueMismatch
