@@ -180,8 +180,8 @@ changes. A transfer of a borrow inserts a borrow entry into the destination
 table for the duration of the call.
 
 The store keeps a separate host table for the handles the host holds. Those are
-the handles it minted through `Store::resource_new` and the owned handles it
-lifted out of a result. The host table is not an instance table. Its indices
+the handles it lowered as a borrow of a resource it owns and the owned handles
+it lifted out of a result. The host table is not an instance table. Its indices
 never reach a guest.
 
 ## Tasks, Subtasks, and Threads

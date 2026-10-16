@@ -1,88 +1,77 @@
 # Shared Resource Type Identity
 
-[PDD009]'s registration entry binds a fresh identity to each call. Calling
-`resource("name", dtor)` twice, even with the same name under two interfaces,
-mints two identities. That is correct for two different resource types that
-share a label. It forecloses a case that WIT-conformant components produce
-routinely: one resource type imported through two interfaces, with handles
-minted under one interface flowing through the other. This PDD introduces a
-host-side resource type value with an engine-issued identity that several
-registrations can reference.
+One resource type can reach a component through two interfaces. WIT-conformant
+components produce this routinely: a handle minted under one interface flows
+through the other. [PDD009]'s registration entry binds an identity to each
+registration. This PDD makes that identity a host-side value that several
+registrations can share.
 
 ## Goals
 
-- A polyfill-owned `ResourceType` value carries an opaque identity. Construction
-  yields a fresh identity. Cloning preserves it. Equality is identity equality.
-- A host registers one `ResourceType` value against the labels of two or more
+- A polyfill-owned `ResourceType` value is the identity of a resource type. It
+  is `Copy`. Equality is identity equality.
+- `ResourceType::host::<T>()` gives the identity that the Rust type `T` stands
+  for. Each call with the same `T` gives the same identity.
+- A host registers one `ResourceType` under the labels of two or more
   registration entries. A handle minted under one registration lowers through
   the other. The handle table holds one live entry per identity and index.
 - The link-time resolver rejects a registration whose resource type identity
   disagrees with the import's expected identity, with [PDD008]'s
   `Error::TypeMismatch` and a position that names the interface and the item.
-- The single-interface registration stays a one-liner through a convenience that
-  mints the identity inline.
 
 ## Non-goals
 
-- A strongly typed `Resource<T>` developer surface. Identity is a run-time
-  value, not a Rust `TypeId`.
 - Locally-defined resource types. Their identity is per instantiation and is
   governed by [PDD012].
 - Asynchronous destructors.
 
 ## The Resource Type Value
 
-The polyfill exposes a `ResourceType` value in its public API. Construction
-takes the destructor closure and produces a value with a fresh identity. The
-identity is opaque. Cloning preserves it, so one value can be passed to several
-registrations without re-keying.
+The polyfill exposes a `ResourceType` value in its public API. It is the
+identity of a resource type and nothing else. It has two host sources, as in
+[Wasmtime]:
 
-This PDD revises [PDD009]'s registration entry. Where [PDD009] took a label and
-a destructor and minted a fresh identity per call, this PDD takes a
-`ResourceType` value with the label, and the destructor lives inside the value.
-The single-call form of [PDD009] stays as a convenience that mints a fresh
-`ResourceType` inline and forwards to the widened call.
+- `ResourceType::host::<T>()` keys the identity on the Rust type `T`.
+- `ResourceType::host_dynamic(payload)` keys the identity on a `u32`, for a host
+  that makes resource types at run time.
+
+A registration entry takes a label, a `ResourceType`, and a destructor. The
+destructor belongs to the registration, not to the value.
 
 ## Multi-Interface Registration
 
-A `ResourceType` value passed to two registration entries binds the same
+The same `ResourceType` passed to two registration entries binds the same
 identity to both. The resolver sees the same identity on each side and accepts
-the registration. The trampoline's lookup of the destructor reaches the same
-closure through either interface.
+the registration. A host that writes `ResourceType::host::<T>()` in two places
+gets the same identity in both, so no value needs to travel between the two
+registrations.
 
-A handle minted through the store's mint entry point against the shared identity
-is live across both interfaces' lift and lower paths. The handle table is keyed
-by identity, not by interface, so a handle needs no migration when it crosses
-from one interface to the other.
+A handle minted against the shared identity is live across both interfaces' lift
+and lower paths. The handle table is keyed by identity, not by interface, so a
+handle needs no migration when it crosses from one interface to the other.
 
 ## Error Model Growth
 
-No new variants are introduced. [PDD008]'s `Error::TypeMismatch` covers two
-registrations against one identity that disagree on the destructor's shape. The
+No new variants are introduced. [PDD008]'s `Error::TypeMismatch` covers a
+registration whose identity differs from the identity the import expects. The
 unregistered-resource-type ABI cause of [PDD009] covers a handle whose identity
-is absent from the store. The inline convenience surfaces the same failures as
-the explicit form.
+is absent from the store.
 
 ## User Stories
 
 A developer integrates a component that imports one resource type through two
-interfaces and wants to register the resource once.
+interfaces and wants to register the resource once per interface without
+plumbing.
 
-> The developer constructs a `ResourceType` for their host entity and passes a
-> clone to the resource call of each interface's registration entry. The
-> component instantiates. The guest receives a handle from one interface's
-> function and passes it to the other. The lift accepts it.
-
-A developer registers against one interface and wants the one-liner to stay.
-
-> The developer calls `instance.resource("name", |state, rep| { … })`. The
-> polyfill mints a fresh identity inline and returns it.
+> The developer registers `ResourceType::host::<File>()` under each interface's
+> registration entry. The component instantiates. The guest receives a handle
+> from one interface's function and passes it to the other. The lift accepts it.
 
 ## Test Cases
 
-A resource type carries an opaque identity. Two constructions yield two
-identities, a clone compares equal to its source, and equality is identity
-equality only.
+A resource type value is an identity. Two calls of `ResourceType::host` with the
+same Rust type compare equal. Calls with different Rust types, and two different
+dynamic payloads, compare unequal.
 
 One resource type serves two interfaces. A handle minted under one interface's
 registration lowers through the other interface's registration, and the handle
@@ -91,9 +80,6 @@ table holds one live entry for it.
 A mismatched identity fails at link time. A registration whose resource type
 identity differs from the import's expected identity is rejected with the
 type-mismatch error and a position that names the interface and the item.
-
-The single-interface registration stays a one-liner. A resource call with a
-destructor and no explicit type mints a fresh identity inline.
 
 ## References
 

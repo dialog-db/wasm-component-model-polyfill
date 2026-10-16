@@ -385,8 +385,8 @@ rule.
 impl<T: 'static> LinkerInstance<'_, T> {
     pub fn func_wrap_concurrent<Params, Ret, F, Fut>(&mut self, name: impl Into<String>, func: F)
     where
-        Params: ComponentParameters,
-        Ret: ComponentResult,
+        Params: ComponentNamedList + Lift,
+        Ret: ComponentNamedList + Lower,
                 F: Fn(&Accessor<T>, Params) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<Ret>> + 'static;       // and Send natively
 
@@ -446,8 +446,7 @@ one store is inside a poll on a thread. In the browser the slot is one static
 cell, because the page has one thread, and the declaration is the same.
 
 Everything `HostCall` offers a synchronous host function reaches a host `async`
-function through `with` on the store context: the host data, and `resource_new`
-for a resource type the calling instance knows.
+function through `with` on the store context, such as the host data.
 
 ### The Link Rule
 
@@ -495,7 +494,7 @@ impl Func {
     pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, args: &[Val]) -> Result<Box<[Val]>>;
 }
 
-impl<P: ComponentParameters, R: ComponentResult> TypedFunc<P, R> {
+impl<P: ComponentNamedList + Lower, R: ComponentNamedList + Lift> TypedFunc<P, R> {
     pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, params: P) -> Result<R>;
 }
 ```

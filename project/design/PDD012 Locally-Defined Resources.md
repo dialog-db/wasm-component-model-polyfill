@@ -24,8 +24,8 @@ a host registration.
 - Sharing of a locally-defined resource type across components. The identity is
   per instantiation.
 - Host registration against a locally-defined resource.
-- A strongly typed `Resource<T>` developer surface. Reps stay `u32` and opaque
-  to the polyfill.
+- A typed handle to a locally-defined resource. The host holds such a handle
+  only as a dynamic handle, `ResourceAny`, as in Wasmtime.
 
 ## Translation
 

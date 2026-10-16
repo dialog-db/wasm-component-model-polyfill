@@ -49,20 +49,19 @@ navigator adds the instance-typed traversal that `get_func` cannot see.
 ## The Typed Call Surface
 
 `Func` gains a typed conversion that consumes the untyped handle and produces a
-typed handle. A polyfill-defined trait constrains the parameter tuple type and
-the return type to the value types of the synchronous baseline. The conversion
-makes sure at acquisition that the export's declared signature satisfies the
-requested Rust types. A mismatch surfaces as `wcmp::Error::TypeMismatch`.
+typed handle. Two tuple types give the parameters and the results. Each value in
+them implements the polyfill's typed value traits. The conversion makes sure at
+acquisition that the export's declared signature satisfies the requested Rust
+types. A mismatch surfaces as `wcmp::Error::TypeMismatch`.
 
 Calling the typed handle is an `async fn`. It takes a tuple of native Rust
-values and returns the native Rust result. The Canonical ABI round trip (lift,
-lower, `cabi_realloc`, `post-return`) happens behind the typed surface and
-surfaces the same `wcmp::Error::Abi` failures as the untyped path.
+values and returns a tuple of native Rust results. The Canonical ABI round trip
+(lift, lower, `cabi_realloc`, `post-return`) happens behind the typed surface
+and surfaces the same `wcmp::Error::Abi` failures as the untyped path.
 
-The trait mirrors the lift, lower, and typed-descriptor triple that
-`wasmtime::component` exposes, but it is named in the polyfill's surface and
-covers only the synchronous baseline. `own<T>` and `borrow<T>` are baseline
-value types per [PDD009] and inhabit the typed surface.
+The traits are the `ComponentType`, `Lift`, and `Lower` triple that
+`wasmtime::component` exposes, with the same names. `own<T>` and `borrow<T>` are
+baseline value types per [PDD009] and inhabit the typed surface.
 
 ## Error Model Growth
 
@@ -79,7 +78,7 @@ interfaces.
 
 > The developer awaits `instantiate`, navigates to a named export instance,
 > looks up a function, asks for a typed handle of
-> `(Vec<String>, u32) -> String`, and awaits the call with native values.
+> `(Vec<String>, u32) -> (String,)`, and awaits the call with native values.
 
 A contributor opening the first concurrency PDD wants the synchronous surface
 complete and stable.

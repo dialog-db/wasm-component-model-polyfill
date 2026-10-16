@@ -8,9 +8,9 @@ an instance lives as long as its store.
 
 ## Goals
 
-- A host releases a handle it holds through one entry point on `Store`. The
-  destructor of the resource runs exactly once, and the table slot is free for
-  reuse.
+- A host releases a handle it holds through one entry point,
+  `ResourceAny::resource_drop`. The destructor of the resource runs exactly
+  once, and the table slot is free for reuse.
 - A dropped `Store` has a stated behavior for live handles, and a test observes
   it on both targets.
 - An `Instance` has a stated lifetime relative to its `Store`, and a test
@@ -29,12 +29,13 @@ an instance lives as long as its store.
 
 ## Host Release
 
-`Store` gains a release entry point. It takes an owned handle by value, so the
-host cannot use the handle after the call. The entry point removes the handle's
-entry from the host's table for the resource type. An entry that is not live
-surfaces the invalid-handle ABI cause of [PDD009]. An entry that is lent out as
-a borrow surfaces the same cause with Wasmtime's wording, because a borrowed
-resource cannot be removed.
+The dynamic handle, `ResourceAny`, has a release entry point, `resource_drop`,
+which takes the store. It takes the owned handle by value, so the host cannot
+use the handle after the call. The entry point removes the handle's entry from
+the host's table for the resource type. An entry that is not live surfaces the
+invalid-handle ABI cause of [PDD009]. An entry that is lent out as a borrow
+surfaces the same cause with Wasmtime's wording, because a borrowed resource
+cannot be removed.
 
 The entry point then runs the destructor of the resource type. For a resource a
 host registered, the destructor is the closure of that registration. For a
@@ -75,8 +76,8 @@ A host program keeps a pool of resources it hands to a guest and wants to retire
 one it never gave away.
 
 > The host mints a handle for the resource. The guest never asks for it. The
-> host releases the handle through the store. The destructor runs once, and the
-> next handle the host mints reuses the slot.
+> host releases the handle with `resource_drop`. The destructor runs once, and
+> the next handle the host mints reuses the slot.
 
 A host program shuts down and wants to know what it must do.
 
@@ -93,15 +94,16 @@ A host program creates instances in a loop and wants to know what it pays.
 ## Test Cases
 
 A host release runs the destructor once. A host registers a resource type whose
-destructor records the rep, mints a handle, and releases it through the store.
-The destructor ran once with that rep, and the next mint reuses the freed slot.
+destructor records the rep, mints a handle, and releases it with
+`resource_drop`. The destructor ran once with that rep, and the next mint reuses
+the freed slot.
 
 A double release is refused. Releasing a handle that was released already fails
 with the invalid-handle ABI cause, and the destructor does not run again.
 
-A locally-defined resource releases through the store. The host lifts an owned
-handle out of a component that defines its resource, releases it through the
-store, and the component's in-binary destructor runs once.
+A locally-defined resource releases with `resource_drop`. The host lifts an
+owned handle out of a component that defines its resource, releases it with
+`resource_drop`, and the component's in-binary destructor runs once.
 
 A dropped store runs no destructor. A host mints a handle, drops the store, and
 observes that the destructor did not run.

@@ -518,7 +518,7 @@ inside a turn with no guest involved.
 ### The Readers
 
 ```rust
-impl<T: ComponentValue> StreamReader<T> {
+impl<T: ComponentType> StreamReader<T> {
     pub fn new<D: 'static>(store: &mut StoreContext<'_, D>,
                            producer: impl StreamProducer<D, Item = T>) -> Result<Self>;
     pub fn pipe<D: 'static>(self, store: &mut StoreContext<'_, D>,
@@ -540,9 +540,9 @@ accessor of [PDD020].
 returns the readable end. `pipe` sets the consumer as the reading side of a
 readable end the host holds and gives the end up. `close` drops the readable
 end, which completes a pending write with the dropped result and lets a later
-write see it at once. Both typed readers implement `ComponentValue`, so a typed
-host function of [PDD008] and a typed call of [PDD010] take and return them.
-Lowering a typed reader into a guest whose payload type differs from the
+write see it at once. Both typed readers implement the typed value traits, so a
+typed host function of [PDD008] and a typed call of [PDD010] take and return
+them. Lowering a typed reader into a guest whose payload type differs from the
 projection of `T` fails with the type mismatch of [PDD010]. Lifting one from a
 guest checks the same.
 

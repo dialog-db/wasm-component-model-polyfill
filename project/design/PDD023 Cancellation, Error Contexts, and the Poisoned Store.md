@@ -164,7 +164,7 @@ with the cannot-enter trap, "cannot enter component instance":
 - `Func::call_concurrent` and `TypedFunc::call_concurrent`.
 - Every instantiation into the store, through `Linker::instantiate` or a core
   module's instantiation.
-- `Store::resource_drop` of a resource that a guest defines.
+- `ResourceAny::resource_drop` of a resource that a guest defines.
 
 Wasmtime refuses the first three and lets instantiation run. Instantiation runs
 guest `start` functions, so the polyfill refuses it too. This is a departure
@@ -172,7 +172,7 @@ from Wasmtime in favor of the reference.
 
 These entries still work, because no guest code runs:
 
-- `Store::resource_drop` of a resource that the host defines.
+- `ResourceAny::resource_drop` of a resource that the host defines.
 - `Store::run_concurrent`, when its closure does only host work. An entry into a
   guest from inside the closure fails with the cannot-enter trap.
 - Reads and writes of the store's host data.
@@ -705,8 +705,8 @@ store usable.
 A poisoned store refuses every guest entry. A repository test poisons a store
 and then makes each entry on both targets: `Func::call`, `TypedFunc::call`,
 `call_concurrent`, `Linker::instantiate`, a core module's instantiation, and
-`Store::resource_drop` of a guest-defined resource. Each fails with the
-cannot-enter message. `Store::resource_drop` of a host-defined resource
+`ResourceAny::resource_drop` of a guest-defined resource. Each fails with the
+cannot-enter message. `ResourceAny::resource_drop` of a host-defined resource
 succeeds. A `run_concurrent` whose closure does only host work returns the
 closure's value.
 

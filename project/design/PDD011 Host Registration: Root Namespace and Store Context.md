@@ -56,15 +56,13 @@ a polyfill-owned context value named `HostCall`.
 `HostCall<'_, T>` is the host's view, scoped to one call, of the state the
 trampoline invokes the closure against. Two surfaces are reachable on it. The
 first is the host data of type `T`, through accessors that mirror `Store::data`
-and `Store::data_mut`. The second is a mint accessor that creates a fresh
-resource handle for a registered resource type identity. The mint accessor has
-the same spelling as the mint entry point on `Store`, because the host call
+and `Store::data_mut`. The second is the store context, because the host call
 context is a borrowed view onto the store. No upstream `StoreContextMut` or
 other runtime layer type appears at the boundary.
 
 The typed entry point follows the same contract. The closure receives the same
-`HostCall<'_, T>` context, with the typed argument tuple and return type erased
-into or projected out of `Val` slots by the traits [PDD010] introduced.
+`HostCall<'_, T>` context. The traits that [PDD010] names lift the typed
+parameter tuple and lower the typed result tuple directly, with no `Val`.
 
 This is a revision of [PDD008]'s contract, not an extension. Every call site
 takes a `HostCall<'_, T>` as the closure's first parameter, and host data reads

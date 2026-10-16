@@ -32,15 +32,17 @@ posture of [PDD005].
 ## The Resource Surface
 
 `LinkerInstance<'_, T>` gains a third registration mode: host resource
-registration. The host declares a resource type under a label and supplies a
-synchronous destructor closure. The destructor receives the store's host data
-and the host's representation of the resource. The representation (the "rep") is
-a `u32` that the host chooses, typically an index into a host-managed table. The
-destructor runs exactly once when a guest-held handle is dropped.
+registration. The host declares a resource type under a label, gives its
+identity as a `ResourceType`, and supplies a synchronous destructor closure. The
+destructor receives the store and the host's representation of the resource. The
+representation (the "rep") is a `u32` that the host chooses, typically an index
+into a host-managed table. The destructor runs exactly once when a guest-held
+handle is dropped.
 
-The registration returns a polyfill-owned resource type identity. The identity
-threads through [PDD006]'s `ValueType` shapes and through [PDD008]'s `Val`
-family. No upstream type appears.
+`ResourceType` is the polyfill-owned identity of a resource type.
+`ResourceType::host::<T>()` gives the identity that the Rust type `T` stands
+for. The identity threads through [PDD006]'s `ValueType` shapes and through
+[PDD008]'s `Val` family. No upstream type appears.
 
 ## The Handle Table
 
@@ -49,16 +51,16 @@ allocation and reuse follow the [runtime-state
 rules][CanonicalABI – runtime state] of the Canonical ABI. Indices are
 non-aliasing while live. Reuse of a freed index is deterministic within one
 store. The table is not exposed. Consumers meet handles only through `Val` and
-the typed call surface.
+the typed call surface, as `Resource<T>` and `ResourceAny`.
 
-The store exposes one entry point that mints a fresh `own<T>` handle for a
-registered resource type and a rep. The host uses it to hand a resource to the
-guest through an export call.
+The host makes a fresh `own<T>` handle from a rep with `Resource::new_own`. The
+host uses it to hand a resource to the guest through an export call. Lowering
+the handle as an `own` moves it into the guest's table.
 
 ## Lift and Lower for Handle Types
 
-Lifting a guest-produced handle into a host `Val` resolves the index to the host
-representation. Lowering a host `Val` that carries a handle produces the index
+Lifting a guest-produced handle into a host value resolves the index to the host
+representation. Lowering a host value that carries a handle produces the index
 the guest sees. A borrow is valid for the duration of the host call and is
 released at return. Ownership transfer on `own<T>` follows the Canonical ABI. A
 guest access to a transferred handle traps.

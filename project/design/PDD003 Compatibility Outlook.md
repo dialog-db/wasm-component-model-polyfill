@@ -176,6 +176,10 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 | Host function definition, asynchronous                                            | Implement                    | ✅       | [`LinkerInstance::func_wrap_concurrent`] |
 | Host resource definition, synchronous destructor                                  | Implement                    | ✅       | [`wasmtime::component::ResourceType`]    |
 | Host resource definition, asynchronous destructor                                 | Implement                    | ✅       | [`wasmtime::component::Accessor`]        |
+| Typed values: `ComponentType`, `Lift`, `Lower`, and their derive macros           | Implement                    | ✅       | [`wasmtime::component::ComponentType`]   |
+| Typed flags through `flags!`                                                      | Implement                    | ✅       | [`wasmtime::component::flags!`]          |
+| Typed resource handles: `Resource<T>` and `ResourceAny`                           | Implement                    | ✅       | [`wasmtime::component::Resource`]        |
+| A table of host resource values: `ResourceTable`                                  | Implement                    | ✅       | [`wasmtime::component::ResourceTable`]   |
 | Composition: adapter modules, instance flags, transcoders between components      | Implement                    | ✅       | [Linking]                                |
 | Host binding code generation (a `bindgen!` equivalent)                            | Implement                    | ✅       | [`wasmtime::component::bindgen!`]        |
 | Component-level `start` function                                                  | Deferred (🪙 in development) | ⚠️       | [Explainer – start definitions]          |
@@ -392,3 +396,11 @@ has at least one directive in the vendored corpora that exercises it.
   https://docs.wasmtime.dev/api/wasmtime/component/struct.Accessor.html
 [`wasmtime::component::bindgen!`]:
   https://docs.wasmtime.dev/api/wasmtime/component/macro.bindgen.html
+[`wasmtime::component::ComponentType`]:
+  https://docs.wasmtime.dev/api/wasmtime/component/trait.ComponentType.html
+[`wasmtime::component::flags!`]:
+  https://docs.wasmtime.dev/api/wasmtime/component/macro.flags.html
+[`wasmtime::component::Resource`]:
+  https://docs.wasmtime.dev/api/wasmtime/component/struct.Resource.html
+[`wasmtime::component::ResourceTable`]:
+  https://docs.wasmtime.dev/api/wasmtime/component/struct.ResourceTable.html

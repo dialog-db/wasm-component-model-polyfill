@@ -61,8 +61,9 @@ entry points are `async fn`, as [PDD005] requires.
 `Val` is the host-side value. It is the value-bearing counterpart to [PDD006]'s
 `ValueType`. Every shape in `ValueType` has a case in `Val` whose payload is the
 host-readable Rust representation. `Val` is the carrier for every untyped host
-function call (`&[Val]` in, `&mut [Val]` out), the result of every untyped
-export call, and the bridge between a typed host function and the Canonical ABI.
+function call (`&[Val]` in, `&mut [Val]` out) and the result of every untyped
+export call. A typed host function and a typed export call do not use `Val`.
+Their Rust values cross the Canonical ABI directly.
 
 `Val` carries owned, polyfill-typed data for compound types, for example
 `Val::Record` and `Val::List`. The cases for `own<T>` and `borrow<T>` exist so
@@ -82,9 +83,8 @@ that the enum is closed. Their semantics are out of scope.
   registration.
 
 The closure of either mode is synchronous. It receives the store's host data and
-returns a `Result`. A typed registration whose signature names a handle type is
-rejected at link time with `wcmp::Error::TypeMismatch`. An untyped registration
-against a handle-typed import is rejected at call time.
+returns a `Result`. An untyped registration against a handle-typed import is
+rejected at call time.
 
 A host function that returns `Err(_)` traps the guest. The error reaches the
 host's call as a `wcmp::Error` on every supported target.
