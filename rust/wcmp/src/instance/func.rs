@@ -32,7 +32,7 @@ use crate::store::{Store, StoreContext, StoreId};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::value::Val;
 
-use super::call_values::CallValues;
+use super::call_values::{CallValues, ErasedReturnLift};
 
 /// Where the queued item of one call leaves what the call produced.
 ///
@@ -44,14 +44,15 @@ use super::call_values::CallValues;
 type CallOutcome<O> = Arc<Mutex<Option<O>>>;
 
 /// Where a concurrent call takes its result from.
-enum Delivery<O> {
+enum Delivery<C: CallValues> {
     /// A synchronous export's result, in the shape the call carries:
     /// the item that ran the task leaves it here once the task has
     /// ended cleanly.
-    Returned(WakeSlot<O>),
+    Returned(WakeSlot<C::Output>),
     /// The channel an export lifted `async` resolves its task through
-    /// when it calls `task.return`.
-    Resolved(ResultChannel),
+    /// when it calls `task.return`, and where the call's own lift of
+    /// the result keeps it, for a call that lifts it itself.
+    Resolved(ResultChannel, C::Returned),
 }
 
 /// A handle to one exported function of a component [`Instance`].
@@ -419,9 +420,9 @@ impl Func {
             let waker = context.waker();
             let delivered = match &delivery {
                 Delivery::Returned(slot) => slot.take_or_wait(waker).map(|kept| kept.map(Ok)),
-                Delivery::Resolved(channel) => channel
+                Delivery::Resolved(channel, returned) => channel
                     .take_or_wait(waker)
-                    .map(|kept| kept.map(C::from_resolution)),
+                    .map(|kept| kept.map(|value| C::from_resolution(value, returned))),
             };
             match delivered {
                 Ok(Some(result)) => Poll::Ready(result),
@@ -461,7 +462,7 @@ impl Func {
         &self,
         store: &mut StoreContext<'_, T>,
         values: C,
-    ) -> Result<Delivery<C::Output>> {
+    ) -> Result<Delivery<C>> {
         store.internal().reachable()?;
         if store.internal().id() != self.store_id {
             return Err(Error::from(InstantiationError::WrongStore));
@@ -497,6 +498,7 @@ impl Func {
             // resolve through and the call watches that rather than
             // the record.
             let channel = store.internal().attach_result_channel(task)?;
+            let returned = self.attach_return_lift::<T, C>(store, task)?;
             let lift = self.async_lift(task, instance_id, &options)?;
             let needs_exclusive = lift.needs_exclusive();
             let item = Item::new(
@@ -518,7 +520,7 @@ impl Func {
             store
                 .internal()
                 .start_export_thread(task, instance_id, true, needs_exclusive, item)?;
-            return Ok(Delivery::Resolved(channel));
+            return Ok(Delivery::Resolved(channel, returned));
         }
 
         // A synchronous export's result is the one its lift produced,
@@ -601,6 +603,7 @@ impl Func {
         let lift = self.async_lift(task, instance_id, &options)?;
         let needs_exclusive = lift.needs_exclusive();
         let channel: ResultChannel = store.internal().attach_result_channel(task)?;
+        let returned = self.attach_return_lift::<T, C>(&mut store, task)?;
 
         let replica = self.replica();
         let item = Item::new(
@@ -625,11 +628,29 @@ impl Func {
 
         Driver::run(store, move |_store, waker| {
             match channel.take_or_wait(waker) {
-                Ok(result) => result.map(C::from_resolution),
+                Ok(result) => result.map(|value| C::from_resolution(value, &returned)),
                 Err(error) => Some(Err(error)),
             }
         })
         .await
+    }
+
+    /// Give the task of a call into this export, lifted `async`, the
+    /// lift its `task.return` runs in place of lifting a [`Val`], for a
+    /// call that lifts its result itself, and answer where that lift
+    /// keeps the result.
+    fn attach_return_lift<T: 'static, C: CallValues>(
+        &self,
+        store: &mut StoreContext<'_, T>,
+        task: TaskId,
+    ) -> Result<C::Returned> {
+        let (returned, lift) = C::prepare_return::<T>(&self.export.signature);
+        if let Some(lift) = lift {
+            store
+                .internal()
+                .attach_return_lift(task, Box::new(lift) as ErasedReturnLift)?;
+        }
+        Ok(returned)
     }
 
     /// The form of this export's asynchronous lift for the call that

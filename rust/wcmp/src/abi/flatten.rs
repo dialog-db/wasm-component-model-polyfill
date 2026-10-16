@@ -517,7 +517,7 @@ fn lift_variant_payload_flat<T: 'static>(
     Ok(Some(inner))
 }
 
-fn zero_of_flat(t: FlatType) -> RuntimeVal {
+pub fn zero_of_flat(t: FlatType) -> RuntimeVal {
     match t {
         FlatType::I32 => RuntimeVal::I32(0),
         FlatType::I64 => RuntimeVal::I64(0),
@@ -532,7 +532,7 @@ fn zero_of_flat(t: FlatType) -> RuntimeVal {
 /// to `i64`; lifting reverses each step. The pairs are exactly the
 /// ones the specification's `lower_flat_variant` and
 /// `lift_flat_variant` name.
-fn reinterpret_flat(
+pub fn reinterpret_flat(
     slot: &RuntimeVal,
     from: FlatType,
     to: FlatType,
@@ -558,7 +558,7 @@ fn reinterpret_flat(
     })
 }
 
-fn matches_flat(slot: &RuntimeVal, ty: FlatType) -> bool {
+pub fn matches_flat(slot: &RuntimeVal, ty: FlatType) -> bool {
     matches!(
         (slot, ty),
         (RuntimeVal::I32(_), FlatType::I32)

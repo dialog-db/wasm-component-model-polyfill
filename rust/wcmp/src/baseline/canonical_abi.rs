@@ -1107,16 +1107,19 @@ async fn it_supports_typed_export_calls() {
     let typed = instance
         .get_func("id")
         .expect("`id` export")
-        .typed::<(i32,), i32>()
+        .typed::<(i32,), (i32,)>()
         .expect("typed conversion succeeds");
-    assert_eq!(typed.call(&mut store, (42,)).await.expect("typed call"), 42);
+    assert_eq!(
+        typed.call(&mut store, (42,)).await.expect("typed call"),
+        (42,)
+    );
 
     // Mismatch path: requesting `(i32) -> i64` against `(s32) -> s32`
     // surfaces a structured `Error::TypeMismatch` before any call.
     let mismatch = instance
         .get_func("id")
         .expect("`id` export")
-        .typed::<(i32,), i64>()
+        .typed::<(i32,), (i64,)>()
         .expect_err("typed conversion rejects a mismatched return type");
     assert!(
         matches!(mismatch, Error::TypeMismatch(_)),

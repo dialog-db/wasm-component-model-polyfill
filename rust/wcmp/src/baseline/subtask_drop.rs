@@ -192,12 +192,12 @@ struct PendingOnce {
 }
 
 impl Future for PendingOnce {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         if this.polled {
-            return Poll::Ready(Ok(this.value));
+            return Poll::Ready(Ok((this.value,)));
         }
         this.polled = true;
         context.waker().wake_by_ref();

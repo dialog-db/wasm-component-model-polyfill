@@ -7,25 +7,28 @@
 //! The values of one typed export call.
 
 use core::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::signature::Signature;
 use crate::component::FunctionType;
-use crate::error::Result;
-use crate::linker::{ComponentParameters, ComponentResult};
+use crate::error::{Error, Result};
+use crate::internal::ErrorInternal;
 use crate::runtime_layer::Val as RuntimeVal;
 use crate::store::StoreId;
+use crate::typed::{Lift, Lower, lift_results, lift_returned, lower_parameters};
 use crate::value::Val;
 
-use super::call_values::CallValues;
+use super::call_values::{CallValues, ReturnLift};
 
-/// The Rust argument tuple of one typed export call, and the Rust
-/// type its result comes back as.
+/// The Rust parameter list of one typed export call, and the Rust
+/// result list it comes back as.
 ///
-/// The arguments are lowered straight into the guest and the result
-/// lifted straight out of it, through the hidden direct methods of
-/// the typed value traits: a string or a vector of numbers crosses as
-/// one block of bytes, and no `Val` is built for it.
+/// The parameters are lowered straight into the guest and the results
+/// lifted straight out of it, through the hidden methods of the typed
+/// value traits. No `Val` is built for either, at any depth, and an
+/// export lifted `async` hands its result over through `task.return`,
+/// which lifts it the same way.
 pub struct TypedCall<P, R> {
     arguments: P,
     _result: PhantomData<fn() -> R>,
@@ -41,8 +44,18 @@ impl<P, R> TypedCall<P, R> {
     }
 }
 
-impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> {
+/// Where the result of a typed call into an export lifted `async`
+/// waits for the call: `task.return` leaves it here as it resolves the
+/// task.
+pub type ReturnedSlot<R> = Arc<Mutex<Option<R>>>;
+
+impl<P, R> CallValues for TypedCall<P, R>
+where
+    P: Lower + 'static,
+    R: Lift + 'static,
+{
     type Output = R;
+    type Returned = ReturnedSlot<R>;
 
     /// The handle checked its whole signature when it was acquired,
     /// the parameter count with it.
@@ -62,7 +75,7 @@ impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> 
         cx: &mut BoundaryContext<'_, T>,
         signature: &Signature,
     ) -> Result<Vec<RuntimeVal>> {
-        self.arguments.lower_arguments(cx, signature)
+        lower_parameters(cx, signature, &self.arguments)
     }
 
     fn lift<T: 'static>(
@@ -70,7 +83,7 @@ impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> 
         core_results: &[RuntimeVal],
         signature: &FunctionType,
     ) -> Result<R> {
-        R::lift_result(cx, core_results, signature)
+        lift_results(cx, core_results, signature)
     }
 
     /// A typed call's task records no value: building one would cost
@@ -81,7 +94,30 @@ impl<P: ComponentParameters, R: ComponentResult> CallValues for TypedCall<P, R> 
         None
     }
 
-    fn from_resolution(value: Option<Val>) -> Result<R> {
-        R::from_val(value.as_ref())
+    fn prepare_return<T: 'static>(
+        signature: &Arc<Signature>,
+    ) -> (ReturnedSlot<R>, Option<ReturnLift<T>>) {
+        let slot: ReturnedSlot<R> = Arc::new(Mutex::new(None));
+        let kept = slot.clone();
+        let signature = Arc::clone(signature);
+        let lift: ReturnLift<T> = Box::new(move |cx, args, spilled| {
+            let lifted = lift_returned::<_, R>(cx, args, signature.ty(), spilled)?;
+            *kept
+                .lock()
+                .map_err(|_| Error::internal("a typed call's result slot is poisoned"))? =
+                Some(lifted);
+            Ok(())
+        });
+        (slot, Some(lift))
+    }
+
+    fn from_resolution(_value: Option<Val>, returned: &ReturnedSlot<R>) -> Result<R> {
+        returned
+            .lock()
+            .map_err(|_| Error::internal("a typed call's result slot is poisoned"))?
+            .take()
+            .ok_or_else(|| {
+                Error::internal("a typed call's task resolved without its result lift running")
+            })
     }
 }

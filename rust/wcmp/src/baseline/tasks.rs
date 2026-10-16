@@ -123,7 +123,7 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
         .root()
         .func_wrap(
             "probe",
-            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                 let guard = tables.lock().expect("handle tables");
                 *recorded.lock().expect("record") = Seen {
                     scopes: guard.tasks.scopes().len(),
@@ -146,7 +146,7 @@ async fn run_with_probe(bytes: &[u8], argument: u32) -> (Val, Seen, Seen) {
                         .and_then(|record| record.instance)
                         .map(|instance| instance.index() as usize),
                 };
-                Ok(x)
+                Ok((x,))
             },
         )
         .expect("the registration");
@@ -235,7 +235,7 @@ async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call
         .root()
         .func_wrap(
             "probe",
-            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                 let guard = tables.lock().expect("handle tables");
                 let task = guard
                     .tasks
@@ -248,7 +248,7 @@ async fn it_shares_the_exports_signature_and_options_with_the_task_of_every_call
                     function.ty() as *const FunctionType as usize,
                     options as *const CanonOptions as usize,
                 ));
-                Ok(x)
+                Ok((x,))
             },
         )
         .expect("the registration");

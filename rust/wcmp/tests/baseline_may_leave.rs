@@ -180,7 +180,7 @@ async fn instantiate(bytes: &[u8]) -> (Store<()>, Instance) {
         .root()
         .func_wrap(
             "probe",
-            |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> { Ok(x) },
+            |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> { Ok((x,)) },
         )
         .expect("the registration");
     let instance = linker

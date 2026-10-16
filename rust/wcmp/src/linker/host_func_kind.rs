@@ -8,10 +8,11 @@
 
 use std::sync::Arc;
 
-use super::host_func::{ConcurrentHostFuncBody, HostFuncBody};
+use super::host_func::{ConcurrentHostFuncBody, HostFuncBody, HostParams};
 
 /// Which of the two registration forms a host function came through,
-/// and the body that form carries.
+/// and the body that form carries, with how the call's arguments
+/// come out of the guest for it.
 ///
 /// A synchronous registration is one a developer made through
 /// [`LinkerInstance::func_new`] or [`LinkerInstance::func_wrap`]: the
@@ -39,10 +40,10 @@ use super::host_func::{ConcurrentHostFuncBody, HostFuncBody};
 pub enum HostFuncKind<T: 'static> {
     /// A synchronous registration, carrying the closure one call
     /// runs to completion.
-    Synchronous(Arc<HostFuncBody<T>>),
+    Synchronous(Arc<HostFuncBody<T>>, HostParams<T>),
     /// A concurrent registration, carrying the body that produces the
     /// future of one call.
-    Concurrent(Arc<ConcurrentHostFuncBody<T>>),
+    Concurrent(Arc<ConcurrentHostFuncBody<T>>, HostParams<T>),
 }
 
 /// A kind is cloned by a handle on its body, whatever the host data
@@ -51,8 +52,8 @@ pub enum HostFuncKind<T: 'static> {
 impl<T: 'static> Clone for HostFuncKind<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Synchronous(call) => Self::Synchronous(call.clone()),
-            Self::Concurrent(start) => Self::Concurrent(start.clone()),
+            Self::Synchronous(call, params) => Self::Synchronous(call.clone(), params.clone()),
+            Self::Concurrent(start, params) => Self::Concurrent(start.clone(), params.clone()),
         }
     }
 }

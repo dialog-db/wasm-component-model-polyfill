@@ -174,7 +174,7 @@
 //!     let select_nth = interface
 //!         .func("select-nth")
 //!         .unwrap()
-//!         .typed::<(Vec<String>, u32), String>()
+//!         .typed::<(Vec<String>, u32), (String,)>()
 //!         .unwrap();
 //!
 //!     // Create an example list to test upon.
@@ -183,10 +183,9 @@
 //!         .map(ToString::to_string)
 //!         .collect::<Vec<_>>();
 //!
-//!     assert_eq!(
-//!         select_nth.call(&mut store, (example.clone(), 1)).await.unwrap(),
-//!         "b",
-//!     );
+//!     // A typed call answers its results as a tuple.
+//!     let (selected,) = select_nth.call(&mut store, (example.clone(), 1)).await.unwrap();
+//!     assert_eq!(selected, "b");
 //! }
 //! ```
 //!
@@ -272,6 +271,7 @@ mod resource;
 mod runtime_layer;
 mod store;
 mod suspend_provider_kind;
+mod typed;
 mod types;
 mod value;
 #[cfg(wcmp_wast_runner)]
@@ -291,21 +291,20 @@ pub use crate::engine_config::EngineConfig;
 pub use crate::error::{
     AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, InstantiationError,
     LinkError, ResourceTableError, Result, ReturnMismatchKind, SchedulerCause, TaskCause,
-    ThreadCause, TypeMismatch, TypeMismatchPosition, TypeRendering, WaitableCause,
+    ThreadCause, TypeMismatch, TypeMismatchPosition, TypePathStep, TypeRendering, WaitableCause,
 };
 pub use crate::identifier::{IdentifierParseError, InterfaceIdentifier, PackageName};
 pub use crate::instance::{
     ExportInstance, ExportLookup, Func, Instance, InstanceExports, TypedFunc,
 };
-pub use crate::linker::{
-    ComponentParameters, ComponentResult, ComponentValue, HostCall, Linker, LinkerInstance,
-};
+pub use crate::linker::{HostCall, Linker, LinkerInstance};
 pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
 pub use crate::resource::ResourceHandle;
 pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;
+pub use crate::typed::{ComponentNamedList, ComponentType, Lift, Lower};
 pub use crate::types::{
     EnumType, FixedLengthListType, FlagsType, FutureType, ListType, MapType, OptionType,
     PrimitiveType, RecordField, RecordType, ResourceType, ResultType, StreamType, TupleType,
@@ -324,6 +323,19 @@ pub use crate::value::{Val, ValField};
 #[cfg(wcmp_wast_runner)]
 #[doc(hidden)]
 pub use crate::wast_runner::set_max_table_capacity;
+
+/// What the derive macros of the typed value traits name in the code
+/// they write. Nothing here is part of the polyfill's API: a host
+/// derives the traits and does not name these items.
+#[doc(hidden)]
+pub mod __private {
+    pub use crate::runtime_layer::Val as CoreVal;
+    pub use crate::typed::{
+        LiftContext, LowerContext, TypeCheckError, TypeChecker, align_to, lift_case_flat,
+        lift_case_memory, lower_case_flat, lower_case_memory,
+    };
+    pub use wasmtime_environ::component::CanonicalAbiInfo;
+}
 
 // The crate's own unit tests reach a browser in the web lane, where
 // the scheduler's per-target wake after a yield is what they measure.

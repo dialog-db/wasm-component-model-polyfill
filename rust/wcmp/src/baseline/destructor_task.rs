@@ -322,9 +322,9 @@ async fn run_with_probe(bytes: &[u8]) -> (Result<Box<[Val]>>, Seen, Seen) {
         .root()
         .func_wrap(
             "probe",
-            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+            move |_: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                 *recorded.lock().expect("record") = seen!(&tables);
-                Ok(x)
+                Ok((x,))
             },
         )
         .expect("the registration");
@@ -578,7 +578,7 @@ where
         .root()
         .func_wrap(
             "probe",
-            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+            move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                 let store = call.store();
                 *turn_recorded.lock().expect("record") = Some(store.internal().turn_in_flight());
                 let mut reborrowed = store.internal().reborrow();
@@ -591,7 +591,7 @@ where
                     Poll::Ready(Ok(())) => "the driver succeeded".to_owned(),
                     Poll::Pending => "the driver returned pending".to_owned(),
                 });
-                Ok(x)
+                Ok((x,))
             },
         )
         .expect("the registration");
@@ -622,7 +622,7 @@ fn never_answers(linker: &mut Linker<()>) {
     linker
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
-            core::future::pending::<Result<u32>>()
+            core::future::pending::<Result<(u32,)>>()
         })
         .expect("the registration");
 }
@@ -710,7 +710,7 @@ async fn it_runs_a_host_release_destructor_inside_a_turn() {
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-                core::future::ready(Ok(x * 2))
+                core::future::ready(Ok((x * 2,)))
             })
             .expect("the registration");
     })
@@ -865,7 +865,7 @@ async fn it_refuses_a_driver_entered_from_inside_a_destructor() {
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-                core::future::ready(Ok(x * 2))
+                core::future::ready(Ok((x * 2,)))
             })
             .expect("the registration");
     })
@@ -950,7 +950,7 @@ async fn it_leaves_the_host_task_of_an_asynchronously_lowered_import_to_a_later_
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-                PendingOnce::new(Ok(x * 2))
+                PendingOnce::new(Ok((x * 2,)))
             })
             .expect("the registration");
     })

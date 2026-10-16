@@ -389,7 +389,7 @@ async fn it_defines_a_typed_host_function() {
     instance
         .func_wrap(
             "double",
-            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i32> { Ok(n * 2) },
+            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i32,)> { Ok((n * 2,)) },
         )
         .expect("the registration");
 
@@ -415,7 +415,9 @@ async fn it_defines_a_typed_host_function() {
     bad_instance
         .func_wrap(
             "double",
-            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i64> { Ok(i64::from(n * 2)) },
+            |_data: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i64,)> {
+                Ok((i64::from(n * 2),))
+            },
         )
         .expect("the registration");
 
@@ -614,13 +616,13 @@ async fn it_dispatches_to_multiple_host_functions_in_one_interface() {
     iface_view
         .func_wrap(
             "incr",
-            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i32> { Ok(n + 1) },
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i32,)> { Ok((n + 1,)) },
         )
         .expect("the registration");
     iface_view
         .func_wrap(
             "decr",
-            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i32> { Ok(n - 1) },
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i32,)> { Ok((n - 1,)) },
         )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -862,7 +864,7 @@ async fn it_rejects_a_component_whose_import_signature_disagrees_with_the_regist
         .instance(&iface)
         .func_wrap(
             "double",
-            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i64> { Ok(i64::from(n) * 2) },
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i64,)> { Ok((i64::from(n) * 2,)) },
         )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -1029,7 +1031,7 @@ async fn it_rejects_an_import_with_a_required_item_when_the_registration_version
         .instance(&too_old)
         .func_wrap(
             "double",
-            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<i32> { Ok(n * 2) },
+            |_: HostCall<'_, ()>, (n,): (i32,)| -> wcmp::Result<(i32,)> { Ok((n * 2,)) },
         )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -1192,7 +1194,7 @@ async fn it_supports_a_plain_named_instance_import() {
         .instance("host")
         .func_wrap(
             "double",
-            |_: HostCall<'_, ()>, (x,): (u32,)| -> wcmp::Result<u32> { Ok(x * 2) },
+            |_: HostCall<'_, ()>, (x,): (u32,)| -> wcmp::Result<(u32,)> { Ok((x * 2,)) },
         )
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -1203,9 +1205,9 @@ async fn it_supports_a_plain_named_instance_import() {
     let run = instance
         .get_func("run")
         .expect("run export")
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, (20,)).await.expect("run"), 41);
+    assert_eq!(run.call(&mut store, (20,)).await.expect("run"), (41,));
 }
 
 #[wcmp_macros::test]
@@ -1413,11 +1415,11 @@ async fn it_supports_a_typed_export_call_surface() {
     let select_nth = foo
         .func("select-nth")
         .expect("`select-nth` present")
-        .typed::<(Vec<String>, u32), String>()
+        .typed::<(Vec<String>, u32), (String,)>()
         .expect("typed conversion succeeds");
 
     let example: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_owned()).collect();
-    let result = select_nth
+    let (result,) = select_nth
         .call(&mut store, (example.clone(), 1))
         .await
         .expect("typed call succeeds");
@@ -1429,7 +1431,7 @@ async fn it_supports_a_typed_export_call_surface() {
     let mismatch = foo
         .func("select-nth")
         .expect("`select-nth` present")
-        .typed::<(Vec<String>, u32), u32>()
+        .typed::<(Vec<String>, u32), (u32,)>()
         .expect_err("typed conversion rejects a return-type mismatch");
     assert!(
         matches!(mismatch, Error::TypeMismatch(_)),
@@ -1603,9 +1605,12 @@ async fn it_navigates_plain_named_instance_exports() {
     let g = b
         .func("g")
         .expect("`g` is exported by `b`")
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .expect("typed conversion succeeds");
-    assert_eq!(g.call(&mut store, (41,)).await.expect("call succeeds"), 42);
+    assert_eq!(
+        g.call(&mut store, (41,)).await.expect("call succeeds"),
+        (42,)
+    );
     assert!(a.func("g").is_none());
     assert!(b.func("f").is_none());
     assert!(b.instance("b").is_none());
@@ -1682,7 +1687,7 @@ async fn it_links_an_import_nested_two_levels() {
         .root()
         .instance("a")
         .instance("b")
-        .func_wrap("f", |_, (): ()| Ok(7u32))
+        .func_wrap("f", |_, (): ()| Ok((7u32,)))
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -1692,9 +1697,9 @@ async fn it_links_an_import_nested_two_levels() {
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 7);
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), (7,));
 
     // The function registered one level up does not satisfy it, and
     // the error names the import and the item inside it that is
@@ -1703,7 +1708,7 @@ async fn it_links_an_import_nested_two_levels() {
     wrong_level
         .root()
         .instance("a")
-        .func_wrap("f", |_, (): ()| Ok(7u32))
+        .func_wrap("f", |_, (): ()| Ok((7u32,)))
         .expect("the registration");
     let err = match wrong_level.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a function at the wrong level must not link"),
@@ -1969,7 +1974,7 @@ async fn it_links_an_interface_named_import_with_a_nested_instance() {
     linker
         .instance(&host)
         .instance("nested")
-        .func_wrap("f", |_, (): ()| Ok(4u32))
+        .func_wrap("f", |_, (): ()| Ok((4u32,)))
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -1979,9 +1984,9 @@ async fn it_links_an_interface_named_import_with_a_nested_instance() {
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 4);
+    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), (4,));
 }
 
 #[wcmp_macros::test]
@@ -2043,7 +2048,7 @@ async fn it_rejects_a_registration_of_the_wrong_kind() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap("host-return-two", |_, (): ()| Ok(2u32))
+        .func_wrap("host-return-two", |_, (): ()| Ok((2u32,)))
         .expect("the registration");
     linker
         .root()
@@ -2182,7 +2187,9 @@ async fn it_links_a_function_import_under_an_interface_name_through_the_root_nam
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -2193,9 +2200,12 @@ async fn it_links_a_function_import_under_an_interface_name_through_the_root_nam
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 40);
+    assert_eq!(
+        run.call(&mut store, ()).await.expect("call succeeds"),
+        (40,)
+    );
 }
 
 #[wcmp_macros::test]
@@ -2234,7 +2244,9 @@ async fn it_refuses_a_function_import_under_an_interface_name_with_no_root_regis
     let mut by_interface: Linker<()> = Linker::new(&engine);
     by_interface
         .instance(&answers)
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
     let err = match by_interface.instantiate(&mut store, &component).await {
         Ok(_) => panic!("a linker instance must not satisfy a function import"),
@@ -2266,7 +2278,9 @@ async fn it_refuses_a_registration_of_another_kind_under_an_interface_name() {
     linker
         .root()
         .instance(ANSWERS)
-        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap("answer", |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -2329,7 +2343,9 @@ async fn it_links_a_function_import_under_an_interface_name_to_a_compatible_root
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -2340,9 +2356,12 @@ async fn it_links_a_function_import_under_an_interface_name_to_a_compatible_root
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 40);
+    assert_eq!(
+        run.call(&mut store, ()).await.expect("call succeeds"),
+        (40,)
+    );
 }
 
 #[wcmp_macros::test]
@@ -2360,13 +2379,15 @@ async fn it_prefers_an_exact_root_registration_over_a_compatible_one() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
     linker
         .root()
         .func_wrap(
             ANSWERS_LATER_PATCH,
-            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3),
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok((x * 3,)),
         )
         .expect("the registration");
 
@@ -2378,9 +2399,12 @@ async fn it_prefers_an_exact_root_registration_over_a_compatible_one() {
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(run.call(&mut store, ()).await.expect("call succeeds"), 60);
+    assert_eq!(
+        run.call(&mut store, ()).await.expect("call succeeds"),
+        (60,)
+    );
 }
 
 #[wcmp_macros::test]
@@ -2400,7 +2424,7 @@ async fn it_refuses_a_root_registration_on_another_compatibility_track() {
         .root()
         .func_wrap(
             "pdd-tests:host/answers@0.2.0",
-            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2),
+            |_call: HostCall<'_, ()>, (x,): (u32,)| Ok((x * 2,)),
         )
         .expect("the registration");
 
@@ -2458,11 +2482,15 @@ async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
     let newer: InterfaceIdentifier = "pdd-tests:host/maths@0.2.7".parse().expect("identifier");
     linker
         .instance(&exact)
-        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 2))
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| {
+            Ok((n * 2,))
+        })
         .expect("the registration");
     linker
         .instance(&newer)
-        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| Ok(n * 3))
+        .func_wrap("double", |_call: HostCall<'_, ()>, (n,): (i32,)| {
+            Ok((n * 3,))
+        })
         .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -2473,9 +2501,12 @@ async fn it_prefers_an_exact_linker_instance_over_a_compatible_one() {
     let go = instance
         .get_func("go")
         .expect("`go` is exported")
-        .typed::<(i32,), i32>()
+        .typed::<(i32,), (i32,)>()
         .expect("typed");
-    assert_eq!(go.call(&mut store, (7,)).await.expect("call succeeds"), 14);
+    assert_eq!(
+        go.call(&mut store, (7,)).await.expect("call succeeds"),
+        (14,)
+    );
 }
 
 #[wcmp_macros::test]
@@ -2491,7 +2522,9 @@ async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u64,)| Ok(x * 2))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u64,)| {
+            Ok((x * 2,))
+        })
         .expect("the registration");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
@@ -2506,7 +2539,7 @@ async fn it_refuses_a_mismatched_signature_under_an_interface_name() {
                 if matches!(
                     &mismatch.position,
                     wcmp::TypeMismatchPosition::
-                        HostFunctionRegistrationPlain { name } if name == ANSWERS
+                        HostFunctionRegistrationPlain { name, .. } if name == ANSWERS
                 )
         ),
         "expected a type mismatch naming `{ANSWERS}`, got {err:?}",
@@ -2693,9 +2726,9 @@ async fn it_links_a_module_import_under_an_interface_name_through_the_root_names
     let f = instance
         .get_func("f")
         .expect("`f` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed conversion succeeds");
-    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), 101);
+    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), (101,));
 }
 
 #[wcmp_macros::test]
@@ -2852,10 +2885,10 @@ async fn it_refuses_a_second_function_registration_under_one_name() {
         .expect_err("the second untyped registration is refused");
     assert_defined_twice(&error, "untyped");
 
-    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect("the first typed registration");
     let error = view
-        .func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok((2u32,)))
         .expect_err("the second typed registration is refused");
     assert_defined_twice(&error, "typed");
 
@@ -2876,13 +2909,13 @@ async fn it_refuses_a_second_function_registration_under_one_name() {
 
     view.func_wrap_concurrent(
         "typed-async",
-        |_accessor: &Accessor<()>, (): ()| async move { Ok(1u32) },
+        |_accessor: &Accessor<()>, (): ()| async move { Ok((1u32,)) },
     )
     .expect("the first typed concurrent registration");
     let error = view
         .func_wrap_concurrent(
             "typed-async",
-            |_accessor: &Accessor<()>, (): ()| async move { Ok(2u32) },
+            |_accessor: &Accessor<()>, (): ()| async move { Ok((2u32,)) },
         )
         .expect_err("the second typed concurrent registration is refused");
     assert_defined_twice(&error, "typed-async");
@@ -2945,7 +2978,7 @@ async fn it_refuses_a_registration_under_a_name_another_kind_took() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let mut root = linker.root();
 
-    root.func_wrap("taken", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+    root.func_wrap("taken", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect("the function registration");
     let error = root
         .module("taken", &module)
@@ -2960,15 +2993,15 @@ async fn it_refuses_a_registration_under_a_name_another_kind_took() {
     // registration, and the second call answers with the entry the
     // first made.
     root.instance("nested")
-        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect("the nested registration");
     let error = root
         .instance("nested")
-        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .func_wrap("inner", |_call: HostCall<'_, ()>, (): ()| Ok((2u32,)))
         .expect_err("the second call addressed the entry the first made");
     assert_defined_twice(&error, "inner");
     let error = root
-        .func_wrap("nested", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+        .func_wrap("nested", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect_err("a function under a nested instance's name is refused");
     assert_defined_twice(&error, "nested");
 }
@@ -2984,15 +3017,15 @@ async fn it_refuses_a_duplicate_on_a_nested_view_as_it_does_on_the_root() {
     let mut linker: Linker<()> = Linker::new(&engine);
     let mut root = linker.root();
 
-    root.func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+    root.func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect("the root registration");
 
     let mut nested = root.instance("host");
     nested
-        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok((2u32,)))
         .expect("the same name inside a nested instance is a name of its own");
     let error = nested
-        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok(3u32))
+        .func_wrap("f", |_call: HostCall<'_, ()>, (): ()| Ok((3u32,)))
         .expect_err("the second registration on the nested view is refused");
     assert_defined_twice(&error, "f");
 }
@@ -3011,11 +3044,15 @@ async fn it_keeps_the_first_registration_when_it_refuses_the_second() {
     let mut linker: Linker<()> = Linker::new(&engine);
     linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 2,))
+        })
         .expect("the first registration");
     let error = linker
         .root()
-        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3))
+        .func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+            Ok((x * 3,))
+        })
         .expect_err("the second registration is refused");
     assert_defined_twice(&error, ANSWERS);
 
@@ -3027,11 +3064,11 @@ async fn it_keeps_the_first_registration_when_it_refuses_the_second() {
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
     assert_eq!(
         run.call(&mut store, ()).await.expect("call succeeds"),
-        40,
+        (40,),
         "the refused registration did not displace the first",
     );
 }
@@ -3064,9 +3101,9 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
         Ok(())
     })
     .expect("the second untyped registration replaces the first");
-    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(1u32))
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok((1u32,)))
         .expect("the first typed registration");
-    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok(2u32))
+    view.func_wrap("typed", |_call: HostCall<'_, ()>, (): ()| Ok((2u32,)))
         .expect("the second typed registration replaces the first");
     view.func_new_concurrent(
         "untyped-async",
@@ -3082,12 +3119,12 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
     .expect("the second untyped concurrent registration replaces the first");
     view.func_wrap_concurrent(
         "typed-async",
-        |_accessor: &Accessor<()>, (): ()| async move { Ok(1u32) },
+        |_accessor: &Accessor<()>, (): ()| async move { Ok((1u32,)) },
     )
     .expect("the first typed concurrent registration");
     view.func_wrap_concurrent(
         "typed-async",
-        |_accessor: &Accessor<()>, (): ()| async move { Ok(2u32) },
+        |_accessor: &Accessor<()>, (): ()| async move { Ok((2u32,)) },
     )
     .expect("the second typed concurrent registration replaces the first");
     view.resource("thing", ResourceType::host::<Thing>(), |_, _| Ok(()))
@@ -3104,10 +3141,14 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
         .expect("the second module registration replaces the first");
 
     // Which of the two a component links against is the second.
-    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 2))
-        .expect("the first registration under the import's name");
-    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| Ok(x * 3))
-        .expect("the second registration under the import's name");
+    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+        Ok((x * 2,))
+    })
+    .expect("the first registration under the import's name");
+    view.func_wrap(ANSWERS, |_call: HostCall<'_, ()>, (x,): (u32,)| {
+        Ok((x * 3,))
+    })
+    .expect("the second registration under the import's name");
 
     let mut store: Store<()> = Store::new(&engine, ()).expect("store construction succeeds");
     let instance = linker
@@ -3117,11 +3158,11 @@ async fn it_lets_a_later_registration_win_when_shadowing_is_allowed() {
     let run = instance
         .get_func("run")
         .expect("`run` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
     assert_eq!(
         run.call(&mut store, ()).await.expect("call succeeds"),
-        60,
+        (60,),
         "the last registration made is the one the resolver saw",
     );
 }

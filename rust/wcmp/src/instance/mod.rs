@@ -24,6 +24,7 @@ mod instance;
 mod typed_call;
 mod typed_func;
 
+pub use call_values::{ErasedReturnLift, ReturnLift};
 pub use export_instance::ExportInstance;
 pub use export_lookup::ExportLookup;
 pub use exports::InstanceExports;

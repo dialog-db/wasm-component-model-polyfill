@@ -350,7 +350,7 @@ struct FailsAfterAPendingPoll {
 }
 
 impl Future for FailsAfterAPendingPoll {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.polled {
@@ -385,7 +385,7 @@ impl Release {
 struct FailsWhenReleased(Release);
 
 impl Future for FailsWhenReleased {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.0.released.load(Ordering::Relaxed) {
@@ -401,11 +401,11 @@ impl Future for FailsWhenReleased {
 struct AnswersWhenReleased(Release);
 
 impl Future for AnswersWhenReleased {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.0.released.load(Ordering::Relaxed) {
-            return Poll::Ready(Ok(5));
+            return Poll::Ready(Ok((5,)));
         }
         *self.0.waker.lock().expect("the waker") = Some(context.waker().clone());
         Poll::Pending
@@ -463,7 +463,7 @@ async fn instantiate(
 /// Register `answer` to answer with `future` for every call.
 fn answer_with<F>(future: impl Fn() -> F + Send + Sync + 'static) -> impl FnOnce(&mut Linker<()>)
 where
-    F: Future<Output = Result<u32, Error>> + Send + 'static,
+    F: Future<Output = Result<(u32,), Error>> + Send + 'static,
 {
     move |linker| {
         linker

@@ -472,7 +472,7 @@ async fn it_acquires_a_typed_handle_to_a_callback_export() {
     // writes for a synchronous export of the same shape.
     let (_store, instance) = instantiate(RETURNS_AT_ONCE).await;
 
-    let typed = func(&instance, "answer").typed::<(u32,), u32>();
+    let typed = func(&instance, "answer").typed::<(u32,), (u32,)>();
     assert!(
         typed.is_ok(),
         "a typed handle to a callback export is acquired: {:?}",
@@ -509,9 +509,12 @@ async fn it_resolves_a_call_whose_export_returns_and_exits_at_once() {
     // code, and the synchronous export of the same instance still
     // runs after it.
     let typed = func(&instance, "answer")
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .expect("typed handle");
-    assert_eq!(typed.call(&mut store, (21,)).await.expect("typed call"), 42);
+    assert_eq!(
+        typed.call(&mut store, (21,)).await.expect("typed call"),
+        (42,)
+    );
 
     // The synchronous export of the same instance still runs, so the
     // instance the callback task took is really back.

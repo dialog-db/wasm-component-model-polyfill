@@ -46,10 +46,15 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use wcmp::__private::{
+    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
+    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
+};
 use wcmp::{
-    Accessor, ComponentValue, EnumType, Error, FunctionParameter, FunctionType, FutureProducer,
-    FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker, ResultType, Source,
-    StoreContext, StreamConsumer, StreamReader, StreamResult, Val, ValueType,
+    Accessor, ComponentType, Error, FunctionParameter, FunctionType, FutureAny, FutureProducer,
+    FutureReader, FutureType, HostCall, InterfaceIdentifier, Lift, Linker, Lower, PrimitiveType,
+    Source, StoreContext, StreamConsumer, StreamReader, StreamResult, StreamType, TypePathStep,
+    Val, ValueType,
 };
 use wcmp_scenario::SourceBundle;
 
@@ -101,9 +106,9 @@ pub fn define(linker: &mut Linker<Host>, sources: Arc<SourceBundle>) -> Result<(
     define_output(linker, STDERR, |host| &host.stderr)?;
     linker.instance(&identifier(CLOCK_TYPES));
     let mut monotonic_clock = linker.instance(&identifier(MONOTONIC_CLOCK));
-    monotonic_clock.func_wrap("now", |_, (): ()| Ok(clock::now()))?;
+    monotonic_clock.func_wrap("now", |_, (): ()| Ok((clock::now(),)))?;
     monotonic_clock.func_wrap("get-resolution", |_, (): ()| {
-        Err::<u64, _>(unimplemented(MONOTONIC_CLOCK, "get-resolution"))
+        Err::<(u64,), _>(unimplemented(MONOTONIC_CLOCK, "get-resolution"))
     })?;
     monotonic_clock
         .func_wrap_concurrent("wait-for", |_: &Accessor<Host>, (how_long,): (u64,)| {
@@ -119,12 +124,12 @@ pub fn define(linker: &mut Linker<Host>, sources: Arc<SourceBundle>) -> Result<(
     linker
         .instance(&test_interface)
         .func_wrap(wcmp_scenario::TEST_FUNCTION, |_, (text,): (String,)| {
-            Ok(text)
+            Ok((text,))
         })?;
     linker
         .instance(&identifier(wcmp_scenario::COMPILER_HOST_INTERFACE))
         .func_wrap(wcmp_scenario::READ_SOURCE, move |_, (path,): (String,)| {
-            Ok(sources.read(&path).map(str::to_string))
+            Ok((sources.read(&path).map(str::to_string),))
         })
 }
 
@@ -141,11 +146,13 @@ fn define_output(
         FunctionType {
             parameters: vec![FunctionParameter {
                 name: "data".to_string(),
-                ty: StreamReader::<u8>::value_type(),
+                ty: ValueType::Stream(StreamType::new(Some(ValueType::Primitive(
+                    PrimitiveType::U8,
+                )))),
             }],
-            result: Some(ValueType::Future(FutureType::new(Some(
-                WriteResult::value_type(),
-            )))),
+            result: Some(ValueType::Future(FutureType::new(
+                Some(write_result_type()),
+            ))),
             async_: false,
         },
         move |mut call: HostCall<'_, Host>, args, results| {
@@ -161,7 +168,8 @@ fn define_output(
                 end: end.clone(),
             };
             StreamReader::<u8>::try_from_stream_any(data.clone())?.pipe(call.store(), consumer)?;
-            results[0] = FutureReader::new(call.store(), Finishes(end))?.to_val();
+            let finished = FutureReader::new(call.store(), Finishes(end))?;
+            results[0] = Val::Future(FutureAny::try_from_future_reader(call.store(), finished)?);
             Ok(())
         },
     )
@@ -281,23 +289,80 @@ impl FutureProducer<Host> for Finishes {
 /// ever holds `ok`.
 struct WriteResult;
 
-impl ComponentValue for WriteResult {
-    fn value_type() -> ValueType {
-        let codes = EnumType::new(ERROR_CODES.map(str::to_string));
-        ValueType::Result(ResultType::new(None, Some(ValueType::Enum(codes))))
-    }
+/// The type `write-via-stream`'s future carries:
+/// `result<_, error-code>`.
+fn write_result_type() -> ValueType {
+    let codes = wcmp::EnumType::new(ERROR_CODES.map(str::to_string));
+    ValueType::Result(wcmp::ResultType::new(None, Some(ValueType::Enum(codes))))
+}
 
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(Ok(None)) => Ok(WriteResult),
-            other => Err(Error::Internal {
-                message: format!("the host writes only `ok` to an output, not {other:?}"),
-            }),
+impl ComponentType for WriteResult {
+    const ABI: CanonicalAbiInfo =
+        CanonicalAbiInfo::variant_static(&[None, Some(CanonicalAbiInfo::enum_(ERROR_CODES.len()))]);
+
+    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let ValueType::Result(result) = ty else {
+            return Err(TypeCheckError::mismatch::<Self>(ty));
+        };
+        if let Some(ok) = result.ok() {
+            return Err(TypeCheckError::mismatch::<()>(ok).at(TypePathStep::ResultOk));
+        }
+        match result.err() {
+            Some(ValueType::Enum(codes)) if codes.cases() == ERROR_CODES => Ok(()),
+            Some(err) => Err(TypeCheckError::mismatch::<Self>(err).at(TypePathStep::ResultErr)),
+            None => Err(TypeCheckError::mismatch::<Self>(ty)),
         }
     }
+}
 
-    fn to_val(self) -> Val {
-        Val::Result(Ok(None))
+impl Lower for WriteResult {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> wcmp::Result<()> {
+        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<()> {
+        lower_case_memory(cx, ty, 0, offset).map(|_| ())
+    }
+}
+
+impl Lift for WriteResult {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> wcmp::Result<Self> {
+        lift_case_flat(cx, ty, slots, cursor, |_, case, _| only_ok(case))
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<Self> {
+        let (case, _, _) = lift_case_memory(cx, ty, offset)?;
+        only_ok(case)
+    }
+}
+
+/// The write result of case `case`, which the host only ever writes as
+/// `ok`.
+fn only_ok(case: usize) -> wcmp::Result<WriteResult> {
+    match case {
+        0 => Ok(WriteResult),
+        other => Err(Error::Internal {
+            message: format!("the host writes only `ok` to an output, not case {other}"),
+        }),
     }
 }
 

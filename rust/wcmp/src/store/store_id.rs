@@ -18,11 +18,11 @@ use crate::internal::StoreIdInternal;
 /// wrapped integer is opaque: nothing reads it, and only `Debug`
 /// prints it.
 ///
-/// A host meets one only as the parameter of
-/// [`ComponentValue::check_store`], and can only hand it on: a type of
-/// the host's own that holds an [`ErrorContext`] passes it to that
-/// field's `check_store`, so a call refuses another store's error
-/// context before it starts. No host makes one.
+/// A host meets one only as the parameter of the store check of a
+/// typed value's [`Lower`], and can only hand it on: a type that holds
+/// an [`ErrorContext`] passes it to that field's check, so a call
+/// refuses another store's error context before it starts. No host
+/// makes one.
 ///
 /// ```rust
 /// use wcmp::StoreId;
@@ -37,7 +37,7 @@ use crate::internal::StoreIdInternal;
 ///
 /// [`Store`]: crate::Store
 /// [`Instance`]: crate::Instance
-/// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
+/// [`Lower`]: crate::Lower
 /// [`ErrorContext`]: crate::ErrorContext
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StoreId(u64);

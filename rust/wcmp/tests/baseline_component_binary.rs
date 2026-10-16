@@ -153,11 +153,11 @@ async fn it_loads_a_component_larger_than_the_synchronous_compile_limit() {
     let size = instance
         .get_func("size")
         .expect("size export")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed size");
     assert_eq!(
         size.call(&mut store, ()).await.expect("call size"),
-        LARGE_PAYLOAD as u32
+        (LARGE_PAYLOAD as u32,)
     );
 }
 
@@ -238,18 +238,18 @@ async fn it_instantiates_each_of_two_byte_identical_core_modules() {
     let first = instance
         .get_func("first")
         .expect("first export")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed first");
     let second = instance
         .get_func("second")
         .expect("second export")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed second");
-    assert_eq!(first.call(&mut store, ()).await.expect("call first"), 1);
-    assert_eq!(first.call(&mut store, ()).await.expect("call first"), 2);
+    assert_eq!(first.call(&mut store, ()).await.expect("call first"), (1,));
+    assert_eq!(first.call(&mut store, ()).await.expect("call first"), (2,));
     assert_eq!(
         second.call(&mut store, ()).await.expect("call second"),
-        1,
+        (1,),
         "the second module's instance keeps its own counter"
     );
 }

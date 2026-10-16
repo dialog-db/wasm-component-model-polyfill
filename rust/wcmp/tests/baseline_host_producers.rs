@@ -37,8 +37,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    Accessor, Component, ComponentValue, CopyCause, Destination, Engine, EngineConfig, Error,
-    FutureProducer, FutureReader, HostCall, Instance, Linker, Store, StoreContext, StreamProducer,
+    Accessor, Component, CopyCause, Destination, Engine, EngineConfig, Error, FutureProducer,
+    FutureReader, HostCall, Instance, Linker, Store, StoreContext, StreamAny, StreamProducer,
     StreamReader, StreamResult, Val,
 };
 use wcmp_macros::component;
@@ -409,7 +409,7 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
         .root()
         .func_wrap("open", |mut call: HostCall<'_, ()>, (): ()| {
             let (producer, _) = Scripted::new([Step::Deliver(b"hello")]);
-            StreamReader::new(call.store(), producer)
+            StreamReader::new(call.store(), producer).map(|reader| (reader,))
         })
         .expect("register `open`");
     linker
@@ -419,7 +419,9 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
             async move {
                 after_one_pending_poll(0).await?;
                 let (producer, _) = Scripted::new([Step::Deliver(b"later")]);
-                accessor.with(|store| StreamReader::new(store, producer))?
+                accessor
+                    .with(|store| StreamReader::new(store, producer))?
+                    .map(|reader| (reader,))
             }
         })
         .expect("register `open-later`");
@@ -485,11 +487,12 @@ async fn take(store: &mut Store<()>, instance: &Instance, reader: StreamReader<u
     instance
         .get_func("take")
         .expect("the component exports `take`")
-        .typed::<(StreamReader<u8>,), u32>()
+        .typed::<(StreamReader<u8>,), (u32,)>()
         .expect("`take` takes a `stream<u8>`")
         .call(store, (reader,))
         .await
         .expect("the reader crosses into the guest")
+        .0
 }
 
 /// A stream over `producer`, handed to the guest's `take`. Answers
@@ -743,11 +746,12 @@ async fn it_resolves_a_guests_read_of_a_future_over_an_async_block() {
     let end = instance
         .get_func("take-future")
         .expect("the component exports `take-future`")
-        .typed::<(FutureReader<u32>,), u32>()
+        .typed::<(FutureReader<u32>,), (u32,)>()
         .expect("`take-future` takes a `future<u32>`")
         .call(&mut store, (reader,))
         .await
-        .expect("the reader crosses into the guest");
+        .expect("the reader crosses into the guest")
+        .0;
 
     assert_eq!(
         call_u32(&mut store, &instance, "future-read", &[end, 100]).await,
@@ -790,7 +794,7 @@ async fn it_ends_the_driver_with_the_producers_error_when_a_later_poll_fails() {
     let failure = instance
         .get_func("drain")
         .expect("the component exports `drain`")
-        .typed::<(StreamReader<u8>,), u32>()
+        .typed::<(StreamReader<u8>,), (u32,)>()
         .expect("`drain` takes a `stream<u8>`")
         .call(&mut store, (reader,))
         .await
@@ -813,11 +817,12 @@ async fn it_resumes_a_waiting_callback_task_with_what_the_producer_delivered() {
     let result = instance
         .get_func("drain")
         .expect("the component exports `drain`")
-        .typed::<(StreamReader<u8>,), u32>()
+        .typed::<(StreamReader<u8>,), (u32,)>()
         .expect("`drain` takes a `stream<u8>`")
         .call(&mut store, (reader,))
         .await
-        .expect("the call returns");
+        .expect("the call returns")
+        .0;
 
     assert_eq!(
         result,
@@ -839,7 +844,7 @@ async fn it_refuses_a_typed_reader_of_another_payload_type() {
     let refused = instance
         .get_func("take")
         .expect("the component exports `take`")
-        .typed::<(StreamReader<u32>,), u32>()
+        .typed::<(StreamReader<u32>,), (u32,)>()
         .expect_err("`take` takes a `stream<u8>`, not a `stream<u32>`");
     assert!(
         matches!(refused, Error::TypeMismatch(_)),
@@ -849,10 +854,12 @@ async fn it_refuses_a_typed_reader_of_another_payload_type() {
     // The same reader crossing as an untyped value reaches the lower
     // itself, which checks the payload against the guest's type.
     let wide = StreamReader::<u32>::new(&mut store.as_context_mut(), NoWords).expect("a stream");
+    let wide = StreamAny::try_from_stream_reader(&mut store.as_context_mut(), wide)
+        .expect("the store holds the reader's end");
     let failure = instance
         .get_func("take")
         .expect("the component exports `take`")
-        .call(&mut store, &[wide.to_val()])
+        .call(&mut store, &[Val::Stream(wide)])
         .await
         .expect_err("the lower refuses the reader");
     assert!(
@@ -944,11 +951,12 @@ async fn it_awaits_a_javascript_promise_and_gives_the_guest_its_items() {
     let result = instance
         .get_func("drain")
         .expect("the component exports `drain`")
-        .typed::<(StreamReader<u8>,), u32>()
+        .typed::<(StreamReader<u8>,), (u32,)>()
         .expect("`drain` takes a `stream<u8>`")
         .call(&mut store, (reader,))
         .await
-        .expect("the call returns");
+        .expect("the call returns")
+        .0;
 
     assert_eq!(
         result,
@@ -1048,11 +1056,12 @@ async fn future_in_guest(
     instance
         .get_func("take-future")
         .expect("the component exports `take-future`")
-        .typed::<(FutureReader<u32>,), u32>()
+        .typed::<(FutureReader<u32>,), (u32,)>()
         .expect("`take-future` takes a `future<u32>`")
         .call(store, (reader,))
         .await
         .expect("the reader crosses into the guest")
+        .0
 }
 
 #[wcmp_macros::test]
@@ -1177,11 +1186,12 @@ async fn it_delivers_strings_through_the_readers_realloc() {
     let end = instance
         .get_func("take-strings")
         .expect("the component exports `take-strings`")
-        .typed::<(StreamReader<String>,), u32>()
+        .typed::<(StreamReader<String>,), (u32,)>()
         .expect("`take-strings` takes a `stream<string>`")
         .call(&mut store, (reader,))
         .await
-        .expect("the reader crosses into the guest");
+        .expect("the reader crosses into the guest")
+        .0;
 
     assert_eq!(
         call_u32(&mut store, &instance, "read-strings", &[end, 100, 4]).await,
@@ -1214,11 +1224,12 @@ async fn it_serves_a_zero_length_read_of_strings_without_the_same_instance_trap(
     let end = instance
         .get_func("take-strings")
         .expect("the component exports `take-strings`")
-        .typed::<(StreamReader<String>,), u32>()
+        .typed::<(StreamReader<String>,), (u32,)>()
         .expect("`take-strings` takes a `stream<string>`")
         .call(&mut store, (reader,))
         .await
-        .expect("the reader crosses into the guest");
+        .expect("the reader crosses into the guest")
+        .0;
 
     assert_eq!(
         call_u32(&mut store, &instance, "read-strings", &[end, 100, 0]).await,
@@ -1282,11 +1293,12 @@ async fn it_lowers_readers_in_a_list_through_memory() {
     let address = instance
         .get_func("take-list")
         .expect("the component exports `take-list`")
-        .typed::<(Vec<StreamReader<u8>>,), u32>()
+        .typed::<(Vec<StreamReader<u8>>,), (u32,)>()
         .expect("`take-list` takes a `list<stream<u8>>`")
         .call(&mut store, (readers,))
         .await
-        .expect("the readers cross into the guest");
+        .expect("the readers cross into the guest")
+        .0;
 
     assert_eq!(
         read_listed_ends(&mut store, &instance, address).await,
@@ -1303,11 +1315,12 @@ async fn it_lowers_readers_in_a_list_into_an_async_export() {
     let address = instance
         .get_func("take-list-async")
         .expect("the component exports `take-list-async`")
-        .typed::<(Vec<StreamReader<u8>>,), u32>()
+        .typed::<(Vec<StreamReader<u8>>,), (u32,)>()
         .expect("`take-list-async` takes a `list<stream<u8>>`")
         .call(&mut store, (readers,))
         .await
-        .expect("the readers cross into the guest");
+        .expect("the readers cross into the guest")
+        .0;
 
     assert_eq!(
         read_listed_ends(&mut store, &instance, address).await,

@@ -344,9 +344,9 @@ async fn it_instantiates_a_core_module_the_host_registered() {
     let f = instance
         .get_func("f")
         .expect("`f` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed conversion succeeds");
-    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), 101);
+    assert_eq!(f.call(&mut store, ()).await.expect("call succeeds"), (101,));
 }
 
 #[wcmp_macros::test]
@@ -509,9 +509,12 @@ async fn it_instantiates_a_module_registered_inside_an_instance_import() {
     let sum = instance
         .get_func("sum")
         .expect("`sum` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("typed");
-    assert_eq!(sum.call(&mut store, ()).await.expect("call succeeds"), 201);
+    assert_eq!(
+        sum.call(&mut store, ()).await.expect("call succeeds"),
+        (201,)
+    );
 }
 
 #[wcmp_macros::test]

@@ -133,7 +133,7 @@ async fn instantiate() -> (Store<()>, wcmp::Instance) {
     linker
         .root()
         .func_wrap("count", |_, (map,): (HashMap<String, u32>,)| {
-            Ok(map.len() as u32)
+            Ok((map.len() as u32,))
         })
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -175,27 +175,27 @@ async fn it_round_trips_a_map_through_an_export_typed() {
     let sum = instance
         .get_func("sum")
         .expect("`sum` is exported")
-        .typed::<(HashMap<String, u32>,), u32>()
+        .typed::<(HashMap<String, u32>,), (u32,)>()
         .expect("a Rust hash map converts to `map<string, u32>`");
     let map: HashMap<String, u32> = [("a".to_owned(), 1), ("b".to_owned(), 41)]
         .into_iter()
         .collect();
     assert_eq!(
         sum.call(&mut store, (map.clone(),)).await.expect("call"),
-        42
+        (42,)
     );
 
     let identity = instance
         .get_func("identity")
         .expect("`identity` is exported")
-        .typed::<(HashMap<String, u32>,), HashMap<String, u32>>()
+        .typed::<(HashMap<String, u32>,), (HashMap<String, u32>,)>()
         .expect("typed conversion succeeds");
     assert_eq!(
         identity
             .call(&mut store, (map.clone(),))
             .await
             .expect("call"),
-        map
+        (map,)
     );
 }
 
@@ -237,7 +237,7 @@ async fn it_reports_a_value_or_type_that_is_not_a_map() {
     let err = instance
         .get_func("sum")
         .expect("`sum` is exported")
-        .typed::<(Vec<String>,), u32>()
+        .typed::<(Vec<String>,), (u32,)>()
         .expect_err("a list type does not match a map type");
     assert!(matches!(err, Error::TypeMismatch(_)));
 }

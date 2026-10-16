@@ -6,9 +6,13 @@
 
 //! An error context, as a typed entry carries it.
 
-use crate::internal::ErrorContextInternal;
+use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
+use crate::internal::{ErrorContextAnyInternal, ErrorContextInternal};
+use crate::store::{StoreContext, StoreId};
+use crate::types::ValueType;
+use crate::value::Val;
 
-use crate::store::StoreId;
+use super::error_context_any::ErrorContextAny;
 
 use super::error_context_id::ErrorContextId;
 
@@ -21,19 +25,45 @@ use super::error_context_id::ErrorContextId;
 /// drops, and a lower into a guest gives the guest a handle of its own.
 /// Passed to a call into another store, it fails with the wrong-store
 /// cause before the call changes anything, as
-/// [`ErrorContextAny`](crate::ErrorContextAny) states. Held in a
-/// `ComponentValue` type of the host's own, it is checked before the
-/// call only when that type overrides
-/// [`ComponentValue::check_store`](crate::ComponentValue::check_store)
-/// to check it; otherwise its lower inside the call fails the call,
-/// which poisons the store. It implements [`ComponentValue`](crate::ComponentValue), which
-/// converts it to and from a
-/// [`Val::ErrorContext`](crate::Val::ErrorContext) and lifts and
-/// lowers it as a typed value.
+/// [`ErrorContextAny`](crate::ErrorContextAny) states. Inside a type of
+/// the host's own, it is checked before the call only when that type's
+/// [`Lower`](crate::Lower) checks the store of each value it holds, as
+/// the derived and the built-in types do; otherwise its lower inside
+/// the call fails the call, which poisons the store.
+///
+/// It lifts and lowers as a typed value, and it converts to and from a
+/// [`Val::ErrorContext`](crate::Val::ErrorContext) with
+/// [`into_val`](Self::into_val) and [`from_val`](Self::from_val), as
+/// Wasmtime's does.
 #[derive(Debug)]
 pub struct ErrorContext {
     store: StoreId,
     context: ErrorContextId,
+}
+
+impl ErrorContext {
+    /// Convert this error context into a [`Val`]. The name is
+    /// Wasmtime's.
+    pub fn into_val(self) -> Val {
+        Val::ErrorContext(ErrorContextAny::new(self.store, self.context))
+    }
+
+    /// Convert `value` into an error context, in the store `store`
+    /// reaches. The name is Wasmtime's.
+    ///
+    /// Fails with the host-value-mismatch ABI cause when `value` is not
+    /// a [`Val::ErrorContext`].
+    pub fn from_val<D: 'static>(store: &mut StoreContext<'_, D>, value: &Val) -> Result<Self> {
+        let _ = store;
+        match value {
+            Val::ErrorContext(context) => Ok(Self::new(context.store_id(), context.context())),
+            _ => Err(Error::from(AbiError {
+                position: AbiPosition::Argument(0),
+                valtype: Some(ValueType::ErrorContext),
+                cause: AbiCause::HostValueMismatch,
+            })),
+        }
+    }
 }
 
 impl ErrorContextInternal for ErrorContext {

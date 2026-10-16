@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::anyhow;
 
 use crate::abi::runtime_state::AbiRuntimeState;
-use crate::concurrency::{EndKind, InstanceId, WaitableId};
+use crate::concurrency::{EndKind, EndPayload, InstanceId, WaitableId};
 use crate::error::{CopyCause, Error, TaskCause};
 use crate::executor::copy::resource_tables;
 use crate::executor::intrinsics::core_func_type;
@@ -63,7 +63,7 @@ use crate::runtime_layer::host_func;
 use crate::runtime_layer::{AsContextMut, Func as RuntimeFunc, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
-use crate::types::{ValueType, payloads_match, resolve_resources};
+use crate::types::{ValueType, resolve_resources};
 
 /// Build the `stream.new` built-in for `instance`: a stream carrying
 /// `payload` enters the store, and the built-in returns the indices
@@ -133,7 +133,7 @@ pub fn build_drop_end<T: 'static>(
                 .shared_record(end)
                 .map(|record| &record.payload)
                 .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-            if !payloads_match(carried.as_ref(), payload.as_ref(), &resolve) {
+            if !carried.matches(payload.as_ref(), &resolve) {
                 return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
             }
             // An end whose other end the host serves takes the host's
@@ -202,7 +202,10 @@ fn build_new<T: 'static>(
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
-            let (readable, writable) = guard.tasks.insert_ends(payload.clone()).map_err(trap)?;
+            let (readable, writable) = guard
+                .tasks
+                .insert_ends(EndPayload::Declared(payload.clone()))
+                .map_err(trap)?;
             let readable = guard.insert_end(table, kinds[0], readable);
             let writable = guard.insert_end(table, kinds[1], writable);
             results[0] = RuntimeVal::I64(pack_indices(readable, writable));

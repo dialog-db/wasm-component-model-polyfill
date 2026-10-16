@@ -42,10 +42,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    Accessor, Component, ComponentValue, CoreExternType, Destination, Engine, EngineConfig, Error,
+    Accessor, Component, CoreExternType, Destination, Engine, EngineConfig, Error,
     FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
-    InterfaceIdentifier, LinkError, Linker, PrimitiveType, ResourceType, SchedulerCause, Source,
-    Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
+    InterfaceIdentifier, Lift, LinkError, Linker, PrimitiveType, ResourceType, SchedulerCause,
+    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
     SuspendProviderKind, TaskCause, Val, ValField, ValueType,
 };
 use wcmp_macros::component;
@@ -1212,9 +1212,9 @@ async fn load_and_call(engine: &Engine) -> Result<String, String> {
     let double = instance
         .get_func("double")
         .ok_or("no `double` export")?
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .map_err(fail)?;
-    let result = double.call(&mut store, (21,)).await.map_err(fail)?;
+    let (result,) = double.call(&mut store, (21,)).await.map_err(fail)?;
     expect("double(21)", result, 42)?;
     Ok(format!("double(21) = {result}"))
 }
@@ -1244,9 +1244,9 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
     let len = instance
         .get_func("len")
         .ok_or("no `len` export")?
-        .typed::<(String,), i32>()
+        .typed::<(String,), (i32,)>()
         .map_err(fail)?;
-    let length = len
+    let (length,) = len
         .call(&mut store, ("héllo".to_owned(),))
         .await
         .map_err(fail)?;
@@ -1255,9 +1255,9 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
     let echo = instance
         .get_func("echo")
         .ok_or("no `echo` export")?
-        .typed::<(String,), String>()
+        .typed::<(String,), (String,)>()
         .map_err(fail)?;
-    let echoed = echo
+    let (echoed,) = echo
         .call(&mut store, ("round trip".to_owned(),))
         .await
         .map_err(fail)?;
@@ -1266,9 +1266,9 @@ async fn host_function(engine: &Engine) -> Result<String, String> {
     let sum = instance
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<(Vec<u32>,), u32>()
+        .typed::<(Vec<u32>,), (u32,)>()
         .map_err(fail)?;
-    let total = sum
+    let (total,) = sum
         .call(&mut store, (vec![1, 2, 3, 4, 5],))
         .await
         .map_err(fail)?;
@@ -1396,9 +1396,9 @@ async fn composition(engine: &Engine) -> Result<String, String> {
     let run = instance
         .get_func("run")
         .ok_or("no `run` export")?
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .map_err(fail)?;
-    let result = run.call(&mut store, (20,)).await.map_err(fail)?;
+    let (result,) = run.call(&mut store, (20,)).await.map_err(fail)?;
     expect("run(20) = double(20) + 1", result, 41)?;
     Ok(format!(
         "run(20) calls double(20) in the other component and returns {result}"
@@ -1418,13 +1418,13 @@ async fn maps_and_fixed_lists(engine: &Engine) -> Result<String, String> {
     let sum = maps
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<(HashMap<String, u32>,), u32>()
+        .typed::<(HashMap<String, u32>,), (u32,)>()
         .map_err(fail)?;
     let map: HashMap<String, u32> = [("a", 1), ("b", 2), ("c", 39)]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
-    let total = sum.call(&mut store, (map,)).await.map_err(fail)?;
+    let (total,) = sum.call(&mut store, (map,)).await.map_err(fail)?;
     expect("sum({a: 1, b: 2, c: 39})", total, 42)?;
     let entries = Val::Map(Box::new([
         (Val::String("x".to_owned()), Val::U32(7)),
@@ -1457,9 +1457,9 @@ async fn maps_and_fixed_lists(engine: &Engine) -> Result<String, String> {
     let sum4 = lists
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<([u32; 4],), u32>()
+        .typed::<([u32; 4],), (u32,)>()
         .map_err(fail)?;
-    let total4 = sum4
+    let (total4,) = sum4
         .call(&mut store, ([1, 2, 3, 36],))
         .await
         .map_err(fail)?;
@@ -1467,10 +1467,10 @@ async fn maps_and_fixed_lists(engine: &Engine) -> Result<String, String> {
     let double = lists
         .get_func("double")
         .ok_or("no `double` export")?
-        .typed::<([u8; 16],), [u8; 16]>()
+        .typed::<([u8; 16],), ([u8; 16],)>()
         .map_err(fail)?;
     let input: [u8; 16] = core::array::from_fn(|i| i as u8);
-    let doubled = double.call(&mut store, (input,)).await.map_err(fail)?;
+    let (doubled,) = double.call(&mut store, (input,)).await.map_err(fail)?;
     expect(
         "double(0..16)",
         doubled,
@@ -1547,9 +1547,9 @@ async fn core_modules(engine: &Engine) -> Result<String, String> {
     let sum = instance
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .map_err(fail)?;
-    let total = sum.call(&mut store, ()).await.map_err(fail)?;
+    let (total,) = sum.call(&mut store, ()).await.map_err(fail)?;
     expect("f() + g", total, 201)?;
     Ok(format!(
         "module exports {}; a second component used it: f() + g = {total}",
@@ -1586,8 +1586,8 @@ async fn navigation(engine: &Engine) -> Result<String, String> {
         .iter()
         .map(|parameter| format!("{}: {}", parameter.name, type_name(&parameter.ty)))
         .collect();
-    let g = g.typed::<(u32,), u32>().map_err(fail)?;
-    let result = g.call(&mut store, (41,)).await.map_err(fail)?;
+    let g = g.typed::<(u32,), (u32,)>().map_err(fail)?;
+    let (result,) = g.call(&mut store, (41,)).await.map_err(fail)?;
     expect("a.b.g(41)", result, 42)?;
     Ok(format!(
         "a.f() = 42; a.b.g({}) -> {}; a.b.g(41) = {result}",
@@ -1640,10 +1640,10 @@ async fn memory64(engine: &Engine) -> Result<String, String> {
     let roundtrip = instance
         .get_func("roundtrip")
         .ok_or("no `roundtrip` export")?
-        .typed::<(String,), String>()
+        .typed::<(String,), (String,)>()
         .map_err(fail)?;
     let text = "héllo from a 64-bit memory";
-    let back = roundtrip
+    let (back,) = roundtrip
         .call(&mut store, (text.to_owned(),))
         .await
         .map_err(fail)?;
@@ -2009,7 +2009,7 @@ impl<T> Collects<T> {
     }
 }
 
-impl<T: ComponentValue + Send + 'static> StreamConsumer<HostState> for Collects<T> {
+impl<T: Lift + 'static> StreamConsumer<HostState> for Collects<T> {
     type Item = T;
 
     fn poll_consume(
@@ -2174,9 +2174,9 @@ async fn read_a_guest_stream(engine: &Engine) -> Result<String, String> {
     let words = instance
         .get_func("words")
         .ok_or("no `words` export")?
-        .typed::<(String,), StreamReader<String>>()
+        .typed::<(String,), (StreamReader<String>,)>()
         .map_err(fail)?;
-    let reader = store
+    let (reader,) = store
         .run_concurrent(async |accessor: &Accessor<HostState>| {
             words
                 .call_concurrent(accessor, (SENTENCE.to_owned(),))
@@ -2220,7 +2220,7 @@ async fn stream_in_future_out(engine: &Engine) -> Result<String, String> {
     let checksum = instance
         .get_func("checksum")
         .ok_or("no `checksum` export")?
-        .typed::<(StreamReader<u32>,), FutureReader<u64>>()
+        .typed::<(StreamReader<u32>,), (FutureReader<u64>,)>()
         .map_err(fail)?;
     let delivered = Arc::new(AtomicUsize::new(0));
     let numbers = StreamReader::new(
@@ -2233,7 +2233,7 @@ async fn stream_in_future_out(engine: &Engine) -> Result<String, String> {
         },
     )
     .map_err(fail)?;
-    let future = store
+    let (future,) = store
         .run_concurrent(async |accessor: &Accessor<HostState>| {
             checksum.call_concurrent(accessor, (numbers,)).await
         })
@@ -2288,12 +2288,12 @@ async fn stream_between_components(engine: &Engine) -> Result<String, String> {
     let total = instance
         .get_func("total")
         .ok_or("no `total` export")?
-        .typed::<(u32,), u64>()
+        .typed::<(u32,), (u64,)>()
         .map_err(fail)?;
-    let sum = total.call(&mut store, (NUMBERS,)).await.map_err(fail)?;
+    let (sum,) = total.call(&mut store, (NUMBERS,)).await.map_err(fail)?;
     let wanted = u64::from(NUMBERS) * (u64::from(NUMBERS) + 1) / 2;
     expect("total(1000)", sum, wanted)?;
-    let empty = total.call(&mut store, (0,)).await.map_err(fail)?;
+    let (empty,) = total.call(&mut store, (0,)).await.map_err(fail)?;
     expect("total(0)", empty, 0)?;
     Ok(format!(
         "total({NUMBERS}) = {sum}; an empty stream sums to {empty}"
@@ -2413,7 +2413,7 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
                     asked?;
                     // Nothing the store owns can resolve this.
                     Outside::pause(WAIT_MILLIS).await;
-                    Ok(key)
+                    Ok((key,))
                 }
             },
         )
@@ -2426,7 +2426,7 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
     let total = instance
         .get_func("total")
         .ok_or("no `total` export")?
-        .typed::<(Vec<u32>,), u32>()
+        .typed::<(Vec<u32>,), (u32,)>()
         .map_err(fail)?;
 
     if engine.suspend_provider() == SuspendProviderKind::None {
@@ -2444,7 +2444,7 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
         let mut call = Box::pin(total.call(&mut store, (KEYS.to_vec(),)));
         match poll_once(&mut call, &waker) {
             Poll::Pending => (),
-            Poll::Ready(Ok(sum)) => {
+            Poll::Ready(Ok((sum,))) => {
                 return Err(format!(
                     "`total` returned {sum} without waiting for the timer"
                 ));
@@ -2455,7 +2455,7 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
         }
         Outside::pause(2 * WAIT_MILLIS).await;
         let woken = wakes.count();
-        (call.await.map_err(fail)?, woken)
+        (call.await.map_err(fail)?.0, woken)
     };
     expect("the timer woke the waiting call", woken > 0, true)?;
     let watched = outside.observed()?;
@@ -2505,7 +2505,7 @@ async fn block_and_resume_on(engine: &Engine) -> Result<String, String> {
                 let first = calls.fetch_add(1, Ordering::Relaxed) == 0;
                 async move {
                     Outside::pause(if first { 3 * WAIT_MILLIS } else { WAIT_MILLIS }).await;
-                    Ok(key * 2)
+                    Ok((key * 2,))
                 }
             },
         )
@@ -2518,14 +2518,14 @@ async fn block_and_resume_on(engine: &Engine) -> Result<String, String> {
     let both = instance
         .get_func("both")
         .ok_or("no `both` export")?
-        .typed::<(u32, u32), u32>()
+        .typed::<(u32, u32), (u32,)>()
         .map_err(fail)?;
 
     let outcome = both.call(&mut store, (20, 1)).await;
     if engine.suspend_provider() == SuspendProviderKind::None {
         return refused_for_a_stack_switch("`both`", outcome);
     }
-    let sum = outcome.map_err(fail)?;
+    let (sum,) = outcome.map_err(fail)?;
     expect(
         "the calls the export woke for, in order",
         store.data().tallies.as_slice(),
@@ -2578,14 +2578,14 @@ async fn park_and_wake(engine: &Engine) -> Result<String, String> {
     let run = instance
         .get_func("run")
         .ok_or("no `run` export")?
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .map_err(fail)?;
 
     let outcome = run.call(&mut store, ()).await;
     if engine.suspend_provider() == SuspendProviderKind::None {
         return refused_for_a_stack_switch("`run`", outcome);
     }
-    let finished = outcome.map_err(fail)?;
+    let (finished,) = outcome.map_err(fail)?;
     expect("threads that finished", finished, 3)?;
     expect(
         "the order the threads ran in",
@@ -2830,21 +2830,21 @@ async fn trap_loses_the_store(engine: &Engine) -> Result<String, String> {
     let average = instance
         .get_func("average")
         .ok_or("no `average` export")?
-        .typed::<(Vec<u32>,), u32>()
+        .typed::<(Vec<u32>,), (u32,)>()
         .map_err(fail)?;
     let sum = instance
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<(Vec<u32>,), u32>()
+        .typed::<(Vec<u32>,), (u32,)>()
         .map_err(fail)?;
-    let mean = average
+    let (mean,) = average
         .call(&mut store, (vec![2, 4],))
         .await
         .map_err(fail)?;
     expect("average([2, 4])", mean, 3)?;
 
     let trap = match average.call(&mut store, (Vec::new(),)).await {
-        Ok(value) => return Err(format!("average([]) returned {value} instead of trapping")),
+        Ok((value,)) => return Err(format!("average([]) returned {value} instead of trapping")),
         Err(Error::Task(TaskCause::CannotEnter)) => {
             return Err("average([]) was refused before it ran".to_owned());
         }
@@ -2852,7 +2852,7 @@ async fn trap_loses_the_store(engine: &Engine) -> Result<String, String> {
     };
     match sum.call(&mut store, (KEYS.to_vec(),)).await {
         Err(Error::Task(TaskCause::CannotEnter)) => (),
-        Ok(value) => {
+        Ok((value,)) => {
             return Err(format!(
                 "sum returned {value} in a store a trap had poisoned"
             ));
@@ -2870,10 +2870,10 @@ async fn trap_loses_the_store(engine: &Engine) -> Result<String, String> {
         .instantiate(&mut fresh, &component)
         .await
         .map_err(fail)?;
-    let total = instance
+    let (total,) = instance
         .get_func("sum")
         .ok_or("no `sum` export")?
-        .typed::<(Vec<u32>,), u32>()
+        .typed::<(Vec<u32>,), (u32,)>()
         .map_err(fail)?
         .call(&mut fresh, (KEYS.to_vec(),))
         .await
@@ -3096,10 +3096,10 @@ async fn cancelled_worker_on(engine: &Engine) -> Result<Vec<u32>, String> {
     let run = instance
         .get_func("run")
         .ok_or("no `run` export")?
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .map_err(fail)?;
 
-    let state = run
+    let (state,) = run
         .call(&mut store, (PROGRAM_YIELDS,))
         .await
         .map_err(fail)?;

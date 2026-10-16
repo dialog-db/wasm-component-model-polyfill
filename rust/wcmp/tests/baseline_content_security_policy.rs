@@ -321,7 +321,7 @@ async fn it_suspends_on_an_async_host_function_that_awaits_a_promise_under_the_p
                 let resolved = wasm_bindgen_futures::JsFuture::from(promise)
                     .await
                     .expect("the promise resolves");
-                Ok(resolved.as_f64().expect("the promise's value") as u32)
+                Ok((resolved.as_f64().expect("the promise's value") as u32,))
             }
         })
         .expect("the registration of `answer`");
@@ -420,7 +420,7 @@ async fn it_runs_over_a_backend_without_multi_memory_under_the_policy() {
         .func_wrap(
             "measure",
             |_call: wcmp::HostCall<'_, ()>, (text,): (String,)| {
-                Ok(u32::try_from(text.len()).expect("a short string"))
+                Ok((u32::try_from(text.len()).expect("a short string"),))
             },
         )
         .expect("the registration of `measure`");

@@ -174,7 +174,7 @@ use crate::resource::{HandleTables, ResourceTableRuntime, TableId};
 use crate::runtime_layer::{AsContextMut, StoreContextMut as RuntimeContextMut, Val as RuntimeVal};
 use crate::store::StoreContextInternalExt;
 use crate::store::{StoreContext, StoreData};
-use crate::types::{ListType, ResourceType, ValueType, payloads_match};
+use crate::types::{ListType, ResourceType, ValueType};
 use crate::value::Val;
 
 use super::host_consume::serve_host_write;
@@ -307,7 +307,7 @@ fn copying_end(
         .shared_record(end)
         .map(|record| &record.payload)
         .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-    if !payloads_match(carried.as_ref(), payload.as_ref(), resources) {
+    if !carried.matches(payload.as_ref(), resources) {
         return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
     }
     let record = tables
@@ -466,7 +466,7 @@ impl Builtin {
             .shared_record(end)
             .map(|record| &record.payload)
             .ok_or_else(|| anyhow!("an end's entry names an end with no shared record"))?;
-        if !payloads_match(carried.as_ref(), self.payload.as_ref(), &resolve) {
+        if !carried.matches(self.payload.as_ref(), &resolve) {
             return Err(trap(Error::Copy(CopyCause::PayloadMismatch { kind })));
         }
         let record = guard

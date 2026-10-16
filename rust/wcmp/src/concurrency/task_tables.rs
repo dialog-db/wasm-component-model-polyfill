@@ -8,6 +8,7 @@
 //! shared, error-context, and instance records, with the stack of
 //! current scopes.
 
+use core::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -19,7 +20,6 @@ use crate::error::{
 use crate::executor::ir::CanonOptions;
 use crate::internal::ErrorInternal;
 use crate::resource::TableId;
-use crate::types::ValueType;
 
 use super::copy_buffer::CopyBuffer;
 use super::copy_end::CopyEnd;
@@ -28,6 +28,7 @@ use super::copy_state::CopyState;
 use super::end_direction::EndDirection;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::end_payload::EndPayload;
 use super::error_context_id::ErrorContextId;
 use super::error_context_record::ErrorContextRecord;
 use super::event::Event;
@@ -336,6 +337,19 @@ impl TaskTables {
         let channel: ResultChannel = ResultChannel::default();
         self.task_mut(task)?.result = TaskResult::Channel(channel.clone());
         Some(channel)
+    }
+
+    /// Give `task` the lift a typed call carries for its result, which
+    /// `task.return` runs in place of lifting a `Val`. `None` when the
+    /// store holds no such task.
+    pub fn attach_return_lift(&mut self, task: TaskId, lift: Box<dyn Any + Send>) -> Option<()> {
+        self.task_mut(task)?.return_lift = Some(lift);
+        Some(())
+    }
+
+    /// Take the lift a typed call gave `task`, once.
+    pub fn take_return_lift(&mut self, task: TaskId) -> Option<Box<dyn Any + Send>> {
+        self.task_mut(task)?.return_lift.take()
     }
 
     /// Make `task` the current scope.
@@ -1970,7 +1984,7 @@ impl TaskTables {
     ///
     /// Of the three records, the shared record is the one the cap
     /// counts.
-    pub fn insert_ends(&mut self, payload: Option<ValueType>) -> Result<(EndId, EndId)> {
+    pub fn insert_ends(&mut self, payload: EndPayload) -> Result<(EndId, EndId)> {
         self.admit_records(1)?;
         // Each end names the shared record by its index, and the
         // shared record names both ends, so the shared record is
@@ -2006,7 +2020,7 @@ impl TaskTables {
     /// producer that serves it.
     pub fn insert_host_ends(
         &mut self,
-        payload: Option<ValueType>,
+        payload: EndPayload,
         host: EndKind,
     ) -> Result<(EndId, EndId)> {
         let (readable, writable) = self.insert_ends(payload)?;
@@ -2173,7 +2187,7 @@ impl TaskTables {
     ///
     /// Fails with the not-present cause as
     /// [`readable_end`](Self::readable_end) does.
-    pub fn readable_payload(&self, end: EndId, kind: EndKind) -> Result<Option<ValueType>> {
+    pub fn readable_payload(&self, end: EndId, kind: EndKind) -> Result<EndPayload> {
         self.readable_end(end, kind)?;
         Ok(self
             .shared_record(end)
@@ -2903,6 +2917,7 @@ fn event_code(kind: EndKind) -> EventCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ValueType;
 
     /// Whether the walk below the blocked thread finds a frame that
     /// would go on under a stack switch.
@@ -3343,7 +3358,9 @@ mod tests {
     #[wcmp_macros::test]
     fn it_keeps_both_ends_until_the_second_one_drops() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
+        let (readable, writable) = tables
+            .insert_ends(EndPayload::Declared(None))
+            .expect("room under the record cap");
         assert_eq!(tables.end_count(), 2);
         assert_eq!(tables.shared_record_count(), 1);
         assert_eq!(
@@ -3380,7 +3397,9 @@ mod tests {
         let set = tables
             .insert_waitable_set()
             .expect("room under the record cap");
-        let (readable, _) = tables.insert_ends(None).expect("room under the record cap");
+        let (readable, _) = tables
+            .insert_ends(EndPayload::Declared(None))
+            .expect("room under the record cap");
         let waitable = WaitableId::from_end(EndKind::FutureReadable, readable);
         tables
             .join_waitable_set(waitable, Some(set))
@@ -3456,7 +3475,9 @@ mod tests {
             (EndKind::StreamReadable, 2, EndKind::StreamWritable, 2),
         ] {
             let mut tables = TaskTables::new();
-            let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
+            let (readable, writable) = tables
+                .insert_ends(EndPayload::Declared(None))
+                .expect("room under the record cap");
             let end_of = |kind| match kind {
                 EndKind::StreamReadable => readable,
                 _ => writable,
@@ -3486,7 +3507,9 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_zero_length_copy_of_a_non_number_payload_probe_another_instance() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
+        let (readable, writable) = tables
+            .insert_ends(EndPayload::Declared(None))
+            .expect("room under the record cap");
         tables
             .start_copy(EndKind::StreamReadable, readable, text_buffer(3, 1))
             .expect("the read starts");
@@ -3501,7 +3524,9 @@ mod tests {
     #[wcmp_macros::test]
     fn it_lets_a_same_instance_copy_of_a_number_payload_meet_a_pending_one() {
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
+        let (readable, writable) = tables
+            .insert_ends(EndPayload::Declared(None))
+            .expect("room under the record cap");
         tables
             .start_copy(EndKind::StreamReadable, readable, empty_buffer(1))
             .expect("the read starts");
@@ -3530,7 +3555,7 @@ mod tests {
             for buffer in [empty_buffer(4), text_buffer(3, 0), text_buffer(3, 4)] {
                 let mut tables = TaskTables::new();
                 let (readable, writable) = tables
-                    .insert_host_ends(buffer.payload.clone(), host)
+                    .insert_host_ends(EndPayload::Declared(buffer.payload.clone()), host)
                     .expect("room under the record cap");
                 let (host_end, guest_end) = match host {
                     EndKind::StreamWritable => (writable, readable),
@@ -3570,7 +3595,9 @@ mod tests {
         // the end a drop reaches holds an event without being the
         // pending side.
         let mut tables = TaskTables::new();
-        let (readable, writable) = tables.insert_ends(None).expect("room under the record cap");
+        let (readable, writable) = tables
+            .insert_ends(EndPayload::Declared(None))
+            .expect("room under the record cap");
         let read = WaitableId::from_end(EndKind::StreamReadable, readable);
         let write = WaitableId::from_end(EndKind::StreamWritable, writable);
         assert_eq!(

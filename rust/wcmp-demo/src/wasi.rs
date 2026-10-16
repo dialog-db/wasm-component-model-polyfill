@@ -30,10 +30,15 @@ use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use wcmp::__private::{
+    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
+    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
+};
 use wcmp::{
-    Accessor, ComponentValue, EnumType, Error, FunctionParameter, FunctionType, FutureProducer,
-    FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker, ResultType, Source,
-    StoreContext, StreamConsumer, StreamReader, StreamResult, Val, ValueType,
+    Accessor, ComponentType, EnumType, Error, FunctionParameter, FunctionType, FutureAny,
+    FutureProducer, FutureReader, FutureType, HostCall, InterfaceIdentifier, Lift, Linker, Lower,
+    PrimitiveType, ResultType, Source, StoreContext, StreamConsumer, StreamReader, StreamResult,
+    StreamType, Val, ValueType,
 };
 
 use crate::platform;
@@ -70,9 +75,9 @@ pub fn define<T: 'static>(linker: &mut Linker<T>, label: &str) -> Result<(), Err
     define_output(linker, STDERR, label, Console::Error)?;
     linker.instance(&identifier(CLOCK_TYPES));
     let mut monotonic_clock = linker.instance(&identifier(MONOTONIC_CLOCK));
-    monotonic_clock.func_wrap("now", |_, (): ()| Ok(platform::now_nanos()))?;
+    monotonic_clock.func_wrap("now", |_, (): ()| Ok((platform::now_nanos(),)))?;
     monotonic_clock.func_wrap("get-resolution", |_, (): ()| {
-        Err::<u64, _>(unimplemented(MONOTONIC_CLOCK, "get-resolution"))
+        Err::<(u64,), _>(unimplemented(MONOTONIC_CLOCK, "get-resolution"))
     })?;
     monotonic_clock.func_wrap_concurrent("wait-for", |_: &Accessor<T>, (how_long,): (u64,)| {
         platform::wait(how_long)
@@ -113,10 +118,12 @@ fn define_output<T: 'static>(
         FunctionType {
             parameters: vec![FunctionParameter {
                 name: "data".to_string(),
-                ty: StreamReader::<u8>::value_type(),
+                ty: ValueType::Stream(StreamType::new(Some(ValueType::Primitive(
+                    PrimitiveType::U8,
+                )))),
             }],
             result: Some(ValueType::Future(FutureType::new(Some(
-                WriteResult::value_type(),
+                WriteResult::declared(),
             )))),
             async_: false,
         },
@@ -134,7 +141,8 @@ fn define_output<T: 'static>(
                 end: end.clone(),
             };
             StreamReader::<u8>::try_from_stream_any(data.clone())?.pipe(call.store(), consumer)?;
-            results[0] = FutureReader::new(call.store(), Finishes(end))?.to_val();
+            let finished = FutureReader::new(call.store(), Finishes(end))?;
+            results[0] = Val::Future(FutureAny::try_from_future_reader(call.store(), finished)?);
             Ok(())
         },
     )
@@ -255,23 +263,87 @@ impl<T: 'static> FutureProducer<T> for Finishes {
 /// ever holds `ok`.
 struct WriteResult;
 
-impl ComponentValue for WriteResult {
-    fn value_type() -> ValueType {
+impl WriteResult {
+    /// The type the payload is declared as: `result<_, error-code>`.
+    fn declared() -> ValueType {
         let codes = EnumType::new(ERROR_CODES.map(str::to_string));
         ValueType::Result(ResultType::new(None, Some(ValueType::Enum(codes))))
     }
 
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(Ok(None)) => Ok(WriteResult),
-            other => Err(Error::Internal {
-                message: format!("the demo writes only `ok` to an output, not {other:?}"),
-            }),
+    /// The failure of a lift that finds `err`, which the demo never
+    /// writes to an output.
+    fn not_ok() -> Error {
+        Error::Internal {
+            message: "the demo writes only `ok` to an output, not `err`".to_string(),
         }
     }
+}
 
-    fn to_val(self) -> Val {
-        Val::Result(Ok(None))
+impl ComponentType for WriteResult {
+    const ABI: CanonicalAbiInfo =
+        CanonicalAbiInfo::variant_static(&[None, Some(CanonicalAbiInfo::enum_(ERROR_CODES.len()))]);
+
+    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let matches = match ty {
+            ValueType::Result(result) => {
+                result.ok().is_none()
+                    && matches!(
+                        result.err(),
+                        Some(ValueType::Enum(codes)) if codes.cases().iter().map(String::as_str).eq(ERROR_CODES)
+                    )
+            }
+            _ => false,
+        };
+        if matches {
+            Ok(())
+        } else {
+            Err(TypeCheckError::mismatch::<Self>(ty))
+        }
+    }
+}
+
+impl Lower for WriteResult {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> Result<(), Error> {
+        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<(), Error> {
+        lower_case_memory(cx, ty, 0, offset).map(|_| ())
+    }
+}
+
+impl Lift for WriteResult {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> Result<Self, Error> {
+        lift_case_flat(cx, ty, slots, cursor, |_, case, _| match case {
+            0 => Ok(WriteResult),
+            _ => Err(WriteResult::not_ok()),
+        })
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<Self, Error> {
+        match lift_case_memory(cx, ty, offset)? {
+            (0, _, _) => Ok(WriteResult),
+            _ => Err(WriteResult::not_ok()),
+        }
     }
 }
 

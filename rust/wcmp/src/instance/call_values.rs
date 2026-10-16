@@ -13,8 +13,12 @@
 //! arguments reach the guest and in what shape the result comes back.
 //! The untyped call carries a slice of [`Val`]s and brings back a
 //! boxed slice of them. The typed call carries a Rust tuple and brings
-//! back a Rust value, and never holds a `Val` for either unless the
-//! export resolves through `task.return`.
+//! back a Rust tuple, and never holds a `Val` for either: an export
+//! lifted `async` resolves through `task.return`, which lifts the typed
+//! call's result straight out of its arguments.
+
+use core::any::Any;
+use std::sync::Arc;
 
 use crate::abi::call_values::{check_store, lift_result_value, lower_arguments};
 use crate::abi::context::BoundaryContext;
@@ -22,8 +26,21 @@ use crate::abi::signature::Signature;
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::runtime_layer::Val as RuntimeVal;
-use crate::store::StoreId;
+use crate::store::{StoreData, StoreId};
 use crate::value::Val;
+
+/// The lift a typed call's task carries for `task.return` to run in
+/// place of lifting a [`Val`]: it lifts the result straight out of the
+/// built-in's arguments, which travel through memory when the flag is
+/// set, and keeps it where the call takes it from.
+pub type ReturnLift<T> = Box<
+    dyn for<'a> FnOnce(&mut BoundaryContext<'a, StoreData<T>>, &[RuntimeVal], bool) -> Result<()>
+        + Send,
+>;
+
+/// A [`ReturnLift`] as the task record holds it, which names no host
+/// data type.
+pub type ErasedReturnLift = Box<dyn Any + Send>;
 
 /// The arguments of one export call and the shape its result comes
 /// back in.
@@ -69,10 +86,21 @@ pub trait CallValues: Send + 'static {
     /// is only the task's own record of it.
     fn resolution(output: &Self::Output) -> Option<Val>;
 
-    /// The call's result from the value an export lifted `async`
-    /// resolved its task with through `task.return`, which is a
-    /// [`Val`] whatever the call carries.
-    fn from_resolution(value: Option<Val>) -> Result<Self::Output>;
+    /// Where the result of an export lifted `async` goes when the call
+    /// lifts it itself rather than taking the task's [`Val`].
+    type Returned: Send + 'static;
+
+    /// Prepare a call into an export lifted `async`: where its result
+    /// goes, and the lift its task carries for `task.return` to run,
+    /// for a call that lifts its result itself.
+    fn prepare_return<T: 'static>(
+        signature: &Arc<Signature>,
+    ) -> (Self::Returned, Option<ReturnLift<T>>);
+
+    /// The call's result once an export lifted `async` resolved its
+    /// task through `task.return`: the [`Val`] the task resolved with,
+    /// for a call that takes it, or what the call's own lift kept.
+    fn from_resolution(value: Option<Val>, returned: &Self::Returned) -> Result<Self::Output>;
 }
 
 /// The untyped call: one [`Val`] per argument in, and the lifted
@@ -129,7 +157,13 @@ impl CallValues for Vec<Val> {
         output.first().cloned()
     }
 
-    fn from_resolution(value: Option<Val>) -> Result<Box<[Val]>> {
+    type Returned = ();
+
+    fn prepare_return<T: 'static>(_: &Arc<Signature>) -> ((), Option<ReturnLift<T>>) {
+        ((), None)
+    }
+
+    fn from_resolution(value: Option<Val>, _: &()) -> Result<Box<[Val]>> {
         Ok(value.into_iter().collect())
     }
 }

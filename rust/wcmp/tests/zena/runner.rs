@@ -9,9 +9,9 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use wcmp::{
-    Component, ComponentParameters, ComponentResult, ComponentValue, Engine, Error, ExternType,
-    ExternalName, Func, FunctionType, Instance, InstanceItem, Linker, LinkerInstance,
-    PrimitiveType, Store, TypeMismatchPosition, Val, ValueType,
+    Component, ComponentNamedList, Engine, Error, ExternType, ExternalName, Func, FunctionType,
+    Instance, InstanceItem, Lift, Linker, LinkerInstance, Lower, PrimitiveType, Store,
+    TypeMismatchPosition, Val, ValueType,
 };
 use wcmp_scenario::{
     Call, Link, Outcome, Run, SourceBundle, Stage, Subject, Typed, TypedSignature, Value, Verdict,
@@ -586,7 +586,7 @@ async fn typed_of<T>(
     arguments: Vec<Value>,
 ) -> Outcome
 where
-    T: Typed + ComponentValue,
+    T: Typed + Lift + Lower + 'static,
 {
     let Some(arguments) = arguments
         .into_iter()
@@ -595,17 +595,17 @@ where
     else {
         return Outcome::Failure(format!("an argument is not a {}", T::TYPE));
     };
-    let result = |result: T| vec![result.into_value()];
+    let result = |(result,): (T,)| vec![result.into_value()];
     let none = |()| Vec::new();
     // `TypedSignature` holds a typed call to two arguments at most.
     let mut arguments = arguments.into_iter();
     match (arguments.next(), arguments.next(), signature.result) {
         (None, _, false) => typed::<(), ()>(store, func, (), none).await,
-        (None, _, true) => typed::<(), T>(store, func, (), result).await,
+        (None, _, true) => typed::<(), (T,)>(store, func, (), result).await,
         (Some(a), None, false) => typed::<(T,), ()>(store, func, (a,), none).await,
-        (Some(a), None, true) => typed::<(T,), T>(store, func, (a,), result).await,
+        (Some(a), None, true) => typed::<(T,), (T,)>(store, func, (a,), result).await,
         (Some(a), Some(b), false) => typed::<(T, T), ()>(store, func, (a, b), none).await,
-        (Some(a), Some(b), true) => typed::<(T, T), T>(store, func, (a, b), result).await,
+        (Some(a), Some(b), true) => typed::<(T, T), (T,)>(store, func, (a, b), result).await,
     }
 }
 
@@ -618,8 +618,8 @@ async fn typed<P, R>(
     values: impl FnOnce(R) -> Vec<Value>,
 ) -> Outcome
 where
-    P: ComponentParameters,
-    R: ComponentResult,
+    P: ComponentNamedList + Lower + 'static,
+    R: ComponentNamedList + Lift + 'static,
 {
     let typed = match func.typed::<P, R>() {
         Ok(typed) => typed,

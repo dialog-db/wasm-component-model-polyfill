@@ -891,17 +891,17 @@ async fn it_leaves_the_entry_pending_when_the_store_goes_idle_with_the_task_unre
 async fn it_returns_the_typed_result_through_the_typed_entry() {
     let (mut store, instance, log) = instantiate(SYNC_STEPS).await;
     let concurrent = func(&instance, "step")
-        .typed::<(u32,), u32>()
+        .typed::<(u32,), (u32,)>()
         .expect("the typed handle is acquired as it is for a direct call");
 
-    let through_the_accessor = store
+    let (through_the_accessor,) = store
         .run_concurrent(async |accessor| concurrent.call_concurrent(accessor, (3,)).await)
         .await
         .expect("run the closure")
         .expect("call the export");
 
-    let directly = func(&instance, "step")
-        .typed::<(u32,), u32>()
+    let (directly,) = func(&instance, "step")
+        .typed::<(u32,), (u32,)>()
         .expect("typed handle")
         .call(&mut store, (3,))
         .await

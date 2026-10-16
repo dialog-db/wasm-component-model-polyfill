@@ -28,7 +28,7 @@
 //! producer delivered beyond what the reader could take satisfy the
 //! reader's later reads first. The delivery moves as many as the
 //! read can take through a boundary context over the reader's
-//! memory, and the producer lowers each one as its `ComponentValue`
+//! memory, and the producer lowers each one as its type's `Lower`
 //! lowers it. An end whose producer is finished and which has no
 //! item left is let go of: its writable end drops, which tells the
 //! reader the stream ended, and a future's end drops once its value

@@ -35,10 +35,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    AbiCause, Component, ComponentValue, CopyCause, Destination, EndKind, Engine, EngineConfig,
-    Error, FunctionParameter, FunctionType, FutureConsumer, FutureReader, HostCall, Instance,
-    Linker, Source, Store, StoreContext, StreamAny, StreamConsumer, StreamProducer, StreamReader,
-    StreamResult, Val,
+    AbiCause, Component, CopyCause, Destination, EndKind, Engine, EngineConfig, Error,
+    FunctionParameter, FunctionType, FutureConsumer, FutureReader, FutureType, HostCall, Instance,
+    Linker, PrimitiveType, Source, Store, StoreContext, StreamAny, StreamConsumer, StreamProducer,
+    StreamReader, StreamResult, StreamType, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -456,7 +456,9 @@ async fn instantiate_untyped() -> (Store<()>, Instance, Received) {
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "s".to_owned(),
-                    ty: StreamReader::<u8>::value_type(),
+                    ty: ValueType::Stream(StreamType::new(Some(ValueType::Primitive(
+                        PrimitiveType::U8,
+                    )))),
                 }],
                 result: None,
                 async_: false,
@@ -497,7 +499,9 @@ async fn instantiate_with(
             FunctionType {
                 parameters: vec![FunctionParameter {
                     name: "f".to_owned(),
-                    ty: FutureReader::<u32>::value_type(),
+                    ty: ValueType::Future(FutureType::new(Some(ValueType::Primitive(
+                        PrimitiveType::U32,
+                    )))),
                 }],
                 result: None,
                 async_: false,
@@ -570,11 +574,12 @@ async fn make(store: &mut Store<()>, instance: &Instance) -> StreamReader<u8> {
     instance
         .get_func("make")
         .expect("the component exports `make`")
-        .typed::<(), StreamReader<u8>>()
+        .typed::<(), (StreamReader<u8>,)>()
         .expect("`make` returns a `stream<u8>`")
         .call(store, ())
         .await
         .expect("the readable end crosses to the host")
+        .0
 }
 
 /// A stream the guest created, piped to `consumer`.
@@ -962,7 +967,7 @@ async fn it_refuses_a_typed_reader_of_another_payload_type() {
     let refused = instance
         .get_func("make")
         .expect("the component exports `make`")
-        .typed::<(), StreamReader<u32>>();
+        .typed::<(), (StreamReader<u32>,)>();
     assert!(
         matches!(refused, Err(Error::TypeMismatch(_))),
         "a `stream<u8>` does not lift as a `StreamReader<u32>`"
@@ -1074,11 +1079,12 @@ async fn piped_future(store: &mut Store<()>, instance: &Instance, consumer: Rece
     let reader = instance
         .get_func("make-future")
         .expect("the component exports `make-future`")
-        .typed::<(), FutureReader<u32>>()
+        .typed::<(), (FutureReader<u32>,)>()
         .expect("`make-future` returns a `future<u32>`")
         .call(&mut *store, ())
         .await
-        .expect("the readable end crosses to the host");
+        .expect("the readable end crosses to the host")
+        .0;
     reader
         .pipe(&mut store.as_context_mut(), consumer)
         .expect("the host pipes the reader");
@@ -1274,11 +1280,12 @@ async fn it_lifts_each_string_a_guest_writes_out_of_its_memory() {
     let reader = instance
         .get_func("make-strings")
         .expect("the component exports `make-strings`")
-        .typed::<(), StreamReader<String>>()
+        .typed::<(), (StreamReader<String>,)>()
         .expect("`make-strings` returns a `stream<string>`")
         .call(&mut store, ())
         .await
-        .expect("the readable end crosses to the host");
+        .expect("the readable end crosses to the host")
+        .0;
     let strings = Arc::new(Mutex::new(Vec::new()));
     reader
         .pipe(&mut store.as_context_mut(), Strings(strings.clone()))
@@ -1756,11 +1763,12 @@ async fn it_moves_out_of_the_writers_table_only_the_inner_ends_a_consumer_takes(
     let outer = instance
         .get_func("make")
         .expect("the component exports `make`")
-        .typed::<(), StreamReader<StreamReader<u8>>>()
+        .typed::<(), (StreamReader<StreamReader<u8>>,)>()
         .expect("`make` returns a `stream<stream<u8>>`")
         .call(&mut store, ())
         .await
-        .expect("the readable end crosses to the host");
+        .expect("the readable end crosses to the host")
+        .0;
     let taken = Arc::new(Mutex::new(Vec::new()));
     outer
         .pipe(&mut store.as_context_mut(), TakesOneReader(taken.clone()))

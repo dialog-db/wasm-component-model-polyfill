@@ -2713,7 +2713,7 @@ mod tests {
             .root()
             .func_wrap(
                 "probe",
-                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                     // Everything below runs against the store as the
                     // trampoline reaches it: the core store's context
                     // the runtime layer handed it, and nothing besides.
@@ -2750,7 +2750,7 @@ mod tests {
                         store.internal().turn_in_flight(),
                         store.internal().scheduler().host_task_count(),
                     ));
-                    Ok(x)
+                    Ok((x,))
                 },
             )
             .expect("the registration");
@@ -2811,7 +2811,7 @@ mod tests {
             .root()
             .func_wrap(
                 "probe",
-                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                     // Everything below runs against the store as the
                     // trampoline reaches it: the core store's context the
                     // runtime layer handed it, and nothing besides. No
@@ -2859,7 +2859,7 @@ mod tests {
                         ));
                     };
                     match produced?.first() {
-                        Some(Val::U32(value)) => Ok(*value),
+                        Some(Val::U32(value)) => Ok((*value,)),
                         _ => Err(Error::internal("the host task produced no u32")),
                     }
                 },

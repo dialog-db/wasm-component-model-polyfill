@@ -50,5 +50,6 @@ mod tasks;
 mod thread_builtins;
 mod thread_switch;
 mod thread_yield;
+mod typed_values;
 mod waitable_builtins;
 mod waitables;

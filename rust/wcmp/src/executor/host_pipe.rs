@@ -14,10 +14,9 @@
 //! and the producer is polled for more once the consumer has taken
 //! every item and answered ready, with a destination whose remaining
 //! count is `None`, which says that the reader is the host. The items
-//! cross from the producer to the consumer as the values they cross
-//! a boundary as, so the two sides need only name the same component
-//! type. Wasmtime's host-to-host path moves them without converting,
-//! and requires the same Rust type.
+//! move from the producer to the consumer as they are, without a
+//! conversion, so the two sides name the same Rust type, as Wasmtime's
+//! host-to-host path requires.
 //!
 //! The pipe ends when the producer is done and the consumer has taken
 //! everything it delivered, when the consumer answers that it is
@@ -30,8 +29,7 @@ use core::task::{Context, Poll};
 
 use crate::concurrency::{Accessor, EndId, HostConsumer, HostTask, HostTaskBody, HostWriter};
 use crate::error::Result;
-use crate::internal::SourceInternal;
-use crate::linker::ComponentValue;
+use crate::internal::{ErrorInternal, SourceInternal};
 use crate::store::{StoreContext, StoreContextInternalExt};
 use crate::value::Val;
 
@@ -145,10 +143,13 @@ impl<T: 'static, H: HostConsumer<T>> PipeBody<T, H> {
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Ready(Ok(())) => {}
             }
-            for item in producer.take_items() {
-                match H::Item::from_val(&item) {
-                    Ok(item) => self.offered.push(item),
-                    Err(error) => return Poll::Ready(Err(error)),
+            match producer.take_items().downcast::<Vec<H::Item>>() {
+                Ok(items) => self.offered.extend(*items),
+                Err(_) => {
+                    return Poll::Ready(Err(crate::Error::internal(
+                        "a host pipe's producer delivered items of another Rust type than its \
+                         consumer takes",
+                    )));
                 }
             }
             self.produced_all = producer.finished();

@@ -2696,6 +2696,16 @@ impl<'a, T: 'static> StoreContext<'a, T> {
             .ok_or_else(|| Error::internal("an export's task is not in the store"))
     }
 
+    /// Give an export's task the lift a typed call carries for its
+    /// result, which the task's `task.return` runs in place of lifting
+    /// a `Val`. Workspace-internal.
+    fn attach_return_lift(&self, task: TaskId, lift: Box<dyn core::any::Any + Send>) -> Result<()> {
+        self.lock_tables()?
+            .tasks
+            .attach_return_lift(task, lift)
+            .ok_or_else(|| Error::internal("an export's task is not in the store"))
+    }
+
     /// Whether an export's task has resolved: the reference's
     /// `state == RESOLVED`. The exit of a callback task's implicit
     /// thread reads it, because a thread that exits without a result
@@ -4895,7 +4905,7 @@ mod tests {
             .root()
             .func_wrap(
                 "probe",
-                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                     let store = call.store();
                     let subtask = store
                         .lock_tables()?
@@ -4930,7 +4940,7 @@ mod tests {
                         store.scheduler().host_task_count(),
                         store.scheduler().items_run() - before,
                     ));
-                    Ok(x)
+                    Ok((x,))
                 },
             )
             .expect("the registration");
@@ -4987,7 +4997,7 @@ mod tests {
             .root()
             .func_wrap(
                 "probe",
-                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                     let store = call.store();
                     let subtask = store
                         .lock_tables()?
@@ -5011,7 +5021,7 @@ mod tests {
                         LowerKind::Sync,
                     )?;
                     *recorded.lock().expect("record") = Some(status.value());
-                    Ok(x)
+                    Ok((x,))
                 },
             )
             .expect("the registration");
@@ -5100,7 +5110,7 @@ mod tests {
                 .root()
                 .func_wrap(
                     "probe",
-                    move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<u32> {
+                    move |mut call: HostCall<'_, ()>, (x,): (u32,)| -> Result<(u32,)> {
                         let store = call.store();
                         let subtask = store
                             .lock_tables()?
@@ -5148,7 +5158,7 @@ mod tests {
                             LowerKind::Sync,
                         )?;
                         *reported.lock().expect("record") = Some(status.value());
-                        Ok(x)
+                        Ok((x,))
                     },
                 )
                 .expect("the registration");

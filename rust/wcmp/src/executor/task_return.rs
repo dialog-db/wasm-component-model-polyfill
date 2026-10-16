@@ -72,6 +72,7 @@ use crate::concurrency::{InstanceId, Scope, SubtaskId, TaskId, TaskState};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, ReturnMismatchKind, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::{CanonOptions, CoreSignature};
+use crate::instance::{ErasedReturnLift, ReturnLift};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::runtime_layer::host_func;
@@ -176,6 +177,18 @@ fn task_return<T: 'static>(
         return cross_result_into_caller(&mut store_ctx, tables, task, subtask, result, args);
     }
 
+    // A typed call lifts its result itself, straight out of the
+    // built-in's arguments, and keeps it where the call takes it
+    // from: the task then resolves with no value of its own.
+    if let Some(typed) = take_return_lift(tables, task)? {
+        let typed = typed.downcast::<ReturnLift<T>>().map_err(|_| {
+            Error::internal("a typed call's result lift names another host data type")
+        })?;
+        typed(&mut context, args, result.is_some_and(spills))?;
+        drop(context);
+        return resolve(tables, task, None, result);
+    }
+
     let value = match result {
         None => None,
         Some(ty) if spills(ty) => {
@@ -196,6 +209,15 @@ fn task_return<T: 'static>(
     drop(context);
 
     resolve(tables, task, value, result)
+}
+
+/// Take the lift a typed call gave the task, for the built-in to run
+/// in place of lifting a [`Val`].
+fn take_return_lift(
+    tables: &Arc<Mutex<HandleTables>>,
+    task: TaskId,
+) -> Result<Option<ErasedReturnLift>> {
+    Ok(lock(tables)?.tasks.take_return_lift(task))
 }
 
 /// What the built-in reads off the task it is about to resolve.

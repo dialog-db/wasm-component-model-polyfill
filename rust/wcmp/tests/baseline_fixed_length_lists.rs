@@ -103,7 +103,7 @@ async fn instantiate() -> (Store<()>, wcmp::Instance) {
     linker
         .root()
         .func_wrap("check", |_, (list,): ([u32; 4],)| {
-            Ok(list.iter().sum::<u32>())
+            Ok((list.iter().sum::<u32>(),))
         })
         .expect("the registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
@@ -141,22 +141,22 @@ async fn it_round_trips_a_fixed_length_list_typed() {
     let sum = instance
         .get_func("sum")
         .expect("`sum` is exported")
-        .typed::<([u32; 4],), u32>()
+        .typed::<([u32; 4],), (u32,)>()
         .expect("an array converts to `list<u32, 4>`");
     assert_eq!(
         sum.call(&mut store, ([1, 2, 3, 36],)).await.expect("call"),
-        42
+        (42,)
     );
 
     let identity = instance
         .get_func("identity")
         .expect("`identity` is exported")
-        .typed::<([u8; 16],), [u8; 16]>()
+        .typed::<([u8; 16],), ([u8; 16],)>()
         .expect("typed conversion succeeds");
     let input: [u8; 16] = core::array::from_fn(|i| (i * 13) as u8);
     assert_eq!(
         identity.call(&mut store, (input,)).await.expect("call"),
-        input
+        (input,)
     );
 }
 
@@ -209,7 +209,7 @@ async fn it_rejects_a_wrong_length() {
     let err = instance
         .get_func("sum")
         .expect("`sum` is exported")
-        .typed::<([u32; 3],), u32>()
+        .typed::<([u32; 3],), (u32,)>()
         .expect_err("`[u32; 3]` does not match `list<u32, 4>`");
     assert!(matches!(err, Error::TypeMismatch(_)));
 }

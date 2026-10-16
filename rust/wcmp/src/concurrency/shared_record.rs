@@ -6,11 +6,10 @@
 
 //! The state the two ends of one stream or future share.
 
-use crate::types::ValueType;
-
 use super::end_direction::EndDirection;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::end_payload::EndPayload;
 
 /// The state the two ends of one stream or future share.
 ///
@@ -30,10 +29,12 @@ use super::end_kind::EndKind;
 /// the end that is left sees the mark and completes with the dropped
 /// result at once.
 pub struct SharedRecord {
-    /// The type of each value the stream or future carries, or `None`
-    /// for one that carries no values. A built-in that names an end
-    /// was declared with a type, and its payload must equal this one.
-    pub payload: Option<ValueType>,
+    /// What each value the stream or future carries is: the type a
+    /// component declared, with the identities its instantiation gave
+    /// its resources, or the Rust type of the host's. A built-in or a
+    /// crossing that names an end was declared with a type, and this
+    /// must match it.
+    pub payload: EndPayload,
     /// Whether either end has been dropped.
     pub dropped: bool,
     /// The end whose copy is waiting for the other end to start one,
@@ -61,7 +62,7 @@ impl SharedRecord {
     /// Construct the shared record of a fresh stream or future whose
     /// two ends are `readable` and `writable`: nothing dropped and
     /// nothing pending.
-    pub fn new(payload: Option<ValueType>, readable: EndId, writable: EndId) -> Self {
+    pub fn new(payload: EndPayload, readable: EndId, writable: EndId) -> Self {
         Self {
             payload,
             dropped: false,

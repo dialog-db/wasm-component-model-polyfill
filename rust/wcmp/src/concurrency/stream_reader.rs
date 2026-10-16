@@ -6,6 +6,7 @@
 
 //! The readable end of a stream the host holds.
 
+use core::any::Any;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -14,16 +15,17 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::size_of;
 use crate::error::{AbiPosition, CopyCause, Error, Result};
 use crate::executor::{close_readable_end, pipe_readable_end};
+use crate::internal::LowerContextInternal;
 use crate::internal::{DestinationInternal, StreamReaderInternal};
-use crate::linker::ComponentValue;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreData};
+use crate::typed::{ComponentType, Lift, Lower, LowerContext};
 use crate::types::ValueType;
-use crate::value::Val;
 
 use super::accessor::Accessor;
 use super::destination::Destination;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::end_payload::EndPayload;
 use super::guarded_stream_reader::GuardedStreamReader;
 use super::host_consumer::HostConsumer;
 use super::host_writer::HostWriter;
@@ -39,8 +41,8 @@ use super::stream_result::StreamResult;
 /// A host creates a stream with [`StreamReader::new`], giving it the
 /// producer that writes it, and hands the reader to a guest: as the
 /// result of a typed host function, or as an argument of a typed
-/// call. The reader implements
-/// [`ComponentValue`](crate::ComponentValue) for that, and lowering
+/// call. The reader implements [`Lower`](crate::Lower) and
+/// [`Lift`](crate::Lift) for that, and lowering
 /// it into a guest enters a readable end in the guest's handle table
 /// that shares the stream with the producer. The guest then reads
 /// the stream with `stream.read`, and each read polls the producer
@@ -48,8 +50,9 @@ use super::stream_result::StreamResult;
 ///
 /// A host receives a reader the other way: a stream in the result of
 /// a typed call, or in a parameter of a typed host function, arrives
-/// as one, and the guest's entry for the end is gone. The lift checks
-/// that the guest's stream carries the type `T` projects to. The host
+/// as one, and the guest's entry for the end is gone. The type check
+/// of the typed function compared `T` with the payload the stream's type
+/// declares when the host acquired or linked it. The host
 /// then reads the stream with [`pipe`](Self::pipe), which makes a
 /// [`StreamConsumer`] its reading side, and each write of the guest
 /// polls the consumer inside a turn of the store.
@@ -95,11 +98,11 @@ pub struct StreamReader<T> {
     item: PhantomData<fn() -> T>,
 }
 
-impl<T: ComponentValue> StreamReader<T> {
+impl<T: ComponentType + 'static> StreamReader<T> {
     /// Create a stream in the store `store` reaches, whose writable
     /// end is `producer`, and return its readable end.
     ///
-    /// The stream carries values of the type `T` projects to. `D` is
+    /// The stream carries values of the Rust type `T`. `D` is
     /// the store's host data. [`Store::as_context_mut`] reaches the
     /// context from a store the host holds, and a host `async`
     /// function reaches it through [`Accessor::with`].
@@ -109,12 +112,15 @@ impl<T: ComponentValue> StreamReader<T> {
     pub fn new<D: 'static>(
         store: &mut StoreContext<'_, D>,
         producer: impl StreamProducer<D, Item = T>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        T: Lower,
+    {
         let (readable, writable) = store
             .internal()
             .lock_tables()?
             .tasks
-            .insert_host_ends(Some(T::value_type()), EndKind::StreamWritable)?;
+            .insert_host_ends(EndPayload::host::<T>(), EndKind::StreamWritable)?;
         store.internal().scheduler_mut().insert_host_writer(
             writable,
             Box::new(ProducerEnd {
@@ -169,7 +175,10 @@ impl<T: ComponentValue> StreamReader<T> {
         self,
         store: &mut StoreContext<'_, D>,
         consumer: impl StreamConsumer<D, Item = T>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        T: Lift,
+    {
         let consumer = ConsumerEnd {
             consumer: Box::pin(consumer),
             dropped: false,
@@ -189,8 +198,8 @@ impl<T: ComponentValue> StreamReader<T> {
     }
 
     /// Convert `stream` into a reader whose items are of the Rust type
-    /// `T`, after checking that the stream carries the type `T`
-    /// projects to. The name is Wasmtime's, and
+    /// `T`, after checking that the stream carries values of `T`. The
+    /// name is Wasmtime's, and
     /// [`StreamAny::try_into_stream_reader`] states the contract.
     pub fn try_from_stream_any(stream: StreamAny) -> Result<Self> {
         stream.try_into_stream_reader()
@@ -291,7 +300,7 @@ struct ProducerEnd<D: 'static, P: StreamProducer<D>> {
 impl<D: 'static, P> HostWriter<D> for ProducerEnd<D, P>
 where
     P: StreamProducer<D>,
-    P::Item: ComponentValue,
+    P::Item: Lower,
 {
     fn poll(
         &mut self,
@@ -352,14 +361,15 @@ where
     ) -> Result<()> {
         let size = size_of(ty);
         let count = count.min(self.waiting.len());
+        let mut cx = LowerContext::new(cx, POINTER_ARGUMENT);
         for (i, item) in self.waiting.drain(..count).enumerate() {
-            item.store(cx, offset + i * size, ty, POINTER_ARGUMENT)?;
+            item.lower_memory(&mut cx, ty, offset + i * size)?;
         }
         Ok(())
     }
 
-    fn take_items(&mut self) -> Vec<Val> {
-        self.waiting.drain(..).map(ComponentValue::to_val).collect()
+    fn take_items(&mut self) -> Box<dyn Any> {
+        Box::new(core::mem::take(&mut self.waiting))
     }
 }
 
@@ -380,7 +390,7 @@ struct ConsumerEnd<D: 'static, C: StreamConsumer<D>> {
 impl<D: 'static, C> HostConsumer<D> for ConsumerEnd<D, C>
 where
     C: StreamConsumer<D>,
-    C::Item: ComponentValue,
+    C::Item: Lift,
 {
     type Item = C::Item;
 

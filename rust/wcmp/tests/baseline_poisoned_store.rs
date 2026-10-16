@@ -455,7 +455,7 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
         .instance
         .get_func("ok")
         .expect("`ok` is exported")
-        .typed::<(), u32>()
+        .typed::<(), (u32,)>()
         .expect("`ok` is `() -> u32`");
 
     fixture

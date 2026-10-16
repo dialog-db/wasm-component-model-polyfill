@@ -1941,7 +1941,7 @@ struct Never {
 }
 
 impl Future for Never {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
         Poll::Pending
@@ -1965,11 +1965,11 @@ struct EchoOnce {
 }
 
 impl Future for EchoOnce {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if self.polled {
-            return Poll::Ready(Ok(self.value));
+            return Poll::Ready(Ok((self.value,)));
         }
         self.polled = true;
         context.waker().wake_by_ref();
@@ -2008,7 +2008,7 @@ async fn instantiate_host_calls(provider: bool, drops: &Arc<Drops>) -> (Store<u3
     .expect("the registration of `echo`");
     root.func_wrap("dropped", {
         let drops = drops.clone();
-        move |_, (): ()| Ok(drops.dropped.load(Ordering::SeqCst))
+        move |_, (): ()| Ok((drops.dropped.load(Ordering::SeqCst),))
     })
     .expect("the registration of `dropped`");
     let mut store: Store<u32> = Store::new(&engine, 0).expect("store");

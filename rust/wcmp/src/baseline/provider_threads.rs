@@ -748,13 +748,13 @@ struct Gated {
 }
 
 impl Future for Gated {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let mut gate = self.gate.lock().expect("gate");
         gate.polls += 1;
         if gate.released {
-            return Poll::Ready(Ok(self.value));
+            return Poll::Ready(Ok((self.value,)));
         }
         gate.waker = Some(context.waker().clone());
         Poll::Pending
@@ -888,7 +888,7 @@ async fn it_resumes_a_thread_blocked_on_a_host_task_that_runs_guest_work_without
                     })?;
                     *seen.lock().expect("seen") = Some(observed);
                     match tripled.first() {
-                        Some(&Val::U32(value)) => Ok(value),
+                        Some(&Val::U32(value)) => Ok((value,)),
                         other => panic!("`helper` returned {other:?}"),
                     }
                 }
@@ -2096,7 +2096,7 @@ struct Sweep {
     component: Component,
     module: crate::Module,
     func: Func,
-    typed: crate::TypedFunc<(), u32>,
+    typed: crate::TypedFunc<(), (u32,)>,
     resource: crate::ResourceType,
     handle: crate::ResourceHandle,
     /// A stream the host made while the store was its own, which the

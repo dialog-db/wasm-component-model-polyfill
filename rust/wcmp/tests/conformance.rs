@@ -852,13 +852,13 @@ impl<V: Unpin> Future for YieldOnce<V> {
 async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     linker
         .root()
-        .func_wrap("host-return-two", |_, (): ()| Ok(2u32))
+        .func_wrap("host-return-two", |_, (): ()| Ok((2u32,)))
         .expect("the registration");
     linker
         .root()
         .func_wrap_concurrent(
             "host-echo-u32",
-            |_: &Accessor<()>, (v,): (u32,)| async move { Ok(v) },
+            |_: &Accessor<()>, (v,): (u32,)| async move { Ok((v,)) },
         )
         .expect("the registration");
 
@@ -869,10 +869,10 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
 
     let mut root = linker.root();
     let mut host = root.instance("host");
-    host.func_wrap("return-three", |_, (): ()| Ok(3u32))
+    host.func_wrap("return-three", |_, (): ()| Ok((3u32,)))
         .expect("the registration");
     host.instance("nested")
-        .func_wrap("return-four", |_, (): ()| Ok(4u32))
+        .func_wrap("return-four", |_, (): ()| Ok((4u32,)))
         .expect("the registration");
     host.module("simple-module", &simple_module)
         .expect("the registration");
@@ -932,12 +932,12 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     .expect("the registration");
     host.func_wrap("[static]resource1.last-drop", {
         let state = state.clone();
-        move |_, (): ()| Ok(state.last_drop.load(Ordering::SeqCst))
+        move |_, (): ()| Ok((state.last_drop.load(Ordering::SeqCst),))
     })
     .expect("the registration");
     host.func_wrap("[static]resource1.drops", {
         let state = state.clone();
-        move |_, (): ()| Ok(state.drops.load(Ordering::SeqCst))
+        move |_, (): ()| Ok((state.drops.load(Ordering::SeqCst),))
     })
     .expect("the registration");
     host.func_new(
@@ -982,11 +982,11 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
     })
     .expect("the registration");
     host.func_wrap_concurrent("return-two-slowly", |_: &Accessor<()>, (): ()| {
-        YieldOnce::new(2i32)
+        YieldOnce::new((2i32,))
     })
     .expect("the registration");
     host.func_wrap_concurrent("echo-slowly", |_: &Accessor<()>, (a,): (u32,)| {
-        YieldOnce::new(a)
+        YieldOnce::new((a,))
     })
     .expect("the registration");
     host.func_new_concurrent(
@@ -998,7 +998,7 @@ async fn link_spectest(engine: &Engine, linker: &mut Linker<()>) {
         |_: &Accessor<()>, _args: Vec<Val>| core::future::pending::<Result<Vec<Val>, Error>>(),
     )
     .expect("the registration");
-    host.func_wrap("return-hi", |_, (): ()| Ok("hi".to_owned()))
+    host.func_wrap("return-hi", |_, (): ()| Ok(("hi".to_owned(),)))
         .expect("the registration");
 
     // The `wasmtime` instance the runner registers beside the

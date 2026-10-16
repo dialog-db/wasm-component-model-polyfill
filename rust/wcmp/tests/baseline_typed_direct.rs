@@ -275,8 +275,8 @@ async fn echo() -> (Store<()>, Instance) {
 /// The typed handle of the export `name`.
 fn typed<P, R>(instance: &Instance, name: &str) -> TypedFunc<P, R>
 where
-    P: wcmp::ComponentParameters,
-    R: wcmp::ComponentResult,
+    P: wcmp::ComponentNamedList + wcmp::Lower,
+    R: wcmp::ComponentNamedList + wcmp::Lift,
 {
     instance
         .get_func(name)
@@ -292,7 +292,7 @@ where
 /// the crossing made; Wasmtime maps its memory and the counter never
 /// sees it.
 async fn grown(store: &mut Store<()>, instance: &Instance, len: usize) {
-    typed::<(Vec<u8>,), Vec<u8>>(instance, "echo-bytes")
+    typed::<(Vec<u8>,), (Vec<u8>,)>(instance, "echo-bytes")
         .call(&mut *store, (vec![0; len],))
         .await
         .expect("the warm-up echoes");
@@ -317,13 +317,13 @@ const PAYLOAD: usize = 1 << 20;
 #[wcmp_macros::test]
 async fn it_round_trips_a_byte_vector_without_a_val_per_element() {
     let (mut store, instance) = echo().await;
-    let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
+    let echo_bytes = typed::<(Vec<u8>,), (Vec<u8>,)>(&instance, "echo-bytes");
 
     let payload = pattern(PAYLOAD);
     grown(&mut store, &instance, PAYLOAD).await;
     let expected = payload.clone();
     start_counting(PAYLOAD / 2);
-    let returned = echo_bytes
+    let (returned,) = echo_bytes
         .call(&mut store, (payload,))
         .await
         .expect("the bytes echo");
@@ -347,7 +347,7 @@ async fn it_round_trips_a_byte_vector_without_a_val_per_element() {
 #[wcmp_macros::test]
 async fn it_round_trips_a_string_without_a_val_per_element() {
     let (mut store, instance) = echo().await;
-    let echo_string = typed::<(String,), String>(&instance, "echo-string");
+    let echo_string = typed::<(String,), (String,)>(&instance, "echo-string");
 
     let payload: String = "wasm component 🍰 "
         .chars()
@@ -357,7 +357,7 @@ async fn it_round_trips_a_string_without_a_val_per_element() {
     grown(&mut store, &instance, payload.len()).await;
     let expected = payload.clone();
     start_counting(payload.len() / 2);
-    let returned = echo_string
+    let (returned,) = echo_string
         .call(&mut store, (payload,))
         .await
         .expect("the string echoes");
@@ -402,9 +402,9 @@ async fn it_counts_the_val_per_element_the_untyped_path_holds() {
 #[wcmp_macros::test]
 async fn it_round_trips_a_vector_of_wider_numbers() {
     let (mut store, instance) = echo().await;
-    let echo_numbers = typed::<(Vec<u32>,), Vec<u32>>(&instance, "echo-numbers");
+    let echo_numbers = typed::<(Vec<u32>,), (Vec<u32>,)>(&instance, "echo-numbers");
     let payload: Vec<u32> = (0..4096u32).map(|n| n.wrapping_mul(0x9E37_79B9)).collect();
-    let returned = echo_numbers
+    let (returned,) = echo_numbers
         .call(&mut store, (payload.clone(),))
         .await
         .expect("the numbers echo");
@@ -414,13 +414,14 @@ async fn it_round_trips_a_vector_of_wider_numbers() {
 #[wcmp_macros::test]
 async fn it_round_trips_empty_values() {
     let (mut store, instance) = echo().await;
-    let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
-    let echo_string = typed::<(String,), String>(&instance, "echo-string");
+    let echo_bytes = typed::<(Vec<u8>,), (Vec<u8>,)>(&instance, "echo-bytes");
+    let echo_string = typed::<(String,), (String,)>(&instance, "echo-string");
     assert!(
         echo_bytes
             .call(&mut store, (Vec::new(),))
             .await
             .expect("an empty list echoes")
+            .0
             .is_empty()
     );
     assert!(
@@ -428,6 +429,7 @@ async fn it_round_trips_empty_values() {
             .call(&mut store, (String::new(),))
             .await
             .expect("an empty string echoes")
+            .0
             .is_empty()
     );
 }
@@ -438,7 +440,7 @@ async fn it_refuses_a_typed_handle_of_the_wrong_element_type() {
     let refused = instance
         .get_func("echo-bytes")
         .expect("the export")
-        .typed::<(Vec<u32>,), Vec<u32>>();
+        .typed::<(Vec<u32>,), (Vec<u32>,)>();
     assert!(refused.is_err());
     // The declared types the direct path checks against are the ones
     // the untyped signature reports.
@@ -450,12 +452,12 @@ async fn it_refuses_a_typed_handle_of_the_wrong_element_type() {
 async fn it_round_trips_a_typed_string_under_each_utf16_encoding() {
     let (mut store, instance) = echo().await;
     for name in ["echo-utf16", "echo-latin1-utf16"] {
-        let echo_typed = typed::<(String,), String>(&instance, name);
+        let echo_typed = typed::<(String,), (String,)>(&instance, name);
         let echo_untyped = instance.get_func(name).expect("the export");
         // ASCII, Latin-1 beyond ASCII, and text only UTF-16 holds, which
         // moves `latin1+utf16` to its UTF-16 form.
         for text in ["plain", "café crème", "日本語 🎉"] {
-            let returned = echo_typed
+            let (returned,) = echo_typed
                 .call(&mut store, (text.to_owned(),))
                 .await
                 .expect("the typed string echoes");
@@ -485,7 +487,7 @@ async fn it_round_trips_a_typed_string_under_each_utf16_encoding() {
             ("length-utf16", utf16),
             ("length-latin1-utf16", latin1_utf16),
         ] {
-            let length = typed::<(String,), u32>(&instance, name)
+            let (length,) = typed::<(String,), (u32,)>(&instance, name)
                 .call(&mut store, (text.to_owned(),))
                 .await
                 .expect("the typed string lowers");
@@ -497,10 +499,10 @@ async fn it_round_trips_a_typed_string_under_each_utf16_encoding() {
 #[wcmp_macros::test]
 async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
     let (mut store, instance) = echo().await;
-    // A `Vec<u32>` is wider than a byte, so its typed `store` takes the
+    // A `Vec<u32>` is wider than a byte, so its typed `lower_memory` takes the
     // direct numeric branch, which writes its pointer and length into the
     // spilled tuple.
-    let spilled = typed::<(String, Vec<u32>, [u32; 8], [u32; 8]), u32>(&instance, "spilled");
+    let spilled = typed::<(String, Vec<u32>, [u32; 8], [u32; 8]), (u32,)>(&instance, "spilled");
     let text = "spill".to_owned();
     let vector = vec![3, 5, 7];
     let first = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -516,7 +518,7 @@ async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
         + vector.len() as u32 * 100_000
         + u32::from(text.as_bytes()[0]);
 
-    let returned = spilled
+    let (returned,) = spilled
         .call(&mut store, (text.clone(), vector.clone(), first, second))
         .await
         .expect("the typed call spills its parameters");
@@ -542,9 +544,9 @@ async fn it_stores_typed_parameters_that_spill_past_the_flat_limit() {
 /// The message the typed call of `name` fails with, and the message
 /// the untyped call fails with, each in a store of its own, since a
 /// failed lift traps and poisons the store.
-async fn both_failures<R: wcmp::ComponentResult + std::fmt::Debug>(name: &str) -> (String, String) {
+async fn both_failures<R: wcmp::Lift + std::fmt::Debug + 'static>(name: &str) -> (String, String) {
     let (mut store, instance) = echo().await;
-    let typed_failure = typed::<(), R>(&instance, name)
+    let typed_failure = typed::<(), (R,)>(&instance, name)
         .call(&mut store, ())
         .await
         .expect_err("the typed lift refuses the value");
@@ -590,8 +592,8 @@ async fn it_fails_each_typed_lift_with_the_untyped_paths_message() {
 #[wcmp_macros::test]
 async fn it_carries_a_typed_byte_vector_and_string_through_call_concurrent() {
     let (mut store, instance) = echo().await;
-    let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
-    let echo_string = typed::<(String,), String>(&instance, "echo-string");
+    let echo_bytes = typed::<(Vec<u8>,), (Vec<u8>,)>(&instance, "echo-bytes");
+    let echo_string = typed::<(String,), (String,)>(&instance, "echo-string");
     let payload = pattern(4096);
     let text = "héllo, wörld 🎉".to_owned();
 
@@ -621,8 +623,8 @@ async fn it_carries_a_typed_byte_vector_and_string_through_call_concurrent() {
             })
             .await;
             Ok::<_, wcmp::Error>((
-                bytes_done.expect("the bytes call finished")?,
-                string_done.expect("the string call finished")?,
+                bytes_done.expect("the bytes call finished")?.0,
+                string_done.expect("the string call finished")?.0,
             ))
         })
         .await
@@ -635,7 +637,7 @@ async fn it_carries_a_typed_byte_vector_and_string_through_call_concurrent() {
             .call(&mut store, (payload.clone(),))
             .await
             .expect("the direct call"),
-        bytes,
+        (bytes,),
         "the concurrent call answers what the direct one does"
     );
 }
@@ -651,12 +653,12 @@ const OVER_A_HUNDRED_MEGABYTES: usize = 120 << 20;
 #[wcmp_macros::test]
 async fn it_round_trips_over_a_hundred_megabytes_in_one_copy_per_direction() {
     let (mut store, instance) = echo().await;
-    let echo_bytes = typed::<(Vec<u8>,), Vec<u8>>(&instance, "echo-bytes");
+    let echo_bytes = typed::<(Vec<u8>,), (Vec<u8>,)>(&instance, "echo-bytes");
 
     let payload = pattern(OVER_A_HUNDRED_MEGABYTES);
     grown(&mut store, &instance, OVER_A_HUNDRED_MEGABYTES).await;
     start_counting(OVER_A_HUNDRED_MEGABYTES / 2);
-    let returned = echo_bytes
+    let (returned,) = echo_bytes
         .call(&mut store, (payload,))
         .await
         .expect("over a hundred megabytes echo");

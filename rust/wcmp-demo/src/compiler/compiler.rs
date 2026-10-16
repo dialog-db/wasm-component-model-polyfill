@@ -76,11 +76,11 @@ impl Compiler {
             )
             .func_wrap("read-source", |call, (path,): (String,)| {
                 let sources: &Sources = call.data();
-                Ok(sources
+                Ok((sources
                     .extra
                     .get(&path)
                     .cloned()
-                    .or_else(|| sources.bundle.read(&path).map(str::to_string)))
+                    .or_else(|| sources.bundle.read(&path).map(str::to_string)),))
             })?;
         let (store, exports) = instantiate(engine, &linker, &component, &bundle).await?;
         Ok(Compiler {

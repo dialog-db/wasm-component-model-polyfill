@@ -663,7 +663,7 @@ async fn it_returns_at_once_from_a_typed_registration_whose_future_is_ready() {
             .root()
             .func_wrap_concurrent(
                 "answer",
-                |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok(x * 2) },
+                |_accessor: &Accessor<()>, (x,): (u32,)| async move { Ok((x * 2,)) },
             )
             .expect("the registration");
     })
@@ -758,7 +758,7 @@ async fn it_starts_a_subtask_for_a_typed_registration_whose_future_is_pending() 
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-                PendingOnce::new(x * 2)
+                PendingOnce::new((x * 2,))
             })
             .expect("the registration");
     })
@@ -840,7 +840,7 @@ async fn it_reaches_the_host_data_from_a_typed_registrations_closure() {
             .root()
             .func_wrap_concurrent("answer", |accessor: &Accessor<u32>, (x,): (u32,)| {
                 let base = accessor.with(|store| *store.data());
-                async move { Ok(x + base?) }
+                async move { Ok((x + base?,)) }
             })
             .expect("the registration");
     })
@@ -916,7 +916,7 @@ async fn it_refuses_a_reach_nested_inside_the_closures_own_reach() {
                     store.data_mut().push_str(&nested);
                     x * 2
                 });
-                async move { doubled }
+                async move { doubled.map(|doubled| (doubled,)) }
             })
             .expect("the registration");
     })
@@ -1017,7 +1017,7 @@ async fn it_delivers_a_host_subtask_event_through_a_poll_of_the_waitable_set() {
         linker
             .root()
             .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-                PendingOnce::new(x * 2)
+                PendingOnce::new((x * 2,))
             })
             .expect("the registration");
     })
@@ -1278,7 +1278,7 @@ async fn it_awaits_a_javascript_promise_and_gives_the_guest_its_value() {
                     let resolved = wasm_bindgen_futures::JsFuture::from(promise)
                         .await
                         .expect("the promise resolves");
-                    Ok(resolved.as_f64().expect("the promise's value") as u32)
+                    Ok((resolved.as_f64().expect("the promise's value") as u32,))
                 }
             })
             .expect("the registration");
@@ -1324,7 +1324,7 @@ impl FailsAfterAPendingPoll {
 }
 
 impl Future for FailsAfterAPendingPoll {
-    type Output = Result<u32, Error>;
+    type Output = Result<(u32,), Error>;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

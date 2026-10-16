@@ -9,12 +9,13 @@
 use crate::error::{CopyCause, Error, Result};
 use crate::executor::close_readable_end;
 use crate::internal::{FutureAnyInternal, FutureReaderInternal};
-use crate::linker::ComponentValue;
 use crate::store::{StoreContext, StoreContextInternalExt};
+use crate::typed::ComponentType;
 use crate::types::ValueType;
 
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::end_payload::EndPayload;
 use super::future_reader::FutureReader;
 
 /// The readable end of a future, as [`Val::Future`](crate::Val::Future)
@@ -64,7 +65,7 @@ pub struct FutureAny {
     end: EndId,
     /// Boxed, so that a `Val` that carries one stays the size it is
     /// without: the copy budget charges that size per element.
-    payload: Option<Box<ValueType>>,
+    payload: Box<EndPayload>,
 }
 
 impl FutureAny {
@@ -97,11 +98,13 @@ impl FutureAny {
     /// of the Rust type `T`. The name is Wasmtime's.
     ///
     /// Fails with the payload-mismatch cause of [`CopyCause`] when the
-    /// future does not carry the type `T` projects to, as the lift of
-    /// a typed reader fails. A future with no payload converts into no
-    /// reader, because no Rust type projects to the absence of one.
-    pub fn try_into_future_reader<T: ComponentValue>(self) -> Result<FutureReader<T>> {
-        if self.payload.as_deref() != Some(&T::value_type()) {
+    /// future does not carry values of `T`, as Wasmtime's conversion
+    /// fails: the type a component declares for it fails the type
+    /// check of `T`, or the host created it with another Rust type. A
+    /// future with no payload converts into no reader, because no Rust
+    /// type stands for the absence of one.
+    pub fn try_into_future_reader<T: ComponentType + 'static>(self) -> Result<FutureReader<T>> {
+        if !self.payload.carries::<T>() {
             return Err(Error::Copy(CopyCause::PayloadMismatch {
                 kind: EndKind::FutureReadable,
             }));
@@ -132,23 +135,23 @@ impl FutureAny {
             .lock_tables()?
             .tasks
             .readable_payload(reader.end(), EndKind::FutureReadable)?;
-        Ok(Self::new(reader.end(), payload))
+        Ok(Self::with_payload(reader.end(), payload))
     }
 }
 
 impl FutureAnyInternal for FutureAny {
     fn new(end: EndId, payload: Option<ValueType>) -> Self {
+        Self::with_payload(end, EndPayload::Declared(payload))
+    }
+
+    fn with_payload(end: EndId, payload: EndPayload) -> Self {
         Self {
             end,
-            payload: payload.map(Box::new),
+            payload: Box::new(payload),
         }
     }
 
     fn end(&self) -> EndId {
         self.end
-    }
-
-    fn payload(&self) -> Option<&ValueType> {
-        self.payload.as_deref()
     }
 }

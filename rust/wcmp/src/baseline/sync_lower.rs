@@ -327,7 +327,7 @@ fn pending_once_answer(linker: &mut Linker<()>) {
     linker
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-            PendingOnce::new(x * 2)
+            PendingOnce::new((x * 2,))
         })
         .expect("the registration");
 }
@@ -338,7 +338,7 @@ fn never_answers(linker: &mut Linker<()>) {
     linker
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (_x,): (u32,)| {
-            core::future::pending::<Result<u32, Error>>()
+            core::future::pending::<Result<(u32,), Error>>()
         })
         .expect("the registration");
 }
@@ -449,7 +449,7 @@ async fn it_returns_the_result_of_a_future_pending_twice_to_a_sync_typed_task() 
                     if *polls < 3 {
                         return Poll::Pending;
                     }
-                    Poll::Ready(Ok::<u32, Error>(x * 2))
+                    Poll::Ready(Ok::<(u32,), Error>((x * 2,)))
                 })
             })
             .expect("the registration");
@@ -538,7 +538,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                     .await;
                     let after = accessor.with(|store| store.internal().scheduler().items_run())?;
                     *counted.lock().expect("items run") = Some(after - before);
-                    Ok::<u32, Error>(x * 2)
+                    Ok::<(u32,), Error>((x * 2,))
                 }
             })
             .expect("the registration");

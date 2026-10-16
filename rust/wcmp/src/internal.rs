@@ -33,11 +33,12 @@ use std::sync::{Arc, Mutex};
 
 use wasmtime_environ::wasmparser::WasmFeatures;
 
+use crate::abi::context::BoundaryContext;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::shape::AbiShape;
 use crate::component::{Component, ExternalName, FunctionType};
-use crate::concurrency::{CopyBuffer, EndId, ErrorContextId};
-use crate::error::{Error, Result};
+use crate::concurrency::{CopyBuffer, EndId, EndPayload, ErrorContextId};
+use crate::error::{AbiPosition, Error, Result, TypePathStep, TypeRendering};
 use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFunc};
@@ -48,7 +49,8 @@ use crate::runtime_layer::{
     Extern as RuntimeExtern, Instance as RuntimeInstance, Module as RuntimeModule,
 };
 use crate::store::{StoreContext, StoreId};
-use crate::types::ValueType;
+use crate::typed::NamedTypes;
+use crate::types::{ResourceType, ValueType};
 
 /// The crate-internal face of [`StoreId`](crate::StoreId).
 pub trait StoreIdInternal {
@@ -184,10 +186,11 @@ pub trait StreamAnyInternal {
     /// The untyped value of the readable end `end`, whose stream
     /// carries `payload`.
     fn new(end: EndId, payload: Option<ValueType>) -> Self;
+    /// The untyped value of the readable end `end`, whose stream
+    /// carries what its record says it carries.
+    fn with_payload(end: EndId, payload: EndPayload) -> Self;
     /// The readable end the value holds.
     fn end(&self) -> EndId;
-    /// The type of the values the stream carries.
-    fn payload(&self) -> Option<&ValueType>;
 }
 
 /// The crate-internal face of [`ErrorContextAny`](crate::ErrorContextAny).
@@ -217,10 +220,11 @@ pub trait FutureAnyInternal {
     /// The untyped value of the readable end `end`, whose future
     /// carries `payload`.
     fn new(end: EndId, payload: Option<ValueType>) -> Self;
+    /// The untyped value of the readable end `end`, whose future
+    /// carries what its record says it carries.
+    fn with_payload(end: EndId, payload: EndPayload) -> Self;
     /// The readable end the value holds.
     fn end(&self) -> EndId;
-    /// The type of the value the future carries.
-    fn payload(&self) -> Option<&ValueType>;
 }
 
 /// The crate-internal face of
@@ -397,4 +401,60 @@ pub trait ResourceHandleInternal {
     /// The generation of the host-table entry the handle was minted
     /// for, which tells it from an entry that reused the same index.
     fn generation(&self) -> u32;
+}
+
+/// The crate-internal face of [`LowerContext`](crate::__private::LowerContext).
+pub trait LowerContextInternal<'c, 'a, D: 'static>: Sized {
+    /// The context of a lowering through `cx` that reports a failure
+    /// at `position`.
+    fn new(cx: &'c mut BoundaryContext<'a, D>, position: AbiPosition) -> Self;
+    /// The context of a lowering through `cx` that starts at the list
+    /// `named`, a function's parameters or results.
+    fn named(cx: &'c mut BoundaryContext<'a, D>, named: NamedTypes<'c>) -> Self;
+    /// The boundary context the lowering reads and writes through.
+    fn boundary(&mut self) -> &mut BoundaryContext<'a, D>;
+    /// The slot a failure is reported at.
+    fn position(&self) -> AbiPosition;
+    /// Report a failure at `position` from here on.
+    fn set_position(&mut self, position: AbiPosition);
+    /// The list the lowering starts at, once: the tuple that is the
+    /// list takes it, and the values inside the tuple find none.
+    fn take_named(&mut self) -> Option<NamedTypes<'c>>;
+}
+
+/// The crate-internal face of [`LiftContext`](crate::__private::LiftContext).
+pub trait LiftContextInternal<'c, 'a, D: 'static>: Sized {
+    /// The context of a lift through `cx` that reports a failure at
+    /// `position`.
+    fn new(cx: &'c mut BoundaryContext<'a, D>, position: AbiPosition) -> Self;
+    /// The context of a lift through `cx` that starts at the list
+    /// `named`, a function's parameters or results.
+    fn named(cx: &'c mut BoundaryContext<'a, D>, named: NamedTypes<'c>) -> Self;
+    /// The boundary context the lift reads through.
+    fn boundary(&mut self) -> &mut BoundaryContext<'a, D>;
+    /// The slot a failure is reported at.
+    fn position(&self) -> AbiPosition;
+    /// Report a failure at `position` from here on.
+    fn set_position(&mut self, position: AbiPosition);
+    /// The list the lift starts at, once.
+    fn take_named(&mut self) -> Option<NamedTypes<'c>>;
+}
+
+/// The crate-internal face of [`TypeChecker`](crate::__private::TypeChecker).
+pub trait TypeCheckerInternal<'a>: Sized {
+    /// A run of the type check that reads each resource type a
+    /// component declares as the identity `resources` gives it.
+    fn new(resources: &'a dyn Fn(ResourceType) -> ResourceType) -> Self;
+    /// Start the next comparison at the list `named`.
+    fn set_named(&self, named: NamedTypes<'a>);
+    /// The list the check starts at, once.
+    fn take_named(&self) -> Option<NamedTypes<'a>>;
+}
+
+/// The crate-internal face of
+/// [`TypeCheckError`](crate::__private::TypeCheckError).
+pub trait TypeCheckErrorInternal {
+    /// The path, outermost step first, and what each side has at its
+    /// end.
+    fn into_parts(self) -> (Vec<TypePathStep>, TypeRendering, TypeRendering);
 }

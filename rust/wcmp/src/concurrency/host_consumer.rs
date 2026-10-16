@@ -9,8 +9,8 @@
 use core::task::{Context, Poll};
 
 use crate::error::Result;
-use crate::linker::ComponentValue;
 use crate::store::StoreContext;
+use crate::typed::Lift;
 
 use super::source::Source;
 
@@ -31,7 +31,7 @@ use super::source::Source;
 #[cfg(not(target_arch = "wasm32"))]
 pub trait HostConsumer<D: 'static>: Send + 'static {
     /// The type of each item the consumer takes.
-    type Item: ComponentValue;
+    type Item: Lift;
 
     /// Poll the consumer once with `source`, unless it is finished, in
     /// which case the poll is ready at once. `earlier` is the count of
@@ -57,7 +57,7 @@ pub trait HostConsumer<D: 'static>: Send + 'static {
 #[cfg(target_arch = "wasm32")]
 pub trait HostConsumer<D: 'static>: 'static {
     /// The type of each item the consumer takes.
-    type Item: ComponentValue;
+    type Item: Lift;
 
     /// Poll the consumer once. See the native definition.
     fn consume(

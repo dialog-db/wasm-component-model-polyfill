@@ -8,30 +8,31 @@
 //! values.
 //!
 //! `TypedFunc<P, R>` is the typed counterpart to [`Func`]: the
-//! parameter tuple `P` and the return type `R` are checked at
-//! handle acquisition (via [`Func::typed`]) against the export's
-//! declared component-level signature, and at call time native Rust
-//! values flow across the canonical-ABI boundary without the caller
-//! ever constructing a [`Val`]. Nor does the polyfill construct one
-//! for a string or a vector of numbers: those cross as one block of
-//! bytes, copied once into guest memory and once out of it.
+//! parameter list `P` and the result list `R`, both tuples, are checked
+//! once, when the handle is acquired through [`Func::typed`], against
+//! the export's declared component-level signature. At call time the
+//! Rust values cross the canonical-ABI boundary directly: neither the
+//! caller nor the polyfill builds a [`Val`] for them, at any depth.
 //!
-//! The handle's parameter tuple and return type are constrained by
-//! the polyfill's own [`ComponentParameters`] / [`ComponentResult`]
-//! traits — the lift/lower/typed-descriptor triple Wasmtime exposes
-//! at `wasmtime::component`, named in the polyfill's surface and
-//! restricted to the synchronous-baseline valtypes.
+//! The lists are constrained by Wasmtime's traits: [`Lower`] and
+//! [`Lift`] for the values, and [`ComponentNamedList`] for a tuple that
+//! is a function's list.
 //!
 //! [`Val`]: crate::Val
+//! [`Lower`]: crate::Lower
+//! [`Lift`]: crate::Lift
+//! [`ComponentNamedList`]: crate::ComponentNamedList
 
 use core::marker::PhantomData;
 
-use crate::component::FunctionType;
 use crate::concurrency::Accessor;
-use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
-use crate::internal::{FuncInternal, TypedFuncInternal};
-use crate::linker::{ComponentParameters, ComponentResult};
+use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition};
+use crate::internal::{
+    ErrorInternal, FuncInternal, ResourceTypeInternal, TypeCheckErrorInternal, TypedFuncInternal,
+};
 use crate::store::Store;
+use crate::typed::{ComponentNamedList, Lift, Lower, typecheck_function};
+use crate::types::ResourceType;
 
 use super::func::Func;
 use super::typed_call::TypedCall;
@@ -39,10 +40,11 @@ use super::typed_call::TypedCall;
 /// A statically-typed handle for invoking one component export.
 ///
 /// `TypedFunc<P, R>` is acquired from [`Func::typed`]; the conversion
-/// checks that the export's declared signature matches the function
-/// type derived from `P` and `R` and surfaces a structured
-/// [`Error::TypeMismatch`] on mismatch. Calling the handle takes a
-/// native Rust tuple and returns the native Rust return value. The
+/// checks that the export's declared signature matches `P` and `R` and
+/// surfaces a structured [`Error::TypeMismatch`] on mismatch. Calling
+/// the handle takes a tuple of the parameters and returns a tuple of
+/// the results, as Wasmtime's does: a function with one result returns
+/// a tuple of one value. The
 /// call runs the same task, scheduler item, and driver as
 /// [`Func::call`], so heap-allocating valtypes drive the same
 /// `cabi_realloc` / `post-return` round-trip the untyped path
@@ -78,13 +80,13 @@ impl<P, R> TypedFuncInternal<P, R> for TypedFunc<P, R> {
 
 impl<P, R> TypedFunc<P, R>
 where
-    P: ComponentParameters,
-    R: ComponentResult,
+    P: ComponentNamedList + Lower + 'static,
+    R: ComponentNamedList + Lift + 'static,
 {
     /// Invoke the export with native Rust values.
     ///
-    /// `args` is the parameter tuple `P`; the return is the
-    /// native Rust value `R` the export produces. Compound
+    /// `args` is the parameter tuple `P`; the return is the result
+    /// tuple `R` the export produces. Compound
     /// argument and return shapes drive the same canonical-ABI
     /// round-trip — `cabi_realloc` for heap-allocating values and
     /// `post-return` after the result is observed — that the
@@ -94,10 +96,11 @@ where
     /// or a `Vec` of numbers is written into guest memory in one
     /// access and read back out in one, and a `Vec<u8>` or a UTF-8
     /// string is not copied on the host beyond that, so a payload of
-    /// hundreds of megabytes costs its own size once per direction.
-    /// The one exception is the result of an export lifted `async`:
-    /// it arrives through `task.return` as a [`Val`] and is decoded
-    /// from it.
+    /// hundreds of megabytes costs its own size once per direction. A
+    /// list of any other type lifts and lowers each element through
+    /// its own type, out of one read of the list and into one write.
+    /// The result of an export lifted `async` arrives through
+    /// `task.return`, which lifts it the same way.
     ///
     /// `T` is the host-data type of the [`Store`] the export's
     /// owning [`Instance`] was created in.
@@ -129,8 +132,8 @@ where
     /// native Rust values.
     ///
     /// This is the typed counterpart to [`Func::call_concurrent`]:
-    /// `args` is the parameter tuple `P` and the return is the
-    /// native Rust value `R`, and everything else is that entry's.
+    /// `args` is the parameter tuple `P` and the return is the result
+    /// tuple `R`, and everything else is that entry's.
     /// The call reaches the store through the accessor a
     /// `run_concurrent` closure or a host `async` function's body
     /// holds, creates the export's task, and queues its start behind
@@ -158,64 +161,62 @@ where
 
 impl Func {
     /// Convert this untyped function handle into a typed one whose
-    /// parameter tuple `P` and return type `R` are checked against
-    /// the export's declared component-level signature.
+    /// parameter tuple `P` and result tuple `R` are checked against the
+    /// export's declared component-level signature.
     ///
-    /// Returns [`Error::TypeMismatch`] when `P` and `R` derive a
-    /// component signature that does not equal the export's
-    /// declared signature; the [`TypeMismatch`]'s `position` is
-    /// [`TypeMismatchPosition::TypedConversion`] and its
-    /// `expected` / `actual` renderings carry the export-side and
-    /// requested-from-Rust signatures, respectively.
+    /// The check walks the declared types and the Rust types together,
+    /// in Wasmtime's order: the count of parameters and results, then
+    /// each one in turn, and inside a record, a variant, an enum, or a
+    /// flags type, the count of its parts and then each part's name
+    /// and type. It has no subtyping. A resource handle matches by the
+    /// identity of its resource type. The check runs here and never on
+    /// a call.
+    ///
+    /// Returns [`Error::TypeMismatch`] when the types differ. Its
+    /// position is [`TypeMismatchPosition::TypedConversion`], whose
+    /// path names the first part that differs, for example
+    /// "result 0, then list element". The `expected` rendering carries
+    /// the declared type at the end of the path and the `actual` one
+    /// the Rust type there.
     pub fn typed<P, R>(self) -> Result<TypedFunc<P, R>>
     where
-        P: ComponentParameters,
-        R: ComponentResult,
+        P: ComponentNamedList + Lower,
+        R: ComponentNamedList + Lift,
     {
-        // The requested type is never `async`: a host's Rust tuple
-        // says nothing about the effect, and `signatures_compatible`
-        // ignores the flag, so a typed handle to a callback export
-        // is acquired with the same call a synchronous export takes.
-        let requested = FunctionType {
-            parameters: P::parameter_types(),
-            result: R::result_type(),
-            async_: false,
+        // The parameter names and the `async` effect take no part: a
+        // Rust tuple names neither, and a callback export and a
+        // synchronous export of the same shape take the same values.
+        // A resource type the export declares is read as the identity
+        // the instantiation gave it: the host registration that
+        // satisfied its import, or the instance that defines it.
+        let resources = self
+            .abi_state()
+            .lock()
+            .map_err(|_| Error::internal("ABI runtime state lock poisoned"))?
+            .resource_tables
+            .clone();
+        let resolve = |declared: ResourceType| {
+            declared
+                .resource_index()
+                .and_then(|index| {
+                    resources
+                        .iter()
+                        .flatten()
+                        .find(|table| table.resource_index == index)
+                })
+                .map_or(declared, |table| table.type_id)
         };
-        if !signatures_compatible(self.signature(), &requested) {
-            return Err(Error::from(TypeMismatch {
+        typecheck_function::<P, R>(self.signature(), &resolve).map_err(|error| {
+            let (path, expected, actual) = error.into_parts();
+            Error::from(TypeMismatch {
                 position: TypeMismatchPosition::TypedConversion {
                     export: self.name().to_owned(),
+                    path,
                 },
-                expected: TypeRendering::Function(self.signature().clone()),
-                actual: TypeRendering::Function(requested),
-            }));
-        }
+                expected,
+                actual,
+            })
+        })?;
         Ok(TypedFunc::from_checked(self))
     }
-}
-
-/// Two function types are compatible for the typed-conversion entry
-/// point when their parameter and result `ValueType`s match
-/// positionally and structurally. The `async` flag is ignored too: a
-/// callback export and a synchronous export of the same shape take
-/// the same arguments and produce the same result, so a host
-/// acquires a typed handle to either with the same code.
-/// Parameter *names* are ignored as well: the
-/// component-side declares the names of the parameters in WIT, but
-/// the host's typed-conversion call site supplies a Rust tuple
-/// without names — the polyfill synthesises `arg0, arg1, …` for the
-/// requested signature. Comparing names directly would force every
-/// caller to know the WIT parameter names, which is a surface a
-/// host-binding code generator covers; the polyfill checks the
-/// types instead.
-fn signatures_compatible(declared: &FunctionType, requested: &FunctionType) -> bool {
-    if declared.parameters.len() != requested.parameters.len() {
-        return false;
-    }
-    for (left, right) in declared.parameters.iter().zip(requested.parameters.iter()) {
-        if left.ty != right.ty {
-            return false;
-        }
-    }
-    declared.result == requested.result
 }

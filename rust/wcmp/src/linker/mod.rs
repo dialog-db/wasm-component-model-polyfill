@@ -26,7 +26,6 @@
 //! [`InterfaceIdentifier`]: crate::InterfaceIdentifier
 //! [`Error::Link`]: crate::Error::Link
 
-mod component_value;
 mod host_call;
 mod host_func;
 mod host_func_kind;
@@ -34,14 +33,12 @@ mod host_func_kind;
 mod linker;
 mod linker_instance;
 mod module_matching;
-mod numeric_list;
 mod registration;
 mod resolve;
 mod resource_registration;
 
-pub use component_value::{ComponentParameters, ComponentResult, ComponentValue};
 pub use host_call::HostCall;
-pub use host_func::HostFuncFuture;
+pub use host_func::{HostArgs, HostFuncFuture, HostParams, HostResults};
 pub use host_func_kind::HostFuncKind;
 pub use linker::Linker;
 pub use linker_instance::LinkerInstance;

@@ -49,12 +49,17 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use wcmp::__private::{
+    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
+    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
+};
 use wcmp::{
-    Accessor, Component, ComponentValue, Destination, Engine, Error, FunctionParameter,
-    FunctionType, FutureConsumer, FutureReader, FutureType, Instance, InterfaceIdentifier, Linker,
-    OptionType, PrimitiveType, RecordField, RecordType, ResourceHandle, ResourceType, ResultType,
-    Source, Store, StoreContext, StreamConsumer, StreamProducer, StreamReader, StreamResult,
-    StreamType, TupleType, Val, ValueType, VariantCase, VariantType,
+    Accessor, Component, ComponentType, Destination, Engine, Error, FunctionParameter,
+    FunctionType, FutureAny, FutureConsumer, FutureReader, FutureType, Instance,
+    InterfaceIdentifier, Lift, Linker, Lower, OptionType, PrimitiveType, RecordField, RecordType,
+    ResourceHandle, ResourceType, ResultType, Source, Store, StoreContext, StreamAny,
+    StreamConsumer, StreamProducer, StreamReader, StreamResult, StreamType, TupleType,
+    TypePathStep, Val, ValueType, VariantCase, VariantType,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -76,10 +81,6 @@ const HANDLER_INTERFACE: &str = "wasi:http/handler@0.3.0";
 
 /// The representation the host gives the request it hands `handle`.
 const REQUEST_REP: u32 = 1;
-
-/// The representation the host gives the trailers its request
-/// carries.
-const TRAILERS_REP: u32 = 2;
 
 /// The first representation the host gives a resource the guest asks
 /// it to create.
@@ -188,71 +189,383 @@ fn parameter(name: &str, ty: ValueType) -> FunctionParameter {
 }
 
 /// The payload of a trailers future:
-/// `result<option<trailers>, error-code>`. The error code stays a
-/// [`Val`], because the handler never sends one.
+/// `result<option<trailers>, error-code>`. The error code is the name
+/// of its case, without the case's payload, because the handler never
+/// sends one.
+///
+/// A resource handle is not a typed value, so only trailers that are
+/// `none` cross. A crossing of `some` trailers fails.
 #[derive(Debug, PartialEq)]
-struct Trailers(Result<Option<ResourceHandle>, Val>);
-
-impl ComponentValue for Trailers {
-    fn value_type() -> ValueType {
-        ValueType::Result(ResultType::new(Some(option(fields())), Some(error_code())))
-    }
-
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(Ok(Some(some))) => match some.as_ref() {
-                Val::Option(None) => Ok(Self(Ok(None))),
-                Val::Option(Some(handle)) => match handle.as_ref() {
-                    Val::Own(handle) => Ok(Self(Ok(Some(*handle)))),
-                    other => Err(not_a_payload(other)),
-                },
-                other => Err(not_a_payload(other)),
-            },
-            Val::Result(Err(Some(code))) => Ok(Self(Err(code.as_ref().clone()))),
-            other => Err(not_a_payload(other)),
-        }
-    }
-
-    fn to_val(self) -> Val {
-        Val::Result(match self.0 {
-            Ok(handle) => Ok(Some(Box::new(Val::Option(
-                handle.map(|handle| Box::new(Val::Own(handle))),
-            )))),
-            Err(code) => Err(Some(Box::new(code))),
-        })
-    }
-}
+struct Trailers(Result<Option<ResourceHandle>, String>);
 
 /// The payload of the future that reports how a body was handled:
-/// `result<_, error-code>`.
+/// `result<_, error-code>`. The error code is the name of its case, as
+/// in [`Trailers`].
 #[derive(Debug, PartialEq)]
-struct Outcome(Result<(), Val>);
+struct Outcome(Result<(), String>);
 
-impl ComponentValue for Outcome {
-    fn value_type() -> ValueType {
-        ValueType::Result(ResultType::new(None, Some(error_code())))
-    }
+/// `result<option<trailers>, error-code>`, the type of [`Trailers`].
+fn trailers_type() -> ValueType {
+    ValueType::Result(ResultType::new(Some(option(fields())), Some(error_code())))
+}
 
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(Ok(None)) => Ok(Self(Ok(()))),
-            Val::Result(Err(Some(code))) => Ok(Self(Err(code.as_ref().clone()))),
-            other => Err(not_a_payload(other)),
-        }
-    }
+/// `result<_, error-code>`, the type of [`Outcome`].
+fn outcome_type() -> ValueType {
+    ValueType::Result(ResultType::new(None, Some(error_code())))
+}
 
-    fn to_val(self) -> Val {
-        Val::Result(match self.0 {
-            Ok(()) => Ok(None),
-            Err(code) => Err(Some(Box::new(code))),
-        })
+/// No payload, for a case of [`ERROR_CODE_ABI`] that has none.
+const NO_PAYLOAD: Option<CanonicalAbiInfo> = None;
+
+/// The layout of `option<string>`.
+const OPTION_STRING: CanonicalAbiInfo = <Option<String> as ComponentType>::ABI;
+
+/// The layout of a record of two options, as [`record_of_options`]
+/// builds it.
+const fn options_record(first: CanonicalAbiInfo, second: CanonicalAbiInfo) -> CanonicalAbiInfo {
+    CanonicalAbiInfo::record_static(&[first, second])
+}
+
+/// The layout of `wasi:http/types.error-code`, case by case as
+/// [`error_code`] declares it.
+const ERROR_CODE_ABI: CanonicalAbiInfo = {
+    const DNS_ERROR: CanonicalAbiInfo =
+        options_record(OPTION_STRING, <Option<u16> as ComponentType>::ABI);
+    const TLS_ALERT: CanonicalAbiInfo =
+        options_record(<Option<u8> as ComponentType>::ABI, OPTION_STRING);
+    const FIELD_SIZE: CanonicalAbiInfo =
+        options_record(OPTION_STRING, <Option<u32> as ComponentType>::ABI);
+    const OPTION_FIELD_SIZE: CanonicalAbiInfo =
+        CanonicalAbiInfo::variant_static(&[None, Some(FIELD_SIZE)]);
+    const U32_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u32> as ComponentType>::ABI);
+    const U64_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u64> as ComponentType>::ABI);
+    const TEXT: Option<CanonicalAbiInfo> = Some(OPTION_STRING);
+    CanonicalAbiInfo::variant_static(&[
+        NO_PAYLOAD,
+        Some(DNS_ERROR),
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        Some(TLS_ALERT),
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        U64_SIZE,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        U32_SIZE,
+        Some(OPTION_FIELD_SIZE),
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        NO_PAYLOAD,
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        U64_SIZE,
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        TEXT,
+        TEXT,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        NO_PAYLOAD,
+        TEXT,
+    ])
+};
+
+/// The failure of a crossing of a value the test's typed payloads
+/// cannot carry: a resource handle, or the payload of an error code.
+fn not_typed(what: &str) -> Error {
+    Error::Unsupported {
+        feature: format!("{what} in a typed `wasi:http` future payload"),
     }
 }
 
-/// The error a typed payload answers for a value of another shape.
-fn not_a_payload(val: &Val) -> Error {
-    Error::Internal {
-        message: format!("not a `wasi:http` future payload: {val:?}"),
+/// The name of case `case` of the error code `ty`.
+fn code_name(ty: &ValueType, case: usize) -> wcmp::Result<String> {
+    match ty {
+        ValueType::Variant(variant) => variant
+            .cases()
+            .get(case)
+            .map(|case| case.name().to_owned())
+            .ok_or_else(|| not_typed("an error code out of range")),
+        _ => Err(not_typed("an error code that is not a variant")),
+    }
+}
+
+/// The index of the case `name` of the error code `ty`.
+fn code_case(ty: &ValueType, name: &str) -> wcmp::Result<usize> {
+    match ty {
+        ValueType::Variant(variant) => variant
+            .cases()
+            .iter()
+            .position(|case| case.name() == name)
+            .ok_or_else(|| not_typed("an error code the type does not declare")),
+        _ => Err(not_typed("an error code that is not a variant")),
+    }
+}
+
+/// Lower the error code `name`, declared `ty`, into flat values.
+fn lower_code_flat<D: 'static>(
+    cx: &mut LowerContext<'_, '_, D>,
+    ty: &ValueType,
+    name: &str,
+    out: &mut Vec<CoreVal>,
+) -> wcmp::Result<()> {
+    let case = code_case(ty, name)?;
+    lower_case_flat(cx, ty, case, out, |_, _, _| {
+        Err(not_typed("the payload of an error code"))
+    })
+}
+
+/// Lower the error code `name`, declared `ty`, into memory at
+/// `offset`.
+fn lower_code_memory<D: 'static>(
+    cx: &mut LowerContext<'_, '_, D>,
+    ty: &ValueType,
+    name: &str,
+    offset: usize,
+) -> wcmp::Result<()> {
+    let case = code_case(ty, name)?;
+    match lower_case_memory(cx, ty, case, offset)? {
+        (_, None) => Ok(()),
+        (_, Some(_)) => Err(not_typed("the payload of an error code")),
+    }
+}
+
+/// Lift the name of an error code, declared `ty`, out of flat values.
+fn lift_code_flat<D: 'static>(
+    cx: &mut LiftContext<'_, '_, D>,
+    ty: &ValueType,
+    slots: &[CoreVal],
+) -> wcmp::Result<String> {
+    let mut cursor = 0;
+    lift_case_flat(cx, ty, slots, &mut cursor, |_, case, _| code_name(ty, case))
+}
+
+/// Lift the name of an error code, declared `ty`, out of memory at
+/// `offset`.
+fn lift_code_memory<D: 'static>(
+    cx: &mut LiftContext<'_, '_, D>,
+    ty: &ValueType,
+    offset: usize,
+) -> wcmp::Result<String> {
+    let (case, _, _) = lift_case_memory(cx, ty, offset)?;
+    code_name(ty, case)
+}
+
+/// Compare the error payload of the result `ty` with `error-code`.
+fn typecheck_code<R>(ty: &ResultType) -> Result<(), TypeCheckError> {
+    match ty.err() {
+        Some(err) if *err == error_code() => Ok(()),
+        Some(err) => Err(TypeCheckError::mismatch::<R>(err).at(TypePathStep::ResultErr)),
+        None => Err(TypeCheckError::mismatch::<R>(&ValueType::Result(
+            ty.clone(),
+        ))),
+    }
+}
+
+impl ComponentType for Trailers {
+    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[
+        Some(CanonicalAbiInfo::variant_static(&[
+            None,
+            Some(CanonicalAbiInfo::SCALAR4),
+        ])),
+        Some(ERROR_CODE_ABI),
+    ]);
+
+    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let ValueType::Result(result) = ty else {
+            return Err(TypeCheckError::mismatch::<Self>(ty));
+        };
+        let fields = ResourceType::host::<Fields>();
+        match result.ok() {
+            Some(ValueType::Option(option)) => match option.payload() {
+                ValueType::Own(declared) if types.resource(*declared) == fields => {}
+                other => {
+                    return Err(TypeCheckError::mismatch::<ResourceHandle>(other)
+                        .at(TypePathStep::OptionPayload)
+                        .at(TypePathStep::ResultOk));
+                }
+            },
+            Some(other) => {
+                return Err(TypeCheckError::mismatch::<Option<ResourceHandle>>(other)
+                    .at(TypePathStep::ResultOk));
+            }
+            None => return Err(TypeCheckError::mismatch::<Self>(ty)),
+        }
+        typecheck_code::<Self>(result)
+    }
+}
+
+impl Lower for Trailers {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> wcmp::Result<()> {
+        match &self.0 {
+            Ok(None) => lower_case_flat(cx, ty, 0, out, |cx, option, out| {
+                lower_case_flat(cx, option, 0, out, |_, _, _| Ok(()))
+            }),
+            Ok(Some(_)) => Err(not_typed("a resource handle")),
+            Err(name) => lower_case_flat(cx, ty, 1, out, |cx, code, out| {
+                lower_code_flat(cx, code, name, out)
+            }),
+        }
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<()> {
+        match &self.0 {
+            Ok(None) => {
+                let (payload, option) = lower_case_memory(cx, ty, 0, offset)?;
+                let option = option.ok_or_else(|| cx.mismatch(ty))?;
+                lower_case_memory(cx, option, 0, payload).map(|_| ())
+            }
+            Ok(Some(_)) => Err(not_typed("a resource handle")),
+            Err(name) => {
+                let (payload, code) = lower_case_memory(cx, ty, 1, offset)?;
+                let code = code.ok_or_else(|| cx.mismatch(ty))?;
+                lower_code_memory(cx, code, name, payload)
+            }
+        }
+    }
+}
+
+impl Lift for Trailers {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> wcmp::Result<Self> {
+        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
+            match (case, payload) {
+                (0, Some((option, slots))) => {
+                    let mut cursor = 0;
+                    lift_case_flat(cx, option, slots, &mut cursor, |_, case, _| match case {
+                        0 => Ok(Self(Ok(None))),
+                        _ => Err(not_typed("a resource handle")),
+                    })
+                }
+                (1, Some((code, slots))) => {
+                    lift_code_flat(cx, code, slots).map(|name| Self(Err(name)))
+                }
+                _ => Err(cx.mismatch(ty)),
+            }
+        })
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<Self> {
+        match lift_case_memory(cx, ty, offset)? {
+            (0, payload, Some(option)) => match lift_case_memory(cx, option, payload)? {
+                (0, _, None) => Ok(Self(Ok(None))),
+                _ => Err(not_typed("a resource handle")),
+            },
+            (1, payload, Some(code)) => {
+                lift_code_memory(cx, code, payload).map(|name| Self(Err(name)))
+            }
+            _ => Err(cx.mismatch(ty)),
+        }
+    }
+}
+
+impl ComponentType for Outcome {
+    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[None, Some(ERROR_CODE_ABI)]);
+
+    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let ValueType::Result(result) = ty else {
+            return Err(TypeCheckError::mismatch::<Self>(ty));
+        };
+        if let Some(ok) = result.ok() {
+            return Err(TypeCheckError::mismatch::<()>(ok).at(TypePathStep::ResultOk));
+        }
+        typecheck_code::<Self>(result)
+    }
+}
+
+impl Lower for Outcome {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> wcmp::Result<()> {
+        match &self.0 {
+            Ok(()) => lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(())),
+            Err(name) => lower_case_flat(cx, ty, 1, out, |cx, code, out| {
+                lower_code_flat(cx, code, name, out)
+            }),
+        }
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<()> {
+        match &self.0 {
+            Ok(()) => lower_case_memory(cx, ty, 0, offset).map(|_| ()),
+            Err(name) => {
+                let (payload, code) = lower_case_memory(cx, ty, 1, offset)?;
+                let code = code.ok_or_else(|| cx.mismatch(ty))?;
+                lower_code_memory(cx, code, name, payload)
+            }
+        }
+    }
+}
+
+impl Lift for Outcome {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> wcmp::Result<Self> {
+        lift_case_flat(cx, ty, slots, cursor, |cx, case, payload| {
+            match (case, payload) {
+                (0, None) => Ok(Self(Ok(()))),
+                (1, Some((code, slots))) => {
+                    lift_code_flat(cx, code, slots).map(|name| Self(Err(name)))
+                }
+                _ => Err(cx.mismatch(ty)),
+            }
+        })
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> wcmp::Result<Self> {
+        match lift_case_memory(cx, ty, offset)? {
+            (0, _, None) => Ok(Self(Ok(()))),
+            (1, payload, Some(code)) => {
+                lift_code_memory(cx, code, payload).map(|name| Self(Err(name)))
+            }
+            _ => Err(cx.mismatch(ty)),
+        }
     }
 }
 
@@ -385,11 +698,11 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
             FunctionType {
                 parameters: vec![
                     parameter("this", ValueType::Own(ResourceType::host::<Request>())),
-                    parameter("res", ValueType::Future(future_of::<Outcome>())),
+                    parameter("res", ValueType::Future(future_of(outcome_type()))),
                 ],
                 result: Some(ValueType::Tuple(TupleType::new([
                     ValueType::Stream(StreamType::new(Some(primitive(PrimitiveType::U8)))),
-                    ValueType::Future(future_of::<Trailers>()),
+                    ValueType::Future(future_of(trailers_type())),
                 ]))),
                 async_: false,
             },
@@ -413,7 +726,9 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                 };
                 FutureReader::<Outcome>::try_from_future_any(outcome.clone())?
                     .pipe(call.store(), keeps)?;
-                results[0] = Val::Tuple(Box::new([body.to_val(), trailers.to_val()]));
+                let body = StreamAny::try_from_stream_reader(call.store(), body)?;
+                let trailers = FutureAny::try_from_future_reader(call.store(), trailers)?;
+                results[0] = Val::Tuple(Box::new([Val::Stream(body), Val::Future(trailers)]));
                 Ok(())
             },
         )
@@ -432,11 +747,11 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                             PrimitiveType::U8,
                         ))))),
                     ),
-                    parameter("trailers", ValueType::Future(future_of::<Trailers>())),
+                    parameter("trailers", ValueType::Future(future_of(trailers_type()))),
                 ],
                 result: Some(ValueType::Tuple(TupleType::new([
                     ValueType::Own(ResourceType::host::<Response>()),
-                    ValueType::Future(future_of::<Outcome>()),
+                    ValueType::Future(future_of(outcome_type())),
                 ]))),
                 async_: false,
             },
@@ -457,7 +772,7 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
                     FutureReader::new(call.store(), async { Ok::<_, Error>(Outcome(Ok(()))) })?;
                 results[0] = Val::Tuple(Box::new([
                     Val::Own(call.resource_new(resources.response, rep)?),
-                    sent.to_val(),
+                    Val::Future(FutureAny::try_from_future_reader(call.store(), sent)?),
                 ]));
                 Ok(())
             },
@@ -467,9 +782,9 @@ fn define_types(linker: &mut Linker<()>, host: &Shared) -> Resources {
     resources
 }
 
-/// The future type whose payload is `T`.
-fn future_of<T: ComponentValue>() -> FutureType {
-    FutureType::new(Some(T::value_type()))
+/// The future type whose payload is `payload`.
+fn future_of(payload: ValueType) -> FutureType {
+    FutureType::new(Some(payload))
 }
 
 /// Instantiate the handler `bytes` with the host's `wasi:http/types`.
@@ -495,7 +810,7 @@ struct Keeps<T> {
     signal: Signal,
 }
 
-impl<T: ComponentValue> FutureConsumer<()> for Keeps<T> {
+impl<T: Lift + 'static> FutureConsumer<()> for Keeps<T> {
     type Item = T;
 
     fn poll_consume(
@@ -791,12 +1106,11 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         body(pended.clone(), end.clone()),
     )
     .expect("a body stream");
-    let sent_trailers = store
-        .resource_new(resources.fields, TRAILERS_REP)
-        .expect("the trailers");
+    // The request carries no trailers: a resource handle is not a
+    // typed value, so a typed future cannot carry one.
     let trailers = FutureReader::new(&mut store.as_context_mut(), async move {
         end.ended().await;
-        Ok::<_, Error>(Trailers(Ok(Some(sent_trailers))))
+        Ok::<_, Error>(Trailers(Ok(None)))
     })
     .expect("a trailers future");
     lock(&host)
@@ -833,7 +1147,10 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         let host = lock(&host);
         (host.outcomes.clone(), host.signal.clone())
     };
-    StreamReader::<u8>::from_val(&body.expect("the response carries a body"))
+    let Some(Val::Stream(body)) = body else {
+        panic!("the response carries a body, not {body:?}");
+    };
+    body.try_into_stream_reader::<u8>()
         .expect("the body is the request's `stream<u8>`")
         .pipe(
             &mut store.as_context_mut(),
@@ -843,7 +1160,11 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
             },
         )
         .expect("the host pipes the response's body");
-    FutureReader::<Trailers>::from_val(&trailers)
+    let Val::Future(trailers) = trailers else {
+        panic!("the response's trailers are {trailers:?}, not a future");
+    };
+    trailers
+        .try_into_future_reader::<Trailers>()
         .expect("the trailers are the request's future")
         .pipe(
             &mut store.as_context_mut(),
@@ -885,7 +1206,7 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         };
         assert_eq!(
             *trailers,
-            Trailers(Ok(Some(sent_trailers))),
+            Trailers(Ok(None)),
             "the response's trailers were the request's"
         );
         assert_eq!(
@@ -903,7 +1224,7 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
 
     let consumed = lock(&host).consumed.clone();
     assert_eq!(consumed.len(), 1, "the handler consumed one request");
-    for handle in [response, headers, sent_trailers, consumed[0]] {
+    for handle in [response, headers, consumed[0]] {
         store
             .resource_drop(handle)
             .expect("the host releases what the guest gave it");
@@ -913,7 +1234,6 @@ async fn it_answers_a_request_with_its_body_and_trailers() {
         [
             ("response", response.rep()),
             ("fields", headers.rep()),
-            ("fields", TRAILERS_REP),
             ("request", REQUEST_REP),
         ],
         "each resource's destructor ran once, with the host's \
@@ -927,11 +1247,11 @@ async fn it_drains_bytes_through_the_guests_own_stream_and_future() {
     let drain = instance
         .get_func("drain")
         .expect("the handler exports `drain`")
-        .typed::<(Vec<u8>,), Vec<u8>>()
+        .typed::<(Vec<u8>,), (Vec<u8>,)>()
         .expect("`drain` takes and returns a `list<u8>`");
 
     for bytes in [b"hi".to_vec(), Vec::new(), (0..=255).collect()] {
-        let returned = store
+        let (returned,) = store
             .run_concurrent(async |accessor: &Accessor<()>| {
                 drain.call_concurrent(accessor, (bytes.clone(),)).await
             })
@@ -960,7 +1280,7 @@ async fn it_traps_the_same_instance_drain_on_a_non_number_payload() {
     let drain = instance
         .get_func("drain")
         .expect("the handler exports `drain`")
-        .typed::<(Vec<u8>,), Vec<u8>>()
+        .typed::<(Vec<u8>,), (Vec<u8>,)>()
         .expect("`drain` takes and returns a `list<u8>`");
 
     let error = store

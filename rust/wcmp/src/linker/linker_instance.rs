@@ -8,20 +8,25 @@
 //!
 //! [`Linker`]: super::Linker
 
+use core::any::Any;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::component::FunctionType;
 use crate::concurrency::{Accessor, HostFuture};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, LinkError, Result};
+use crate::internal::ErrorInternal;
 use crate::module::Module;
 use crate::store::StoreContext;
+use crate::typed::{ComponentNamedList, Lift, Lower, lift_parameters, typecheck_function};
 use crate::types::{ResourceType, ValueType};
 use crate::value::Val;
 
-use super::component_value::{ComponentParameters, ComponentResult, function_type_for};
 use super::host_call::HostCall;
-use super::host_func::HostFunc;
+use super::host_func::{
+    HostArgs, HostFunc, HostFuncFuture, HostParams, HostResults, HostSignature,
+};
+use super::host_func_kind::HostFuncKind;
 use super::registration::InstanceRegistration;
 use super::resource_registration::ResourceRegistration;
 use crate::internal::LinkerInstanceInternal;
@@ -163,8 +168,22 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     ) -> Result<()> {
         let name = name.into();
         self.claim(&name)?;
-        let host = HostFunc::new(ty, func);
-        self.registration.funcs.insert(name, host);
+        // The result slice is sized from the declared type, which the
+        // link-time check holds the import's to.
+        let arity = usize::from(ty.result.is_some());
+        let body = move |call: HostCall<'_, T>, args: HostArgs| {
+            let args = untyped_args(args)?;
+            let mut results = vec![Val::Bool(false); arity];
+            func(call, &args, &mut results)?;
+            Ok(HostResults::Vals(results))
+        };
+        self.registration.funcs.insert(
+            name,
+            HostFunc {
+                signature: HostSignature::Declared(ty),
+                kind: HostFuncKind::Synchronous(Arc::new(body), HostParams::Vals),
+            },
+        );
         Ok(())
     }
 
@@ -248,42 +267,49 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         Ok(())
     }
 
-    /// Register a *typed* host function. The closure's argument
-    /// tuple and return type derive the declared [`FunctionType`]
-    /// via [`ComponentParameters`] and [`ComponentResult`]; the
-    /// linker's resolver checks the derived signature against the
-    /// component's import at link time.
+    /// Register a *typed* host function, as Wasmtime's `func_wrap`
+    /// does. The closure takes the call's parameters as one tuple and
+    /// answers with its results as one tuple: a function with one
+    /// result returns a tuple of one value.
+    ///
+    /// ```rust
+    /// # fn register(linker: &mut wcmp::Linker<()>) -> wcmp::Result<()> {
+    /// linker.root().func_wrap("add", |_call, (a, b): (u32, u32)| Ok((a + b,)))?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The values cross directly: the parameters are lifted straight
+    /// out of the guest into the tuple, and the results lowered
+    /// straight back, with no [`Val`] at any depth. The resolver runs
+    /// the type check of the two tuples against the import's declared
+    /// type when the linker links a component, and the call trusts
+    /// it.
     ///
     /// Fails with [`Error::Link`] when the entry this view addresses
     /// already holds an item under `name` and the linker was not
     /// told to allow shadowing.
     ///
     /// [`Error::Link`]: crate::Error::Link
-    pub fn func_wrap<Params, Ret, F>(&mut self, name: impl Into<String>, func: F) -> Result<()>
+    pub fn func_wrap<Params, Results, F>(&mut self, name: impl Into<String>, func: F) -> Result<()>
     where
-        Params: ComponentParameters,
-        Ret: ComponentResult,
-        F: for<'c> Fn(HostCall<'c, T>, Params) -> Result<Ret> + Send + Sync + 'static,
+        Params: ComponentNamedList + Lift + 'static,
+        Results: ComponentNamedList + Lower + 'static,
+        F: for<'c> Fn(HostCall<'c, T>, Params) -> Result<Results> + Send + Sync + 'static,
     {
         let name = name.into();
         self.claim(&name)?;
-        let signature = function_type_for::<Params, Ret>();
-        let host = HostFunc::new(signature, move |call, args, results| {
-            let params = Params::from_vals(args)?;
-            let ret = func(call, params)?;
-            if let Some(val) = ret.into_val()
-                && !results.is_empty()
-            {
-                // The untyped path enforces that `results.len()`
-                // matches the declared result count; an empty slot
-                // here means the registered Rust signature
-                // disagreed with the declared ABI, which the
-                // link-time check should already have rejected.
-                results[0] = val;
-            }
-            Ok(())
-        });
-        self.registration.funcs.insert(name, host);
+        let body = move |call: HostCall<'_, T>, args: HostArgs| {
+            let results = func(call, typed_args::<Params>(args)?)?;
+            Ok(HostResults::Typed(Box::new(results)))
+        };
+        self.registration.funcs.insert(
+            name,
+            HostFunc {
+                signature: typed_signature::<Params, Results>(),
+                kind: HostFuncKind::Synchronous(Arc::new(body), typed_params::<T, Params>()),
+            },
+        );
         Ok(())
     }
 
@@ -344,7 +370,11 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
         let name = name.into();
         self.claim(&name)?;
         let declared = ty.result.clone();
-        let host = HostFunc::concurrent(ty, move |accessor, args| {
+        let body = move |accessor: &Accessor<T>, args: HostArgs| -> HostFuncFuture<T> {
+            let args = match untyped_args(args) {
+                Ok(args) => args,
+                Err(error) => return Box::pin(core::future::ready(Err(error))),
+            };
             let future = func(accessor, args);
             let declared = declared.clone();
             Box::pin(async move {
@@ -353,32 +383,39 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
                 if values.len() != expected {
                     return Err(result_arity(declared));
                 }
-                Ok(values)
+                Ok(HostResults::Vals(values))
             })
-        });
-        self.registration.funcs.insert(name, host);
+        };
+        self.registration.funcs.insert(
+            name,
+            HostFunc {
+                signature: HostSignature::Declared(ty),
+                kind: HostFuncKind::Concurrent(Arc::new(body), HostParams::Vals),
+            },
+        );
         Ok(())
     }
 
     /// Register a *typed* host `async` function: one whose call
-    /// produces a future rather than a result.
+    /// produces a future rather than a result, as Wasmtime's
+    /// `func_wrap_concurrent` does.
     ///
-    /// The closure's argument tuple and return type derive the
-    /// declared [`FunctionType`] via [`ComponentParameters`] and
-    /// [`ComponentResult`], exactly as [`Self::func_wrap`] derives
-    /// it; the resolver checks the derived signature against the
-    /// component's import at link time.
+    /// The closure takes the call's parameters as one tuple, as
+    /// [`Self::func_wrap`]'s does, and its future answers with the
+    /// results as one tuple. The values cross directly, and the
+    /// resolver runs the type check of the two tuples against the
+    /// import's declared type at link time.
     ///
     /// The closure takes the accessor of the store the call runs
-    /// against and the decoded arguments, and answers with the future
+    /// against and the lifted parameters, and answers with the future
     /// of that one call. That future runs as a host task the store
     /// polls: the turns that follow the call poll it, with the waker
     /// of whichever driver is running the store, until it completes,
-    /// and the store then lowers its value into the subtask the guest
-    /// waits on. So the future is `'static`, and `Send` besides on the
-    /// native target, which is what keeps a store `Send`. The browser
-    /// bound is `'static` alone, so a future that awaits a JavaScript
-    /// promise satisfies it.
+    /// and the store then lowers its results into the subtask the
+    /// guest waits on. So the future is `'static`, and `Send` besides
+    /// on the native target, which is what keeps a store `Send`. The
+    /// browser bound is `'static` alone, so a future that awaits a
+    /// JavaScript promise satisfies it.
     ///
     /// The accessor is a token, not a borrow. It carries the store's
     /// identity, borrows nothing, and reaches the store only inside
@@ -393,46 +430,83 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// reach, and a reach made where no poll of the store is running
     /// fails rather than lending the store.
     ///
-    /// The vector the call answers with is the closure's return, so
-    /// its length is the declared result's by construction: one value
-    /// when `Ret` is a value type and none when it is `()`. A result
-    /// vector of the wrong length fails the call, which only the
-    /// untyped entry can produce.
-    ///
     /// Fails with [`Error::Link`] when the entry this view addresses
     /// already holds an item under `name` and the linker was not
     /// told to allow shadowing.
     ///
     /// [`Error::Link`]: crate::Error::Link
-    pub fn func_wrap_concurrent<Params, Ret, F, Fut>(
+    pub fn func_wrap_concurrent<Params, Results, F, Fut>(
         &mut self,
         name: impl Into<String>,
         func: F,
     ) -> Result<()>
     where
-        Params: ComponentParameters,
-        Ret: ComponentResult,
+        Params: ComponentNamedList + Lift + 'static,
+        Results: ComponentNamedList + Lower + 'static,
         F: Fn(&Accessor<T>, Params) -> Fut + Send + Sync + 'static,
-        Fut: HostFuture<Result<Ret>>,
+        Fut: HostFuture<Result<Results>>,
     {
         let name = name.into();
         self.claim(&name)?;
-        let signature = function_type_for::<Params, Ret>();
-        let host = HostFunc::concurrent(signature, move |accessor, args| {
-            // The arguments are decoded before the closure runs, so
-            // an argument the registered Rust signature does not
-            // accept is what the future answers with rather than
-            // something the call can report: the call is under way by
-            // the time there is a future at all.
-            let params = match Params::from_vals(&args) {
+        let body = move |accessor: &Accessor<T>, args: HostArgs| -> HostFuncFuture<T> {
+            // The parameters are lifted before the closure runs, so a
+            // failure to take them is what the future answers with
+            // rather than something the call can report: the call is
+            // under way by the time there is a future at all.
+            let params = match typed_args::<Params>(args) {
                 Ok(params) => params,
                 Err(error) => return Box::pin(core::future::ready(Err(error))),
             };
             let future = func(accessor, params);
-            Box::pin(async move { Ok(future.await?.into_val().into_iter().collect()) })
-        });
-        self.registration.funcs.insert(name, host);
+            Box::pin(async move { Ok(HostResults::Typed(Box::new(future.await?))) })
+        };
+        self.registration.funcs.insert(
+            name,
+            HostFunc {
+                signature: typed_signature::<Params, Results>(),
+                kind: HostFuncKind::Concurrent(Arc::new(body), typed_params::<T, Params>()),
+            },
+        );
         Ok(())
+    }
+}
+
+/// The type check a typed registration over the lists `P` and `R`
+/// carries, for the resolver to run against an import's declared type.
+fn typed_signature<P: ComponentNamedList, R: ComponentNamedList>() -> HostSignature {
+    HostSignature::Typed(Arc::new(|ty, resources| {
+        typecheck_function::<P, R>(ty, resources)
+    }))
+}
+
+/// The lift of a typed registration's parameter tuple `P`.
+fn typed_params<T: 'static, P: Lift + 'static>() -> HostParams<T> {
+    HostParams::Typed(Arc::new(|cx, ty, args, cursor, spilled| {
+        let params: P = lift_parameters(cx, ty, args, cursor, spilled)?;
+        Ok(Box::new(params) as Box<dyn Any + Send>)
+    }))
+}
+
+/// The parameter tuple a typed registration's lift produced.
+fn typed_args<P: 'static>(args: HostArgs) -> Result<P> {
+    match args {
+        HostArgs::Typed(params) => params
+            .downcast::<P>()
+            .map(|params| *params)
+            .map_err(|_| Error::internal("a typed registration was handed another tuple")),
+        HostArgs::Vals(_) => Err(Error::internal(
+            "a typed registration was handed untyped arguments",
+        )),
+    }
+}
+
+/// The arguments an untyped registration takes.
+fn untyped_args(args: HostArgs) -> Result<Vec<Val>> {
+    match args {
+        HostArgs::Vals(args) => Ok(args),
+        HostArgs::Typed(_) => Err(Error::internal(
+            "an untyped registration was handed typed arguments",
+        )),
     }
 }
 
@@ -466,7 +540,6 @@ mod tests {
     use crate::types::PrimitiveType;
 
     use super::super::host_func::ConcurrentHostFuncBody;
-    use super::super::host_func_kind::HostFuncKind;
     use super::*;
 
     /// A future that is pending the first time it is polled and ready
@@ -514,8 +587,8 @@ mod tests {
     /// the registration turned out to be.
     fn concurrent<T: 'static>(host: &HostFunc<T>) -> &ConcurrentHostFuncBody<T> {
         match &host.kind {
-            HostFuncKind::Concurrent(start) => start.as_ref(),
-            HostFuncKind::Synchronous(_) => panic!("the registration is a synchronous one"),
+            HostFuncKind::Concurrent(start, _) => start.as_ref(),
+            HostFuncKind::Synchronous(..) => panic!("the registration is a synchronous one"),
         }
     }
 
@@ -528,20 +601,19 @@ mod tests {
                 let accessor = accessor.clone();
                 async move {
                     let reached = accessor.with(|store| store.data().len())?;
-                    Ok(u32::try_from(reached).expect("the host data's length") + extra)
+                    Ok((u32::try_from(reached).expect("the host data's length") + extra,))
                 }
             })
             .expect("the registration");
 
         let host = registration.func("greet").expect("the registration");
-        assert_eq!(
-            host.signature,
-            function_type_for::<(u32,), u32>(),
-            "the closure's types derive the signature the resolver sees, as `func_wrap` derives it"
+        assert!(
+            matches!(host.signature, HostSignature::Typed(_)),
+            "the resolver checks the closure's types, as it checks `func_wrap`'s"
         );
         assert!(
-            matches!(host.kind, HostFuncKind::Concurrent(_)),
-            "the registration records the concurrent kind"
+            matches!(host.kind, HostFuncKind::Concurrent(_, HostParams::Typed(_))),
+            "the registration records the concurrent kind and lifts its parameters itself"
         );
     }
 
@@ -558,13 +630,12 @@ mod tests {
             .expect("the registration");
 
         let host = registration.func("greet").expect("the registration");
-        assert_eq!(
-            host.signature,
-            async_typed(),
+        assert!(
+            matches!(&host.signature, HostSignature::Declared(ty) if *ty == async_typed()),
             "the type declared at the registration is the one the resolver sees, whole"
         );
         assert!(
-            matches!(host.kind, HostFuncKind::Concurrent(_)),
+            matches!(host.kind, HostFuncKind::Concurrent(_, HostParams::Vals)),
             "the registration records the concurrent kind"
         );
     }
@@ -579,14 +650,14 @@ mod tests {
             .expect("the registration");
         instance
             .func_wrap("typed", |_call: HostCall<'_, String>, (arg,): (u32,)| {
-                Ok(arg)
+                Ok((arg,))
             })
             .expect("the registration");
 
         for name in ["untyped", "typed"] {
             let host = registration.func(name).expect("the registration");
             assert!(
-                matches!(host.kind, HostFuncKind::Synchronous(_)),
+                matches!(host.kind, HostFuncKind::Synchronous(..)),
                 "the synchronous entries record the synchronous kind, for `{name}`"
             );
         }
@@ -606,11 +677,11 @@ mod tests {
                 let accessor = accessor.clone();
                 async move {
                     PendingOnce::default().await;
-                    let reached = accessor.with(|store| {
-                        store.data_mut().push_str(" reached");
-                        store.data().len()
+                    accessor.with(|store| {
+                        let reached = store.data().len() as u32 + extra;
+                        store.data_mut().push_str(&format!(" reached {reached}"));
                     })?;
-                    Ok(u32::try_from(reached).expect("the host data's length") + extra)
+                    Ok(())
                 }
             })
             .expect("the registration");
@@ -619,24 +690,23 @@ mod tests {
             .func("greet")
             .expect("the registration")
             .clone();
-        let values = store
+        let results = store
             .run_concurrent(async |accessor: &Accessor<String>| {
-                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+                concurrent(&host)(accessor, HostArgs::Typed(Box::new((2_u32,)))).await
             })
             .await
             .expect("run the closure")
-            .expect("the call's value");
+            .expect("the call's results");
 
-        assert_eq!(
-            values,
-            vec![Val::U32(19)],
-            "the closure's return crossed as the value vector: the length of \
-             \"host data reached\" and the argument"
+        assert!(
+            matches!(results, HostResults::Typed(_)),
+            "the closure's return crossed as its own tuple"
         );
         assert_eq!(
             store.data(),
-            "host data reached",
-            "what the future wrote to the host data, after its await, stayed there"
+            "host data reached 11",
+            "what the future wrote to the host data, after its await, stayed there: the \
+             length of \"host data\" and the argument"
         );
     }
 
@@ -662,11 +732,12 @@ mod tests {
             .clone();
         let failure = store
             .run_concurrent(async |accessor: &Accessor<()>| {
-                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+                concurrent(&host)(accessor, HostArgs::Vals(vec![Val::U32(2)])).await
             })
             .await
             .expect("run the closure")
-            .expect_err("the call fails");
+            .err()
+            .expect("the call fails");
 
         assert_eq!(
             failure.to_string(),
@@ -700,10 +771,11 @@ mod tests {
                         .await
                         .expect("the promise resolves");
                     let from_promise = resolved.as_f64().expect("the promise's value") as u32;
-                    let reached = accessor.with(|store| store.data().len())?;
-                    Ok(u32::try_from(reached).expect("the host data's length")
-                        + from_promise
-                        + extra)
+                    accessor.with(|store| {
+                        let reached = store.data().len() as u32 + from_promise + extra;
+                        store.data_mut().push_str(&format!(" reached {reached}"));
+                    })?;
+                    Ok(())
                 }
             })
             .expect("the registration");
@@ -712,17 +784,18 @@ mod tests {
             .func("greet")
             .expect("the registration")
             .clone();
-        let values = store
+        let results = store
             .run_concurrent(async |accessor: &Accessor<String>| {
-                concurrent(&host)(accessor, vec![Val::U32(2)]).await
+                concurrent(&host)(accessor, HostArgs::Typed(Box::new((2_u32,)))).await
             })
             .await
             .expect("run the closure")
-            .expect("the call's value");
+            .expect("the call's results");
 
+        assert!(matches!(results, HostResults::Typed(_)));
         assert_eq!(
-            values,
-            vec![Val::U32(14)],
+            store.data(),
+            "host data reached 14",
             "the future awaited the promise and then reached the host data: the \
              length of \"host data\", the promise's value, and the argument"
         );

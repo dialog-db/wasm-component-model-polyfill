@@ -624,6 +624,10 @@ pub enum TypeMismatchPosition {
         interface: InterfaceIdentifier,
         /// The item name inside the interface.
         item: String,
+        /// The path from the function to the first part of its type
+        /// that does not match, for a typed registration. Empty when
+        /// the whole signature is compared at once.
+        path: Vec<TypePathStep>,
     },
     /// A host function was being registered in the root namespace:
     /// against a plain-named import, an item inside a plain-named
@@ -642,6 +646,10 @@ pub enum TypeMismatchPosition {
         /// which is the import's own name as the component writes
         /// it.
         name: String,
+        /// The path from the function to the first part of its type
+        /// that does not match, for a typed registration. Empty when
+        /// the whole signature is compared at once.
+        path: Vec<TypePathStep>,
     },
     /// A typed export call asserted a signature against an export
     /// whose declared component-level signature does not match.
@@ -670,17 +678,26 @@ pub enum TypeMismatchPosition {
     TypedConversion {
         /// The name the component declares the export under.
         export: String,
+        /// The path from the function to the first part of its type
+        /// that does not match.
+        path: Vec<TypePathStep>,
     },
 }
 
 impl core::fmt::Display for TypeMismatchPosition {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::HostFunctionRegistration { interface, item } => {
-                write!(f, "host registration for `{interface}#{item}`")
+            Self::HostFunctionRegistration {
+                interface,
+                item,
+                path,
+            } => {
+                write!(f, "host registration for `{interface}#{item}`")?;
+                write_path(f, path)
             }
-            Self::HostFunctionRegistrationPlain { name } => {
-                write!(f, "host registration for `{name}`")
+            Self::HostFunctionRegistrationPlain { name, path } => {
+                write!(f, "host registration for `{name}`")?;
+                write_path(f, path)
             }
             Self::TypedExportCall { export } => {
                 write!(f, "typed export call for `{export}`")
@@ -688,9 +705,78 @@ impl core::fmt::Display for TypeMismatchPosition {
             Self::TypedExportSlot { export, slot } => {
                 write!(f, "typed export call for `{export}` at {slot}")
             }
-            Self::TypedConversion { export } => {
-                write!(f, "typed conversion for export `{export}`")
+            Self::TypedConversion { export, path } => {
+                write!(f, "typed conversion for export `{export}`")?;
+                write_path(f, path)
             }
+        }
+    }
+}
+
+/// Write `path` after a position, as ", at parameter 0, then field
+/// `y`", or nothing for an empty path.
+fn write_path(f: &mut core::fmt::Formatter<'_>, path: &[TypePathStep]) -> core::fmt::Result {
+    for (index, step) in path.iter().enumerate() {
+        let joint = if index == 0 { ", at" } else { ", then" };
+        write!(f, "{joint} {step}")?;
+    }
+    Ok(())
+}
+
+/// One step of the path a [`TypeMismatch`] gives from a function to the
+/// first part of its type that does not match.
+///
+/// A field or a case is named as the component declares it. For
+/// example, the second field of a record in the first parameter is
+/// `[Parameter(0), Field("y")]`, which renders as "parameter 0, then
+/// field `y`".
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum TypePathStep {
+    /// A parameter of the function, by index.
+    Parameter(usize),
+    /// A result of the function, by index.
+    Result(usize),
+    /// A field of a record, by the name the component declares.
+    Field(String),
+    /// A case of a variant, by the name the component declares.
+    Case(String),
+    /// The element of a list or a fixed-length list.
+    ListElement,
+    /// The key of a map.
+    MapKey,
+    /// The value of a map.
+    MapValue,
+    /// The payload of an option.
+    OptionPayload,
+    /// The `ok` payload of a result.
+    ResultOk,
+    /// The `error` payload of a result.
+    ResultErr,
+    /// The payload of a stream.
+    StreamPayload,
+    /// The payload of a future.
+    FuturePayload,
+    /// A member of a tuple, by index.
+    TupleMember(usize),
+}
+
+impl core::fmt::Display for TypePathStep {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Parameter(index) => write!(f, "parameter {index}"),
+            Self::Result(index) => write!(f, "result {index}"),
+            Self::Field(name) => write!(f, "field `{name}`"),
+            Self::Case(name) => write!(f, "case `{name}`"),
+            Self::ListElement => write!(f, "list element"),
+            Self::MapKey => write!(f, "map key"),
+            Self::MapValue => write!(f, "map value"),
+            Self::OptionPayload => write!(f, "option payload"),
+            Self::ResultOk => write!(f, "`ok` payload"),
+            Self::ResultErr => write!(f, "`error` payload"),
+            Self::StreamPayload => write!(f, "stream payload"),
+            Self::FuturePayload => write!(f, "future payload"),
+            Self::TupleMember(index) => write!(f, "tuple member {index}"),
         }
     }
 }
@@ -718,6 +804,12 @@ pub enum TypeRendering {
     /// how many values a position carries rather than over the type
     /// of any one of them.
     Arity(usize),
+    /// A Rust type, by its name, used when a typed value's Rust type
+    /// does not stand for the type the component declares.
+    Rust(String),
+    /// The name of a field, a case, or a flag, used when the two sides
+    /// name the same part differently.
+    Name(String),
 }
 
 impl core::fmt::Display for TypeRendering {
@@ -727,6 +819,8 @@ impl core::fmt::Display for TypeRendering {
             Self::Function(ty) => write!(f, "{ty:?}"),
             Self::Arity(1) => write!(f, "1 value"),
             Self::Arity(count) => write!(f, "{count} values"),
+            Self::Rust(name) => write!(f, "Rust type `{name}`"),
+            Self::Name(name) => write!(f, "`{name}`"),
         }
     }
 }
@@ -926,12 +1020,12 @@ pub enum AbiCause {
     /// lifted in another store, whose record this store cannot name.
     /// A host function's result, a host stream's write, or a host
     /// future's value meets it once the call runs. So does an argument
-    /// of a host type that does not override
-    /// [`ComponentValue::check_store`]; every other argument
-    /// of a call is refused before the call starts, with
+    /// of a host type whose [`Lower`] does not check the store of the
+    /// error contexts it holds; every other argument of a call is
+    /// refused before the call starts, with
     /// [`InstantiationError::WrongStore`].
     ///
-    /// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
+    /// [`Lower`]: crate::Lower
     #[error("the value holds an error context lifted in a different store")]
     WrongStore,
 
@@ -1359,9 +1453,9 @@ pub enum CopyCause {
     /// carries another payload type than the one the built-in was
     /// declared with, or the one the crossing's type names. A host
     /// that converts a [`StreamAny`](crate::StreamAny) or a
-    /// [`FutureAny`](crate::FutureAny) into a typed reader whose type
-    /// projects to another payload meets the same cause, as its
-    /// conversion is the lift the typed crossing would make. Wasmtime
+    /// [`FutureAny`](crate::FutureAny) into a typed reader of a Rust
+    /// type that does not stand for the payload meets the same cause.
+    /// Wasmtime
     /// checks the same thing through the types of its handle tables,
     /// so the message is the polyfill's own.
     #[error("the {kind} carries another payload type than the built-in or crossing declares")]

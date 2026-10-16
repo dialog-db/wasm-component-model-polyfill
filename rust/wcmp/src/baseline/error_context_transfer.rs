@@ -33,18 +33,20 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::sync::{Arc, Mutex};
 
-use crate::abi::context::BoundaryContext;
-use crate::abi::instance::BoundaryInstance;
+use crate::__private::{
+    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker, align_to,
+};
 use crate::concurrency::ErrorContextId;
-use crate::internal::{ErrorContextAnyInternal, FuncInternal};
+use crate::internal::{
+    ErrorContextAnyInternal, ErrorContextInternal, FuncInternal, TypeCheckerInternal,
+};
 use crate::resource::TableId;
-use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::{StoreContextInternalExt, StoreInternalExt};
 use crate::{
-    AbiCause, AbiPosition, Component, ComponentValue, Engine, EngineConfig, Error, ErrorContext,
-    ErrorContextAny, Func, FunctionParameter, FunctionType, FutureReader, HostCall, Instance,
-    InstantiationError, Linker, PrimitiveType, RecordField, RecordType, Source, Store,
-    StoreContext, StoreId, StreamConsumer, StreamReader, StreamResult, Val, ValField, ValueType,
+    AbiCause, Component, ComponentType, Engine, EngineConfig, Error, ErrorContext, ErrorContextAny,
+    Func, FunctionParameter, FunctionType, FutureReader, HostCall, Instance, InstantiationError,
+    Lift, Linker, Lower, PrimitiveType, Source, Store, StoreContext, StoreId, StreamConsumer,
+    StreamReader, StreamResult, TypePathStep, Val, ValueType,
 };
 use wcmp_macros::component;
 
@@ -869,21 +871,18 @@ async fn it_passes_an_error_context_through_the_host_as_a_typed_error_context() 
     let context = context_at(&mut store, sender, handle);
 
     let leak = func(&instance, "leak")
-        .typed::<(u32,), ErrorContext>()
+        .typed::<(u32,), (ErrorContext,)>()
         .expect("leak is typed");
-    let held = leak.call(&mut store, (handle,)).await.expect("leak");
+    let (held,) = leak.call(&mut store, (handle,)).await.expect("leak");
     assert_eq!(handle_count(&mut store, context), Some(1));
-
-    // The typed value converts to a `Val` and back.
-    let held = ErrorContext::from_val(&held.to_val()).expect("an error context");
 
     call(&mut store, &instance, "release", &[handle]).await;
     assert_eq!(handle_count(&mut store, context), Some(0));
 
     let take = func(&instance, "take-one")
-        .typed::<(ErrorContext,), u32>()
+        .typed::<(ErrorContext,), (u32,)>()
         .expect("take-one is typed");
-    let received = take.call(&mut store, (held,)).await.expect("take-one");
+    let (received,) = take.call(&mut store, (held,)).await.expect("take-one");
     assert_eq!(handle_count(&mut store, context), Some(1));
     assert_eq!(message(&mut store, &instance, received).await, "timeout");
 
@@ -897,6 +896,17 @@ async fn leak(store: &mut Store<()>, instance: &Instance, handle: u32) -> Val {
     match call(store, instance, "leak", &[handle]).await {
         Some(held @ Val::ErrorContext(_)) => held,
         other => panic!("leak answered {other:?}"),
+    }
+}
+
+/// The typed error context that `value`, a [`Val::ErrorContext`],
+/// names, built from the parts the untyped value carries.
+fn typed(value: &Val) -> ErrorContext {
+    match value {
+        Val::ErrorContext(any) => {
+            <ErrorContext as ErrorContextInternal>::new(any.store_id(), any.context())
+        }
+        other => panic!("not an error context: {other:?}"),
     }
 }
 
@@ -940,17 +950,17 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
         assert!(wrong_store(&error), "{name}: {}", chain(&error));
     }
     // Typed, alone and after a value of this store in a list.
-    let foreign_typed = || ErrorContext::from_val(&foreign).expect("an error context");
-    let own_typed = || ErrorContext::from_val(&own).expect("an error context");
+    let foreign_typed = || typed(&foreign);
+    let own_typed = || typed(&own);
     let error = func(&instance, "take-one")
-        .typed::<(ErrorContext,), u32>()
+        .typed::<(ErrorContext,), (u32,)>()
         .expect("take-one is typed")
         .call(&mut store, (foreign_typed(),))
         .await
         .expect_err("a value of another store does not cross");
     assert!(wrong_store(&error), "{}", chain(&error));
     let error = func(&instance, "take-list")
-        .typed::<(Vec<ErrorContext>,), u32>()
+        .typed::<(Vec<ErrorContext>,), (u32,)>()
         .expect("take-list is typed")
         .call(&mut store, (vec![own_typed(), foreign_typed()],))
         .await
@@ -960,7 +970,7 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
     // Through `call_concurrent`, untyped and typed.
     let take_one = func(&instance, "take-one");
     let take_typed = func(&instance, "take-one")
-        .typed::<(ErrorContext,), u32>()
+        .typed::<(ErrorContext,), (u32,)>()
         .expect("take-one is typed");
     let (untyped, typed) = store
         .run_concurrent(async |accessor| {
@@ -1004,8 +1014,8 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
     // The other store's record is untouched as well, and its value
     // still crosses there.
     assert_eq!(handle_count(&mut first, foreign_context), Some(1));
-    let received = func(&first_instance, "take-one")
-        .typed::<(ErrorContext,), u32>()
+    let (received,) = func(&first_instance, "take-one")
+        .typed::<(ErrorContext,), (u32,)>()
         .expect("take-one is typed")
         .call(&mut first, (foreign_typed(),))
         .await
@@ -1018,45 +1028,118 @@ async fn it_refuses_an_error_context_from_another_store_and_leaves_that_store_us
 
 /// The receiver's record, `record { tag: u8, context: error-context,
 /// tail: u8 }`, as a host writes it with no help from the crate: it
-/// implements `ComponentValue` itself, through the public API, and
-/// overrides `check_store` to check the error context it holds.
+/// implements `ComponentType`, `Lift`, and `Lower` itself, through the
+/// public API, and overrides `check_store` to check the error context
+/// it holds.
 struct Tagged {
     tag: u8,
     context: ErrorContext,
     tail: u8,
 }
 
-impl ComponentValue for Tagged {
-    fn value_type() -> ValueType {
-        ValueType::Record(RecordType::new([
-            RecordField::new("tag", u8::value_type()),
-            RecordField::new("context", ErrorContext::value_type()),
-            RecordField::new("tail", u8::value_type()),
-        ]))
+/// The names of [`Tagged`]'s fields, in order.
+const TAGGED_FIELDS: [&str; 3] = ["tag", "context", "tail"];
+
+/// The declared types of [`Tagged`]'s fields, when `ty` is a record of
+/// three fields.
+fn tagged_fields(ty: &ValueType) -> Option<[&ValueType; 3]> {
+    match ty {
+        ValueType::Record(record) => match record.fields() {
+            [tag, context, tail] => Some([tag.ty(), context.ty(), tail.ty()]),
+            _ => None,
+        },
+        _ => None,
     }
-    fn from_val(val: &Val) -> crate::Result<Self> {
-        match val {
-            Val::Record(fields) if fields.len() == 3 => Ok(Self {
-                tag: u8::from_val(&fields[0].value)?,
-                context: ErrorContext::from_val(&fields[1].value)?,
-                tail: u8::from_val(&fields[2].value)?,
-            }),
-            other => panic!("not the record: {other:?}"),
-        }
-    }
-    fn to_val(self) -> Val {
-        let field = |name: &str, value| ValField {
-            name: name.to_owned(),
-            value,
+}
+
+impl ComponentType for Tagged {
+    const ABI: CanonicalAbiInfo =
+        CanonicalAbiInfo::record_static(&[u8::ABI, ErrorContext::ABI, u8::ABI]);
+
+    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let ValueType::Record(record) = ty else {
+            return Err(TypeCheckError::mismatch::<Self>(ty));
         };
-        Val::Record(Box::new([
-            field("tag", self.tag.to_val()),
-            field("context", self.context.to_val()),
-            field("tail", self.tail.to_val()),
-        ]))
+        let fields = record.fields();
+        if fields.len() != TAGGED_FIELDS.len() {
+            return Err(TypeCheckError::count(fields.len(), TAGGED_FIELDS.len()));
+        }
+        for (field, name) in fields.iter().zip(TAGGED_FIELDS) {
+            if field.name() != name {
+                return Err(TypeCheckError::name(field.name(), name));
+            }
+        }
+        let at = |name: &str| {
+            let step = TypePathStep::Field(name.to_owned());
+            move |error: TypeCheckError| error.at(step)
+        };
+        u8::typecheck(fields[0].ty(), types).map_err(at("tag"))?;
+        ErrorContext::typecheck(fields[1].ty(), types).map_err(at("context"))?;
+        u8::typecheck(fields[2].ty(), types).map_err(at("tail"))
     }
+}
+
+impl Lower for Tagged {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> crate::Result<()> {
+        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
+        self.tag.lower_flat(cx, tag, out)?;
+        self.context.lower_flat(cx, context, out)?;
+        self.tail.lower_flat(cx, tail, out)
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> crate::Result<()> {
+        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
+        let mut field = offset;
+        self.tag.lower_memory(cx, tag, field)?;
+        field = align_to(field + u8::SIZE32, ErrorContext::ALIGN32);
+        self.context.lower_memory(cx, context, field)?;
+        field = align_to(field + ErrorContext::SIZE32, u8::ALIGN32);
+        self.tail.lower_memory(cx, tail, field)
+    }
+
     fn check_store(&self, store: StoreId) -> crate::Result<()> {
         self.context.check_store(store)
+    }
+}
+
+impl Lift for Tagged {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> crate::Result<Self> {
+        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
+        Ok(Self {
+            tag: u8::lift_flat(cx, tag, slots, cursor)?,
+            context: ErrorContext::lift_flat(cx, context, slots, cursor)?,
+            tail: u8::lift_flat(cx, tail, slots, cursor)?,
+        })
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> crate::Result<Self> {
+        let [tag, context, tail] = tagged_fields(ty).ok_or_else(|| cx.mismatch(ty))?;
+        let mut field = offset;
+        let tag = u8::lift_memory(cx, tag, field)?;
+        field = align_to(field + u8::SIZE32, ErrorContext::ALIGN32);
+        let context = ErrorContext::lift_memory(cx, context, field)?;
+        field = align_to(field + ErrorContext::SIZE32, u8::ALIGN32);
+        let tail = u8::lift_memory(cx, tail, field)?;
+        Ok(Self { tag, context, tail })
     }
 }
 
@@ -1072,11 +1155,11 @@ async fn it_refuses_a_host_record_holding_another_stores_error_context_before_th
     let own = leak(&mut store, &instance, handle).await;
     let tagged = |value: &Val| Tagged {
         tag: 7,
-        context: ErrorContext::from_val(value).expect("an error context"),
+        context: typed(value),
         tail: 9,
     };
     let take = func(&instance, "take-record")
-        .typed::<(Tagged,), u32>()
+        .typed::<(Tagged,), (u32,)>()
         .expect("take-record is typed");
 
     let error = take
@@ -1092,7 +1175,7 @@ async fn it_refuses_a_host_record_holding_another_stores_error_context_before_th
 
     // The store is not poisoned, and its own value crosses in the same
     // record.
-    let received = take
+    let (received,) = take
         .call(&mut store, (tagged(&own),))
         .await
         .map_err(|error| chain(&error))
@@ -1207,9 +1290,12 @@ async fn it_passes_an_error_context_to_a_typed_host_function_and_takes_one_back(
             .func_wrap(
                 "relay",
                 move |_call: HostCall<'_, ()>, (context,): (ErrorContext,)| {
-                    let val = context.to_val();
-                    log.lock().expect("seen").push(val.clone());
-                    ErrorContext::from_val(&val)
+                    let val = Val::ErrorContext(ErrorContextAny::new(
+                        context.store_id(),
+                        context.context(),
+                    ));
+                    log.lock().expect("seen").push(val);
+                    Ok((context,))
                 },
             )
             .expect("relay registers");
@@ -1223,14 +1309,11 @@ async fn it_writes_held_error_contexts_into_a_guests_stream_and_future() {
     let (mut store, instance) = instantiate().await;
     let handle = new_context(&mut store, &instance, "disk full").await;
     let context = context_at(&mut store, handle_table(&instance, "new"), handle);
-    let held = ErrorContext::from_val(&leak_now(&mut store, context)).expect("an error context");
-    let items = vec![
-        held,
-        ErrorContext::from_val(&leak_now(&mut store, context)).unwrap(),
-    ];
+    let held = typed(&leak_now(&mut store, context));
+    let items = vec![held, typed(&leak_now(&mut store, context))];
     let reader = StreamReader::new(&mut store.as_context_mut(), items).expect("a stream");
-    let readable = func(&instance, "take-stream")
-        .typed::<(StreamReader<ErrorContext>,), u32>()
+    let (readable,) = func(&instance, "take-stream")
+        .typed::<(StreamReader<ErrorContext>,), (u32,)>()
         .expect("take-stream is typed")
         .call(&mut store, (reader,))
         .await
@@ -1253,14 +1336,14 @@ async fn it_writes_held_error_contexts_into_a_guests_stream_and_future() {
     .await;
     let handle = new_context(&mut store, &instance, "timeout").await;
     let context = context_at(&mut store, handle_table(&instance, "new"), handle);
-    let value = ErrorContext::from_val(&leak_now(&mut store, context)).expect("an error context");
+    let value = typed(&leak_now(&mut store, context));
     let reader = FutureReader::new(
         &mut store.as_context_mut(),
         async move { Ok::<_, Error>(value) },
     )
     .expect("a future");
-    let readable = func(&instance, "take-future")
-        .typed::<(FutureReader<ErrorContext>,), u32>()
+    let (readable,) = func(&instance, "take-future")
+        .typed::<(FutureReader<ErrorContext>,), (u32,)>()
         .expect("take-future is typed")
         .call(&mut store, (reader,))
         .await
@@ -1320,8 +1403,8 @@ async fn it_hands_the_host_each_error_context_a_guest_writes_to_its_stream() {
         other => panic!("stream-new answered {other:?}"),
     };
     let (readable, writable) = (ends as u32, (ends >> 32) as u32);
-    let reader = func(&instance, "hand-out")
-        .typed::<(u32,), StreamReader<ErrorContext>>()
+    let (reader,) = func(&instance, "hand-out")
+        .typed::<(u32,), (StreamReader<ErrorContext>,)>()
         .expect("hand-out is typed")
         .call(&mut store, (readable,))
         .await
@@ -1349,10 +1432,10 @@ async fn it_hands_the_host_each_error_context_a_guest_writes_to_its_stream() {
     // each value lowers into the receiver.
     call(&mut store, &instance, "release", &[handle]).await;
     let take = func(&instance, "take-one")
-        .typed::<(ErrorContext,), u32>()
+        .typed::<(ErrorContext,), (u32,)>()
         .expect("take-one is typed");
     for value in held {
-        let index = take.call(&mut store, (value,)).await.expect("take-one");
+        let (index,) = take.call(&mut store, (value,)).await.expect("take-one");
         assert_eq!(message(&mut store, &instance, index).await, "disk full");
     }
     assert_eq!(handle_count(&mut store, context), Some(2));
@@ -1361,70 +1444,35 @@ async fn it_hands_the_host_each_error_context_a_guest_writes_to_its_stream() {
 #[wcmp_macros::test]
 async fn it_refuses_an_error_context_declared_as_another_type_by_that_type() {
     let (mut store, instance) = instantiate().await;
-    let sender = handle_table(&instance, "new");
     let kept = new_context(&mut store, &instance, "disk full").await;
     let held = leak(&mut store, &instance, kept).await;
-    let fresh = new_context(&mut store, &instance, "timeout").await;
-    let fresh_context = context_at(&mut store, sender, fresh);
-    assert_eq!(error_context_count(&mut store), 2);
-
-    // A typed value lowered, and a handle of the sender's table lifted,
-    // against a declared `u32`, in a crossing of the sender's.
-    let declared = ValueType::Primitive(PrimitiveType::U32);
-    let (options, boundary) = {
-        let export = func(&instance, "new");
-        let tables = store.internal().tables_handle();
-        BoundaryInstance::resolve(
-            &Arc::new(export.options().clone()),
-            export.abi_state(),
-            &tables,
-        )
-        .expect("the export's options resolve")
-    };
-    let mut ctx = BoundaryContext::new(
-        store.internal().inner_mut().as_context_mut(),
-        options,
-        boundary,
-        None,
-    );
-    // The declared type in the failure is what only the check of the
-    // declared type gives: a decode that went ahead and then failed to
-    // convert would name no type.
-    let mismatch = |result: &crate::Result<()>, declared: &ValueType| match result {
-        Err(Error::Abi(abi)) => {
-            matches!(abi.cause, AbiCause::HostValueMismatch)
-                && abi.valtype.as_ref() == Some(declared)
-        }
-        _ => false,
-    };
-    let typed = ErrorContext::from_val(&held).expect("an error context");
-    let lowered = typed.lower_flat(
-        &mut ctx,
-        &declared,
-        &mut Vec::new(),
-        AbiPosition::Argument(0),
-    );
-    assert!(mismatch(&lowered, &declared), "{lowered:?}");
-    let slots = [RuntimeVal::I32(fresh as i32)];
-    let flat = <ErrorContext as ComponentValue>::lift_flat(
-        &mut ctx,
-        &slots,
-        &mut 0,
-        &declared,
-        AbiPosition::Result,
-    )
-    .map(drop);
-    assert!(mismatch(&flat, &declared), "{flat:?}");
-    let loaded =
-        <ErrorContext as ComponentValue>::load(&mut ctx, 0, &declared, AbiPosition::Result)
-            .map(drop);
-    assert!(mismatch(&loaded, &declared), "{loaded:?}");
-    drop(ctx);
-    assert_eq!(handle_count(&mut store, fresh_context), Some(1));
-    // The record was not marked host-held, so it leaves with its one
-    // handle.
-    call(&mut store, &instance, "release", &[fresh]).await;
     assert_eq!(error_context_count(&mut store), 1);
+
+    // The type check refuses an error context where a component
+    // declares a `u32`, and names the declared type.
+    let declared = ValueType::Primitive(PrimitiveType::U32);
+    let resources = |ty: crate::ResourceType| ty;
+    let refused = ErrorContext::typecheck(&declared, &TypeChecker::new(&resources));
+    assert!(refused.is_err(), "an error context is not a u32");
+    // A typed function is refused when the host acquires it, on either
+    // side: `message` takes a `u32`, and `leak` returns an error
+    // context.
+    let lowered = func(&instance, "message")
+        .typed::<(ErrorContext,), (String,)>()
+        .expect_err("an error context is not a u32 parameter");
+    assert!(
+        matches!(lowered, Error::TypeMismatch(_)),
+        "{}",
+        chain(&lowered)
+    );
+    let lifted = func(&instance, "leak")
+        .typed::<(u32,), (u32,)>()
+        .expect_err("an error context result is not a u32");
+    assert!(
+        matches!(lifted, Error::TypeMismatch(_)),
+        "{}",
+        chain(&lifted)
+    );
 
     // An untyped value passed where the export takes a `u32`.
     let error = func(&instance, "message")
@@ -1463,9 +1511,7 @@ async fn it_fails_the_guests_call_when_a_typed_host_function_returns_another_sto
             .root()
             .func_wrap(
                 "relay",
-                move |_call: HostCall<'_, ()>, (_context,): (ErrorContext,)| {
-                    ErrorContext::from_val(&foreign)
-                },
+                move |_call: HostCall<'_, ()>, (_context,): (ErrorContext,)| Ok((typed(&foreign),)),
             )
             .expect("relay registers");
     })
@@ -1509,15 +1555,14 @@ async fn assert_relay_fails_with_wrong_store(mut store: Store<()>, instance: Ins
 async fn it_fails_the_guests_read_when_a_host_stream_writes_another_stores_error_context() {
     let (mut first, first_instance) = instantiate().await;
     let first_handle = new_context(&mut first, &first_instance, "disk full").await;
-    let foreign = ErrorContext::from_val(&leak(&mut first, &first_instance, first_handle).await)
-        .expect("an error context");
+    let foreign = typed(&leak(&mut first, &first_instance, first_handle).await);
 
     let (mut store, instance) = instantiate().await;
     let handle = new_context(&mut store, &instance, "local").await;
     let context = context_at(&mut store, handle_table(&instance, "new"), handle);
     let reader = StreamReader::new(&mut store.as_context_mut(), vec![foreign]).expect("a stream");
-    let readable = func(&instance, "take-stream")
-        .typed::<(StreamReader<ErrorContext>,), u32>()
+    let (readable,) = func(&instance, "take-stream")
+        .typed::<(StreamReader<ErrorContext>,), (u32,)>()
         .expect("take-stream is typed")
         .call(&mut store, (reader,))
         .await

@@ -15,16 +15,14 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::layout::{align_to, alignment_of, discriminant_size, size_of};
 use crate::abi::strings;
 use crate::concurrency::{CopyState, EndId, EndKind};
-use crate::concurrency::{ErrorContextAny, FutureAny, StreamAny};
+use crate::concurrency::{ErrorContextAny, ErrorContextId, FutureAny, StreamAny};
 use crate::error::{AbiCause, AbiError, AbiPosition, CopyCause, Error, ErrorContextCause, Result};
 use crate::internal::{
     ErrorContextAnyInternal, ErrorInternal, FutureAnyInternal, ResourceTypeInternal,
     StreamAnyInternal,
 };
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandleParts, TableId};
-use crate::types::{
-    MapType, PrimitiveType, ResourceType, ValueType, payloads_match, resolve_resources,
-};
+use crate::types::{MapType, PrimitiveType, ResourceType, ValueType, resolve_resources};
 use crate::value::{Val, ValField};
 
 /// Lift the value of type `ty` out of the guest's linear memory at
@@ -226,6 +224,31 @@ pub fn lift_end_for_host<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
+    let end = lift_end_id_for_host(ctx, index, ty, position)?;
+    // The value names its payload with the identities the instantiation
+    // gave its resources, as the end's record does.
+    let resolve = |declared| ctx.instance().resource_identity(declared);
+    let payload = |payload: Option<&ValueType>| payload.map(|ty| resolve_resources(ty, &resolve));
+    Ok(match ty {
+        ValueType::Future(future) => Val::Future(FutureAny::new(end, payload(future.payload()))),
+        ValueType::Stream(stream) => Val::Stream(StreamAny::new(end, payload(stream.payload()))),
+        _ => {
+            return Err(Error::internal(
+                "a readable end was lifted as a type that is neither",
+            ));
+        }
+    })
+}
+
+/// Lift the readable end at `index` of the guest's handle table
+/// toward the host, as [`lift_end_for_host`] does, and answer the end
+/// itself, which a typed reader holds.
+pub fn lift_end_id_for_host<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<EndId> {
     let invalid = |reason: String| {
         Error::from(AbiError {
             position,
@@ -251,18 +274,7 @@ pub fn lift_end_for_host<T: 'static>(
         record.handle = None;
         record.held_by_host = true;
     }
-    // The value names its payload with the identities the instantiation
-    // gave its resources, as the end's record does.
-    let payload = |payload: Option<&ValueType>| payload.map(|ty| resolve_resources(ty, &resolve));
-    Ok(match ty {
-        ValueType::Future(future) => Val::Future(FutureAny::new(end, payload(future.payload()))),
-        ValueType::Stream(stream) => Val::Stream(StreamAny::new(end, payload(stream.payload()))),
-        _ => {
-            return Err(Error::internal(
-                "a readable end was lifted as a type that is neither",
-            ));
-        }
-    })
+    Ok(end)
 }
 
 /// Lift the error context at `index` of the guest's handle table. The
@@ -286,6 +298,22 @@ pub fn lift_error_context<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
+    let context = lift_error_context_id(ctx, index, ty, position)?;
+    Ok(Val::ErrorContext(ErrorContextAny::new(
+        ctx.store_id(),
+        context,
+    )))
+}
+
+/// Lift the error context at `index` of the guest's handle table, as
+/// [`lift_error_context`] does, and answer the record it names, which
+/// a typed error context holds.
+pub fn lift_error_context_id<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    index: u32,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<ErrorContextId> {
     let invalid = |reason: String| {
         Error::from(AbiError {
             position,
@@ -313,10 +341,7 @@ pub fn lift_error_context<T: 'static>(
     if !ctx.crosses_between_guests() {
         guard.tasks.hold_error_context(context)?;
     }
-    Ok(Val::ErrorContext(ErrorContextAny::new(
-        ctx.store_id(),
-        context,
-    )))
+    Ok(context)
 }
 
 /// Lift the readable end at `index` of `table` for a crossing of
@@ -400,7 +425,7 @@ pub fn readable_end_at<E: From<Error>>(
     // The record keeps the type with its resources' identities, and
     // `ty` names them by their place in the component, which
     // `resources` reads as the identities the instantiation gave them.
-    if !payloads_match(shared.payload.as_ref(), payload, resources) {
+    if !shared.payload.matches(payload, resources) {
         return Err(Error::Copy(CopyCause::PayloadMismatch { kind }).into());
     }
     if record.state.busy() {
@@ -573,10 +598,34 @@ pub fn gate_list<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<(usize, Option<usize>)> {
+    gate_list_layout(
+        ctx,
+        ptr,
+        len,
+        size_of(element_ty),
+        alignment_of(element_ty),
+        ty,
+        position,
+    )
+}
+
+/// Measure the byte range of the `len` elements of `size` bytes and
+/// `alignment` a list at `ptr` presents against the memory, as
+/// [`gate_list`] does for an element whose layout a typed value states
+/// rather than a declared type.
+pub fn gate_list_layout<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    ptr: usize,
+    len: usize,
+    size: usize,
+    alignment: usize,
+    ty: &ValueType,
+    position: AbiPosition,
+) -> Result<(usize, Option<usize>)> {
     let byte_len = len
-        .checked_mul(size_of(element_ty))
+        .checked_mul(size)
         .ok_or_else(|| invalid_encoding(ty, position, "list length overflow"))?;
-    if !ptr.is_multiple_of(alignment_of(element_ty)) {
+    if !ptr.is_multiple_of(alignment) {
         return Err(invalid_encoding(
             ty,
             position,
@@ -792,7 +841,7 @@ pub fn read_pointer_pair<T: 'static>(
 }
 
 /// Read a discriminant `width` bytes wide at `offset`.
-fn read_discriminant<T: 'static>(
+pub fn read_discriminant<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     width: usize,
@@ -1103,68 +1152,33 @@ mod tests {
         );
     }
 
-    /// Assert that `result` failed as a host value mismatch declared
-    /// as `ty`: the refusal of a typed value paired with a type that
-    /// is not its own.
-    fn assert_declared_mismatch<V>(result: Result<V>, ty: &ValueType) {
-        match result {
-            Err(Error::Abi(abi)) => {
-                assert!(
-                    matches!(abi.cause, AbiCause::HostValueMismatch),
-                    "{:?}",
-                    abi.cause
-                );
-                assert_eq!(abi.valtype.as_ref(), Some(ty));
-            }
-            Err(other) => panic!("expected a host value mismatch, got {other:?}"),
-            Ok(_) => panic!("a typed reader lifted as another type"),
-        }
-    }
-
     #[wcmp_macros::test]
-    fn it_refuses_a_typed_reader_declared_as_another_type_before_it_reads_the_table() {
-        // No entry sits at index 0, so a lift that reached the table
-        // would fail as an invalid handle instead.
+    fn it_refuses_a_typed_reader_of_another_payload_in_the_type_check() {
+        // The type check runs when a typed function is acquired, and a
+        // crossing trusts it: a reader of `u8` does not stand for a
+        // stream or a future of `u32`, and the path names the payload.
         use crate::concurrency::{FutureReader, StreamReader};
-        use crate::linker::ComponentValue;
-        use crate::types::{FutureType, StreamType};
+        use crate::internal::{TypeCheckErrorInternal, TypeCheckerInternal};
+        use crate::typed::{ComponentType, TypeChecker};
+        use crate::types::{FutureType, ResourceType, StreamType};
 
-        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-        let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-        let (options, instance) = one_page(&mut store);
-        let mut ctx = BoundaryContext::new(
-            store.internal().inner_mut().as_context_mut(),
-            options,
-            instance,
-            None,
-        );
         let u32_type = ValueType::Primitive(PrimitiveType::U32);
         let wide = ValueType::Stream(StreamType::new(Some(u32_type.clone())));
-        let future = ValueType::Future(FutureType::new(Some(u32_type)));
-        let slots = [RuntimeVal::I32(0)];
+        let future = ValueType::Future(FutureType::new(Some(u32_type.clone())));
+        let resources = |ty: ResourceType| ty;
+        let checker = TypeChecker::new(&resources);
 
-        let flat = <StreamReader<u8> as ComponentValue>::lift_flat(
-            &mut ctx,
-            &slots,
-            &mut 0,
-            &wide,
-            AbiPosition::Result,
-        );
-        assert_declared_mismatch(flat, &wide);
-        let loaded =
-            <StreamReader<u8> as ComponentValue>::load(&mut ctx, 0, &wide, AbiPosition::Result);
-        assert_declared_mismatch(loaded, &wide);
-        let flat = <FutureReader<u8> as ComponentValue>::lift_flat(
-            &mut ctx,
-            &slots,
-            &mut 0,
-            &future,
-            AbiPosition::Result,
-        );
-        assert_declared_mismatch(flat, &future);
-        let loaded =
-            <FutureReader<u8> as ComponentValue>::load(&mut ctx, 0, &future, AbiPosition::Result);
-        assert_declared_mismatch(loaded, &future);
+        let (path, expected, _) = <StreamReader<u8> as ComponentType>::typecheck(&wide, &checker)
+            .expect_err("a reader of u8 is no stream of u32")
+            .into_parts();
+        assert_eq!(path, vec![crate::TypePathStep::StreamPayload]);
+        assert_eq!(expected, crate::TypeRendering::Value(u32_type.clone()));
+        let (path, _, _) = <FutureReader<u8> as ComponentType>::typecheck(&future, &checker)
+            .expect_err("a reader of u8 is no future of u32")
+            .into_parts();
+        assert_eq!(path, vec![crate::TypePathStep::FuturePayload]);
+        <StreamReader<u32> as ComponentType>::typecheck(&wide, &checker)
+            .expect("a reader of u32 is a stream of u32");
     }
 
     /// Where the bump `cabi_realloc` of [`with_realloc`] hands out its

@@ -217,7 +217,7 @@ async fn two_callers() -> Outcome {
     linker
         .root()
         .func_wrap_concurrent("answer", |_accessor: &Accessor<()>, (x,): (u32,)| {
-            PendingOnce::new(x * 2)
+            PendingOnce::new((x * 2,))
         })
         .expect("the answer registration");
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");

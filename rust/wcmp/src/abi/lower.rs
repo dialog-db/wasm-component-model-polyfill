@@ -22,7 +22,7 @@ use crate::internal::{
     StreamAnyInternal,
 };
 use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceHandle, TableId};
-use crate::types::{PrimitiveType, ValueType, payloads_match};
+use crate::types::{PrimitiveType, ValueType};
 use crate::value::Val;
 
 /// Lower `value` of declared type `ty` into the guest's linear
@@ -227,11 +227,11 @@ pub fn lower<T: 'static>(
 /// [`InstantiationError::WrongStore`]; this cause is the one a value
 /// meets once the call runs, from a host function's result, a host
 /// stream's write, a host future's value, or an argument of a host type
-/// that does not override [`ComponentValue::check_store`], where the
-/// trap names which value it was.
+/// whose [`Lower`] does not check the store of the error contexts it
+/// holds, where the trap names which value it was.
 ///
 /// [`InstantiationError::WrongStore`]: crate::InstantiationError::WrongStore
-/// [`ComponentValue::check_store`]: crate::ComponentValue::check_store
+/// [`Lower`]: crate::Lower
 pub fn lower_error_context<T: 'static>(
     ctx: &BoundaryContext<'_, T>,
     context: &ErrorContextAny,
@@ -355,13 +355,13 @@ pub fn lower_host_end<T: 'static>(
     let carried = guard
         .tasks
         .shared_record(end)
-        .map(|record| record.payload.as_ref())
+        .map(|record| &record.payload)
         .ok_or_else(|| Error::internal("a readable end has no shared record"))?;
-    // The record carries the type as its creator named it, and the
-    // declared type names its resources by their place in the
-    // component: each is read as the identity the instance gave it.
+    // The record carries what its creator named, and the declared type
+    // names its resources by their place in the component: each is
+    // read as the identity the instance gave it.
     let resolve = |declared| ctx.instance().resource_identity(declared);
-    if !payloads_match(carried, declared, &resolve) {
+    if !carried.matches(declared, &resolve) {
         return Err(Error::Copy(CopyCause::PayloadMismatch { kind }));
     }
     lower_readable_end(&mut guard, table, end, ty)
@@ -556,7 +556,7 @@ pub fn lower_str<T: 'static>(
     Ok((ptr, units))
 }
 
-fn write_discriminant<T: 'static>(
+pub fn write_discriminant<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     offset: usize,
     tag: usize,

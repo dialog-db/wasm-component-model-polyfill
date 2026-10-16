@@ -387,6 +387,15 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.attach_result_channel(task)
     }
 
+    /// Give `task` the lift a typed call carries for its result.
+    pub fn attach_return_lift(
+        self,
+        task: TaskId,
+        lift: Box<dyn core::any::Any + Send>,
+    ) -> Result<()> {
+        self.context.attach_return_lift(task, lift)
+    }
+
     /// Whether `task` has resolved.
     pub fn export_task_resolved(self, task: TaskId) -> Result<bool> {
         self.context.export_task_resolved(task)

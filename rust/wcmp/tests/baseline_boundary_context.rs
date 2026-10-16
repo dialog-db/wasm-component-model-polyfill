@@ -200,9 +200,9 @@ async fn it_crosses_a_host_trampoline_through_one_boundary_context() {
         .root()
         .func_wrap(
             "shout",
-            move |_: HostCall<'_, ()>, (s,): (String,)| -> Result<String> {
+            move |_: HostCall<'_, ()>, (s,): (String,)| -> Result<(String,)> {
                 *recorded.lock().expect("record") = Some(s.clone());
-                Ok(s.to_uppercase())
+                Ok((s.to_uppercase(),))
             },
         )
         .expect("the registration");

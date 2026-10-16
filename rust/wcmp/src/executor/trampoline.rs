@@ -108,7 +108,9 @@ use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
 use crate::internal::{AccessorInternal, ErrorInternal, HostCallInternal, ResourceTypeInternal};
-use crate::linker::{HostCall, HostFuncFuture, HostFuncKind, ResourceRegistration};
+use crate::linker::{
+    HostArgs, HostCall, HostFuncFuture, HostFuncKind, HostParams, HostResults, ResourceRegistration,
+};
 use crate::runtime_layer::{
     AsContextMut, Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType,
 };
@@ -117,8 +119,8 @@ use crate::store::StoreContextInternalExt;
 
 use super::ResourceDestructor;
 use crate::concurrency::{
-    Accessor, BlockStep, BlockingBuiltin, CallStatus, HostTask, InstanceId, LowerKind, PollScope,
-    Readiness, Scope, SubtaskId, SubtaskState,
+    Accessor, BlockStep, BlockingBuiltin, CallStatus, HostFuture, HostTask, InstanceId, LowerKind,
+    PollScope, Readiness, Scope, SubtaskId, SubtaskState,
 };
 use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
 use crate::store::{StoreContext, StoreData};
@@ -496,7 +498,7 @@ fn invocation_failed(err: Error) -> anyhow::Error {
 /// function registered to run concurrently, whose future the guest
 /// waits on where it stands.
 pub fn lowering_blocks<T: 'static>(spec: &LoweringSpec, host_func: &HostFuncKind<T>) -> bool {
-    spec.kind == LowerKind::Sync && matches!(host_func, HostFuncKind::Concurrent(_))
+    spec.kind == LowerKind::Sync && matches!(host_func, HostFuncKind::Concurrent(..))
 }
 
 /// Derive the core-Wasm function type the lowered import presents
@@ -601,14 +603,12 @@ fn core_type_of_flat(slot: FlatType) -> CoreType {
 /// What one call of the host side of a lowered import produced: the
 /// values a synchronous registration's closure returned, or the
 /// future a concurrent registration answered with.
-enum HostOutcome {
-    /// A synchronous registration ran its closure to completion. The
-    /// vector holds one value when the type declares a result and
-    /// none otherwise.
-    Values(Vec<Val>),
+enum HostOutcome<T: 'static> {
+    /// A synchronous registration ran its closure to completion.
+    Values(HostResults<T>),
     /// A concurrent registration answered with the future of this one
     /// call. The store owns it as a host task from here on.
-    Future(HostFuncFuture),
+    Future(HostFuncFuture<T>),
 }
 
 /// The body of a trampoline closure. Reads the per-call canon
@@ -660,7 +660,7 @@ fn invoke_trampoline<T: 'static>(
     // so the whole of it is one fallible step whose one error path
     // ends the subtask below.
     let called = (|store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>|
-     -> Result<(HostOutcome, Option<usize>)> {
+     -> Result<(HostOutcome<T>, Option<usize>)> {
         let mut cursor = 0usize;
         let mut lift_ctx = BoundaryContext::new(
             store_ctx.as_context_mut(),
@@ -668,21 +668,40 @@ fn invoke_trampoline<T: 'static>(
             instance.clone(),
             Some(Scope::Subtask(subtask)),
         );
-        let lifted = if parameters_spill(signature, kind) {
-            lift_spilled_arguments(&mut lift_ctx, signature, args, &mut cursor)?
-        } else {
-            let mut lifted: Vec<Val> = Vec::with_capacity(signature.ty().parameters.len());
-            for (i, param) in signature.ty().parameters.iter().enumerate() {
-                let position = AbiPosition::Argument(i);
-                lifted.push(lift_from_flat_slots(
-                    &mut lift_ctx,
-                    args,
-                    &mut cursor,
-                    &param.ty,
-                    position,
-                )?);
+        let params = match host_func {
+            HostFuncKind::Synchronous(_, params) | HostFuncKind::Concurrent(_, params) => params,
+        };
+        let spilled = parameters_spill(signature, kind);
+        let lifted = match params {
+            // A typed registration lifts its own parameter tuple,
+            // straight out of the guest.
+            HostParams::Typed(lift) => HostArgs::Typed(lift(
+                &mut lift_ctx,
+                signature.ty(),
+                args,
+                &mut cursor,
+                spilled,
+            )?),
+            HostParams::Vals if spilled => HostArgs::Vals(lift_spilled_arguments(
+                &mut lift_ctx,
+                signature,
+                args,
+                &mut cursor,
+            )?),
+            HostParams::Vals => {
+                let mut lifted: Vec<Val> = Vec::with_capacity(signature.ty().parameters.len());
+                for (i, param) in signature.ty().parameters.iter().enumerate() {
+                    let position = AbiPosition::Argument(i);
+                    lifted.push(lift_from_flat_slots(
+                        &mut lift_ctx,
+                        args,
+                        &mut cursor,
+                        &param.ty,
+                        position,
+                    )?);
+                }
+                HostArgs::Vals(lifted)
             }
-            lifted
         };
 
         // A synchronous lower passes a return-area pointer as the
@@ -703,9 +722,7 @@ fn invoke_trampoline<T: 'static>(
         lock_tables(tables)?.tasks.start_subtask(subtask);
 
         let outcome = match host_func {
-            HostFuncKind::Synchronous(body) => {
-                let host_arity = usize::from(signature.ty().result.is_some());
-                let mut host_results: Vec<Val> = vec![Val::Bool(false); host_arity];
+            HostFuncKind::Synchronous(body, _) => {
                 // The host function runs against the whole store: the
                 // polyfill's own state rides in the core store's data,
                 // so the context the runtime layer handed this
@@ -716,8 +733,8 @@ fn invoke_trampoline<T: 'static>(
                     StoreContext::new(store_ctx.as_context_mut()),
                     instance.shared_resource_tables(),
                 );
-                tracing::trace_span!("host function")
-                    .in_scope(|| body(call, &lifted, &mut host_results))?;
+                let host_results =
+                    tracing::trace_span!("host function").in_scope(|| body(call, lifted))?;
                 // A body that reached the store and trapped there, in
                 // a destructor it released, poisoned the store, and
                 // the guest that called it is guest code a poisoned
@@ -747,7 +764,7 @@ fn invoke_trampoline<T: 'static>(
             // or one that does nothing when no turn is running, which
             // is the waker the first poll of the host task takes as
             // well.
-            HostFuncKind::Concurrent(start) => {
+            HostFuncKind::Concurrent(start, _) => {
                 let mut store = StoreContext::new(store_ctx.as_context_mut());
                 let accessor: Accessor<T> = Accessor::new(store.internal().id());
                 let waker = store.internal().active_waker();
@@ -851,7 +868,7 @@ fn return_host_values<T: 'static>(
     options: BoundaryOptions,
     instance: BoundaryInstance,
     subtask: SubtaskId,
-    host_results: Vec<Val>,
+    host_results: HostResults<T>,
     return_area_ptr: Option<usize>,
     results: &mut [RuntimeVal],
 ) -> Result<()> {
@@ -895,29 +912,35 @@ fn write_host_result<T: 'static>(
     options: BoundaryOptions,
     instance: BoundaryInstance,
     caller: Option<Scope>,
-    host_results: Vec<Val>,
+    host_results: HostResults<T>,
     return_area_ptr: Option<usize>,
     results: &mut [RuntimeVal],
 ) -> Result<()> {
+    let mut lower_ctx = BoundaryContext::new(store_ctx.as_context_mut(), options, instance, caller);
+    let host_results = match host_results {
+        // A typed registration's results lower themselves, straight
+        // into the guest.
+        HostResults::Typed(typed) => {
+            return typed.lower(&mut lower_ctx, signature, return_area_ptr, results);
+        }
+        HostResults::Vals(values) => values,
+    };
     let Some(result_ty) = &signature.result else {
         return Ok(());
     };
     // Neither caller can arrive here with an empty vector. A
-    // synchronous registration writes into a slice this trampoline
-    // sized from the declared signature, so its length is one
-    // wherever there is a result at all. A concurrent registration's
-    // vector is checked a call earlier: the untyped entry,
+    // synchronous registration writes into a slice its entry sized
+    // from the declared signature, so its length is one wherever
+    // there is a result at all. A concurrent registration's vector is
+    // checked a call earlier: the untyped entry,
     // `LinkerInstance::func_new_concurrent`, wraps the future in the
-    // check that fails a vector the declared type does not describe,
-    // and the typed entry derives the vector from the closure's
-    // return, so its length holds by construction. That is the check
-    // a mistaken host reads. An empty vector here is therefore a
-    // broken invariant rather than a host's mistake, and it reads as
-    // one.
+    // check that fails a vector the declared type does not describe.
+    // That is the check a mistaken host reads. An empty vector here is
+    // therefore a broken invariant rather than a host's mistake, and
+    // it reads as one.
     let host_val = host_results.into_iter().next().ok_or_else(|| {
         Error::internal("a host registration's result never reached the crossing")
     })?;
-    let mut lower_ctx = BoundaryContext::new(store_ctx.as_context_mut(), options, instance, caller);
     match return_area_ptr {
         Some(ptr) => lower(
             &mut lower_ctx,
@@ -973,37 +996,25 @@ fn start_host_call<T: 'static>(
     options: BoundaryOptions,
     instance: BoundaryInstance,
     subtask: SubtaskId,
-    future: HostFuncFuture,
+    future: HostFuncFuture<T>,
     return_area_ptr: Option<usize>,
     results: &mut [RuntimeVal],
 ) -> Result<()> {
     let caller_table = caller_handle_table(abi_state, declared.instance)?;
     let signature = Arc::clone(signature);
+    let (future, produced) = keep_results(future);
     // The lowering carries what the crossing of the result needs,
     // because it runs in a turn of its own: the call the guest made
     // has returned by then, so there is no frame left to read the
     // options, the instance, or the return area back from.
-    let lowering = move |store: &mut StoreContext<'_, T>, produced: Result<Vec<Val>>| {
-        let values = produced?;
+    let lowering = move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
+        outcome?;
+        let produced = take_produced(&produced)?;
         let Some(result_ty) = &signature.ty().result else {
             return Ok(());
         };
         let ptr = return_area_ptr.ok_or_else(|| {
             Error::internal("an asynchronous lower with a result kept no return area")
-        })?;
-        // The arity of a concurrent registration's value vector is
-        // that registration's own contract, and it is checked once,
-        // where the registration is made: the untyped entry wraps
-        // the future in the check that fails a vector the declared
-        // type does not describe, and the typed entry derives the
-        // vector from the closure's return, so its length holds by
-        // construction. That is the check that fires, and a mistaken
-        // host reads it. A future therefore cannot reach this
-        // lowering with a vector of the wrong length, so an empty
-        // one here is a broken invariant rather than a host's
-        // mistake, and it reads as one.
-        let host_val = values.into_iter().next().ok_or_else(|| {
-            Error::internal("a concurrent registration's future produced no value to lower")
         })?;
         let mut lower_ctx = BoundaryContext::new(
             store.internal().runtime_mut().as_context_mut(),
@@ -1011,6 +1022,26 @@ fn start_host_call<T: 'static>(
             instance,
             Some(Scope::Subtask(subtask)),
         );
+        let values = match produced {
+            // A typed registration's results lower themselves,
+            // straight into the return area.
+            HostResults::Typed(typed) => {
+                return typed.lower(&mut lower_ctx, signature.ty(), Some(ptr), &mut []);
+            }
+            HostResults::Vals(values) => values,
+        };
+        // The arity of an untyped concurrent registration's value
+        // vector is that registration's own contract, and it is
+        // checked once, where the registration is made: the untyped
+        // entry wraps the future in the check that fails a vector the
+        // declared type does not describe. That is the check that
+        // fires, and a mistaken host reads it. A future therefore
+        // cannot reach this lowering with a vector of the wrong
+        // length, so an empty one here is a broken invariant rather
+        // than a host's mistake, and it reads as one.
+        let host_val = values.into_iter().next().ok_or_else(|| {
+            Error::internal("a concurrent registration's future produced no value to lower")
+        })?;
         lower(
             &mut lower_ctx,
             ptr,
@@ -1058,7 +1089,7 @@ fn block_on_host_call<T: 'static>(
     options: BoundaryOptions,
     instance: BoundaryInstance,
     subtask: SubtaskId,
-    future: HostFuncFuture,
+    future: HostFuncFuture<T>,
     return_area_ptr: Option<usize>,
     mut results: Vec<RuntimeVal>,
 ) -> Result<BlockStep<T>> {
@@ -1066,15 +1097,12 @@ fn block_on_host_call<T: 'static>(
     // synchronous lower gives the guest no entry to wait on.
     caller_handle_table(abi_state, declared.instance)?;
     // The call resolves before the lower returns, so its lowering has
-    // nothing to carry but the values themselves: the options, the
-    // instance and the return area are all still at hand to cross
-    // with.
-    let produced: Arc<Mutex<Option<Vec<Val>>>> = Arc::new(Mutex::new(None));
-    let slot = produced.clone();
-    let lowering = move |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
-        *lock_produced(&slot)? = Some(outcome?);
-        Ok(())
-    };
+    // nothing to carry but the results themselves, which the future
+    // keeps as it completes: the options, the instance and the return
+    // area are all still at hand to cross with.
+    let (future, produced) = keep_results(future);
+    let lowering =
+        move |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| outcome.map(|_| ());
 
     let task = HostTask::from_future(subtask, lowering, future);
     let parked = StoreContext::new(store_ctx.as_context_mut())
@@ -1128,14 +1156,12 @@ fn write_produced<T: 'static>(
     tables: &Arc<Mutex<HandleTables>>,
     options: BoundaryOptions,
     instance: BoundaryInstance,
-    produced: &Arc<Mutex<Option<Vec<Val>>>>,
+    produced: &Produced<T>,
     return_area_ptr: Option<usize>,
     results: &mut [RuntimeVal],
 ) -> Result<()> {
     let caller = lock_tables(tables)?.tasks.current_scope();
-    let host_results = lock_produced(produced)?.take().ok_or_else(|| {
-        Error::internal("a synchronous lower's block returned without the call's result")
-    })?;
+    let host_results = take_produced(produced)?;
     write_host_result(
         store_ctx,
         signature,
@@ -1148,12 +1174,35 @@ fn write_produced<T: 'static>(
     )
 }
 
-/// Borrow the slot a blocked synchronous lower leaves its result in.
-fn lock_produced(
-    slot: &Arc<Mutex<Option<Vec<Val>>>>,
-) -> Result<std::sync::MutexGuard<'_, Option<Vec<Val>>>> {
-    slot.lock()
-        .map_err(|_| Error::internal("a synchronous lower's result slot is poisoned"))
+/// Where the future of a concurrent registration's call keeps its
+/// results as it completes, for the crossing that follows.
+type Produced<T> = Arc<Mutex<Option<HostResults<T>>>>;
+
+/// The future of a concurrent registration's call as a host task
+/// runs it, with the slot it keeps the call's results in as it
+/// completes. The host task's own value carries nothing: the
+/// results cross from the slot, whatever form they are in.
+fn keep_results<T: 'static>(future: HostFuncFuture<T>) -> (impl HostFuture, Produced<T>) {
+    let produced: Produced<T> = Arc::new(Mutex::new(None));
+    let kept = produced.clone();
+    let future = async move {
+        let results = future.await?;
+        *kept
+            .lock()
+            .map_err(|_| Error::internal("a host call's result slot is poisoned"))? = Some(results);
+        Ok(Vec::new())
+    };
+    (future, produced)
+}
+
+/// Take the results the future of a concurrent registration's call
+/// kept.
+fn take_produced<T: 'static>(produced: &Produced<T>) -> Result<HostResults<T>> {
+    produced
+        .lock()
+        .map_err(|_| Error::internal("a host call's result slot is poisoned"))?
+        .take()
+        .ok_or_else(|| Error::internal("a host call's future completed without its results"))
 }
 
 /// The handle table of the component instance that made the call,

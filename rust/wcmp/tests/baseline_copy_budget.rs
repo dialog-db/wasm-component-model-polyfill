@@ -412,10 +412,10 @@ async fn it_charges_a_typed_vector_of_numbers_its_own_bytes() {
     let numbers = instance
         .get_func("numbers")
         .expect("the export")
-        .typed::<(u32,), Vec<u32>>()
+        .typed::<(u32,), (Vec<u32>,)>()
         .expect("the export has the typed signature");
     store.set_hostcall_fuel(16 * 4);
-    let lifted = numbers
+    let (lifted,) = numbers
         .call(&mut store, (16,))
         .await
         .expect("sixteen numbers lift for their bytes");

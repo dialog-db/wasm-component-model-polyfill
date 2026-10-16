@@ -6,13 +6,13 @@
 
 //! The writable end of a stream or a future the host serves.
 
+use core::any::Any;
 use core::task::{Context, Poll};
 
 use crate::abi::context::BoundaryContext;
 use crate::error::Result;
 use crate::store::{StoreContext, StoreData};
 use crate::types::ValueType;
-use crate::value::Val;
 
 /// The writable end of a stream or a future the host serves through a
 /// producer, as the store holds it.
@@ -73,9 +73,10 @@ pub trait HostWriter<D: 'static>: Send + 'static {
         count: usize,
     ) -> Result<()>;
 
-    /// Take every waiting item, each as the value it crosses as, for a
-    /// reader that is a consumer of the host rather than a guest.
-    fn take_items(&mut self) -> Vec<Val>;
+    /// Take every waiting item, as the `Vec` of the producer's own item
+    /// type, for a reader that is a consumer of the host rather than a
+    /// guest: the items move to it as they are.
+    fn take_items(&mut self) -> Box<dyn Any>;
 }
 
 /// The writable end of a stream or a future the host serves. See the
@@ -109,5 +110,5 @@ pub trait HostWriter<D: 'static>: 'static {
     ) -> Result<()>;
 
     /// Take every waiting item. See the native definition.
-    fn take_items(&mut self) -> Vec<Val>;
+    fn take_items(&mut self) -> Box<dyn Any>;
 }

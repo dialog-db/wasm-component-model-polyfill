@@ -33,12 +33,17 @@ use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use wcmp::__private::{
+    CanonicalAbiInfo, CoreVal, LiftContext, LowerContext, TypeCheckError, TypeChecker,
+    lift_case_flat, lift_case_memory, lower_case_flat, lower_case_memory,
+};
 use wcmp::{
-    Component, ComponentValue, Error, ExternType, FixedLengthListType, FunctionParameter,
-    FunctionType, FutureConsumer, FutureReader, FutureType, HostCall, InterfaceIdentifier, Linker,
-    ListType, MapType, OptionType, RecordField, RecordType, ResourceHandle, ResourceType,
-    ResultType, Source, StoreContext, StreamConsumer, StreamReader, StreamResult, StreamType,
-    TupleType, Val, ValueType, VariantCase, VariantType,
+    Component, ComponentType, Error, ExternType, FixedLengthListType, FunctionParameter,
+    FunctionType, FutureAny, FutureConsumer, FutureReader, FutureType, HostCall,
+    InterfaceIdentifier, Lift, Linker, ListType, Lower, MapType, OptionType, RecordField,
+    RecordType, ResourceHandle, ResourceType, ResultType, Source, StoreContext, StreamAny,
+    StreamConsumer, StreamReader, StreamResult, StreamType, TupleType, Val, ValueType, VariantCase,
+    VariantType,
 };
 
 mod body;
@@ -457,7 +462,8 @@ fn call_types<T: HttpHost>(
             let transmitted = FutureReader::new(call.store(), async {
                 Ok::<_, Error>(ErrorCodeOutcome::ok())
             })?;
-            Val::Tuple(Box::new([request, transmitted.to_val()]))
+            let transmitted = FutureAny::try_from_future_reader(call.store(), transmitted)?;
+            Val::Tuple(Box::new([request, Val::Future(transmitted)]))
         }
         "[method]request.get-method" => {
             let request = request(call, args).ok_or_else(bad)?;
@@ -530,7 +536,8 @@ fn call_types<T: HttpHost>(
             let transmitted = FutureReader::new(call.store(), async {
                 Ok::<_, Error>(ErrorCodeOutcome::ok())
             })?;
-            Val::Tuple(Box::new([response, transmitted.to_val()]))
+            let transmitted = FutureAny::try_from_future_reader(call.store(), transmitted)?;
+            Val::Tuple(Box::new([response, Val::Future(transmitted)]))
         }
         "[method]response.get-status-code" => {
             Val::U16(response(call, args).ok_or_else(bad)?.status)
@@ -565,16 +572,26 @@ fn call_types<T: HttpHost>(
                 Body::Stream(stream) => stream,
                 // A vector delivers its bytes on its first read and ends
                 // the stream.
-                Body::Empty => StreamReader::new(call.store(), Vec::<u8>::new())?.to_val(),
-                Body::Bytes(bytes) => StreamReader::new(call.store(), bytes)?.to_val(),
+                Body::Empty => host_stream(call.store(), Vec::new())?,
+                Body::Bytes(bytes) => host_stream(call.store(), bytes)?,
             };
             let trailers = FutureReader::new(call.store(), async {
                 Ok::<_, Error>(TrailersOutcome::none())
             })?;
-            Val::Tuple(Box::new([stream, trailers.to_val()]))
+            let trailers = FutureAny::try_from_future_reader(call.store(), trailers)?;
+            Val::Tuple(Box::new([stream, Val::Future(trailers)]))
         }
         _ => return Err(unsupported(function)),
     }))
+}
+
+/// A stream the host writes `bytes` to and then ends, as the untyped
+/// value a host function answers.
+fn host_stream<T: 'static>(store: &mut StoreContext<'_, T>, bytes: Vec<u8>) -> Result<Val, Error> {
+    let reader = StreamReader::new(store, bytes)?;
+    Ok(Val::Stream(StreamAny::try_from_stream_reader(
+        store, reader,
+    )?))
 }
 
 /// The fields of the handle in `args[0]` and the field name in
@@ -825,7 +842,14 @@ pub fn read_body<T: 'static>(
             collected.ended = true;
         }
         Body::Stream(stream) => {
-            StreamReader::<u8>::from_val(&stream)?.pipe(store, Collects(collected.clone()))?;
+            let Val::Stream(stream) = stream else {
+                return Err(Error::Internal {
+                    message: "a body is a `stream<u8>`".to_string(),
+                });
+            };
+            stream
+                .try_into_stream_reader::<u8>()?
+                .pipe(store, Collects(collected.clone()))?;
         }
     }
     Ok(core::future::poll_fn(move |cx| {
@@ -850,7 +874,7 @@ pub fn read_body<T: 'static>(
 /// its value.
 struct Discards<T>(core::marker::PhantomData<fn() -> T>);
 
-impl<T: ComponentValue + 'static, D: 'static> FutureConsumer<D> for Discards<T> {
+impl<T: Lift + 'static, D: 'static> FutureConsumer<D> for Discards<T> {
     type Item = T;
 
     fn poll_consume(
@@ -868,11 +892,19 @@ impl<T: ComponentValue + 'static, D: 'static> FutureConsumer<D> for Discards<T> 
 
 /// Read and discard the future `val` a guest handed the host, whose
 /// payload is `T`.
-fn discard<T: ComponentValue + 'static, D: 'static>(
+fn discard<T: Lift + 'static, D: 'static>(
     store: &mut StoreContext<'_, D>,
     val: &Val,
 ) -> Result<(), Error> {
-    FutureReader::<T>::from_val(val)?.pipe(store, Discards::<T>(core::marker::PhantomData))
+    let Val::Future(future) = val else {
+        return Err(Error::Internal {
+            message: format!("not a future: {val:?}"),
+        });
+    };
+    future
+        .clone()
+        .try_into_future_reader::<T>()?
+        .pipe(store, Discards::<T>(core::marker::PhantomData))
 }
 
 /// The payload of a future `result<_, error-code>` the host resolves:
@@ -885,24 +917,60 @@ impl ErrorCodeOutcome {
     }
 }
 
-impl ComponentValue for ErrorCodeOutcome {
-    fn value_type() -> ValueType {
-        ValueType::Result(wcmp::ResultType::new(None, Some(error_code())))
-    }
+impl ComponentType for ErrorCodeOutcome {
+    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[None, Some(ERROR_CODE_ABI)]);
 
-    /// Any outcome a guest writes, which the host reads only to let the
-    /// guest's write complete.
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(_) => Ok(ErrorCodeOutcome),
-            other => Err(Error::Internal {
-                message: format!("not an outcome: {other:?}"),
-            }),
+    fn typecheck(ty: &ValueType, _: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        match ty {
+            ValueType::Result(result)
+                if result.ok().is_none() && result.err() == Some(&error_code()) =>
+            {
+                Ok(())
+            }
+            _ => Err(TypeCheckError::mismatch::<Self>(ty)),
         }
     }
+}
 
-    fn to_val(self) -> Val {
-        Val::Result(Ok(None))
+impl Lower for ErrorCodeOutcome {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> Result<(), Error> {
+        lower_case_flat(cx, ty, 0, out, |_, _, _| Ok(()))
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<(), Error> {
+        lower_case_memory(cx, ty, 0, offset).map(|_| ())
+    }
+}
+
+/// Any outcome a guest writes, which the host reads only to let the
+/// guest's write complete. The lift reads the case and leaves the
+/// payload where it is.
+impl Lift for ErrorCodeOutcome {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> Result<Self, Error> {
+        lift_case_flat(cx, ty, slots, cursor, |_, _, _| Ok(ErrorCodeOutcome))
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<Self, Error> {
+        lift_case_memory(cx, ty, offset).map(|_| ErrorCodeOutcome)
     }
 }
 
@@ -916,30 +984,139 @@ impl TrailersOutcome {
     }
 }
 
-impl ComponentValue for TrailersOutcome {
-    fn value_type() -> ValueType {
-        let fields = ValueType::Own(identity("fields"));
-        ValueType::Result(wcmp::ResultType::new(
-            Some(ValueType::Option(wcmp::OptionType::new(fields))),
-            Some(error_code()),
-        ))
-    }
+impl ComponentType for TrailersOutcome {
+    const ABI: CanonicalAbiInfo = CanonicalAbiInfo::variant_static(&[
+        Some(CanonicalAbiInfo::variant_static(&[
+            None,
+            Some(CanonicalAbiInfo::SCALAR4),
+        ])),
+        Some(ERROR_CODE_ABI),
+    ]);
 
-    /// Any trailers a guest writes, which the host reads only to let the
-    /// guest's write complete. The subset carries no trailers.
-    fn from_val(val: &Val) -> Result<Self, Error> {
-        match val {
-            Val::Result(_) => Ok(TrailersOutcome),
-            other => Err(Error::Internal {
-                message: format!("not a trailers outcome: {other:?}"),
-            }),
+    fn typecheck(ty: &ValueType, types: &TypeChecker<'_>) -> Result<(), TypeCheckError> {
+        let trailers = |ok: Option<&ValueType>| match ok {
+            Some(ValueType::Option(option)) => matches!(
+                option.payload(),
+                ValueType::Own(fields) if types.resource(*fields) == identity("fields")
+            ),
+            _ => false,
+        };
+        match ty {
+            ValueType::Result(result)
+                if trailers(result.ok()) && result.err() == Some(&error_code()) =>
+            {
+                Ok(())
+            }
+            _ => Err(TypeCheckError::mismatch::<Self>(ty)),
         }
     }
+}
 
-    fn to_val(self) -> Val {
-        Val::Result(Ok(Some(Box::new(Val::Option(None)))))
+impl Lower for TrailersOutcome {
+    fn lower_flat<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        out: &mut Vec<CoreVal>,
+    ) -> Result<(), Error> {
+        lower_case_flat(cx, ty, 0, out, |cx, trailers, out| {
+            lower_case_flat(cx, trailers, 0, out, |_, _, _| Ok(()))
+        })
+    }
+
+    fn lower_memory<D: 'static>(
+        &self,
+        cx: &mut LowerContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<(), Error> {
+        let (payload, trailers) = lower_case_memory(cx, ty, 0, offset)?;
+        let trailers = trailers.ok_or_else(|| cx.mismatch(ty))?;
+        lower_case_memory(cx, trailers, 0, payload).map(|_| ())
     }
 }
+
+/// Any trailers a guest writes, which the host reads only to let the
+/// guest's write complete. The subset carries no trailers, so the lift
+/// reads the case and leaves the payload where it is.
+impl Lift for TrailersOutcome {
+    fn lift_flat<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        slots: &[CoreVal],
+        cursor: &mut usize,
+    ) -> Result<Self, Error> {
+        lift_case_flat(cx, ty, slots, cursor, |_, _, _| Ok(TrailersOutcome))
+    }
+
+    fn lift_memory<D: 'static>(
+        cx: &mut LiftContext<'_, '_, D>,
+        ty: &ValueType,
+        offset: usize,
+    ) -> Result<Self, Error> {
+        lift_case_memory(cx, ty, offset).map(|_| TrailersOutcome)
+    }
+}
+
+/// The Canonical ABI layout of [`error_code`], case by case.
+const ERROR_CODE_ABI: CanonicalAbiInfo = {
+    const DNS_ERROR: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
+        <Option<String> as ComponentType>::ABI,
+        <Option<u16> as ComponentType>::ABI,
+    ]);
+    const TLS_ALERT: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
+        <Option<u8> as ComponentType>::ABI,
+        <Option<String> as ComponentType>::ABI,
+    ]);
+    const FIELD_SIZE: CanonicalAbiInfo = CanonicalAbiInfo::record_static(&[
+        <Option<String> as ComponentType>::ABI,
+        <Option<u32> as ComponentType>::ABI,
+    ]);
+    const U32_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u32> as ComponentType>::ABI);
+    const U64_SIZE: Option<CanonicalAbiInfo> = Some(<Option<u64> as ComponentType>::ABI);
+    const TEXT: Option<CanonicalAbiInfo> = Some(<Option<String> as ComponentType>::ABI);
+    CanonicalAbiInfo::variant_static(&[
+        None,
+        Some(DNS_ERROR),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(TLS_ALERT),
+        None,
+        None,
+        U64_SIZE,
+        None,
+        None,
+        None,
+        U32_SIZE,
+        Some(CanonicalAbiInfo::variant_static(&[None, Some(FIELD_SIZE)])),
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        None,
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        U64_SIZE,
+        U32_SIZE,
+        Some(FIELD_SIZE),
+        TEXT,
+        TEXT,
+        None,
+        None,
+        None,
+        None,
+        None,
+        TEXT,
+    ])
+};
 
 /// `wasi:http/types.error-code`, as `wasi:http@0.3.0` declares it.
 fn error_code() -> ValueType {

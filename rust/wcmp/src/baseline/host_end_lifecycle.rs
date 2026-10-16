@@ -365,11 +365,12 @@ async fn make(store: &mut Store<()>, instance: &Instance) -> StreamReader<u8> {
     instance
         .get_func("make")
         .expect("the component exports `make`")
-        .typed::<(), StreamReader<u8>>()
+        .typed::<(), (StreamReader<u8>,)>()
         .expect("`make` returns a `stream<u8>`")
         .call(store, ())
         .await
         .expect("the readable end crosses to the host")
+        .0
 }
 
 /// Call the guest's `make-future` through a typed call, which hands
@@ -378,11 +379,12 @@ async fn make_future(store: &mut Store<()>, instance: &Instance) -> FutureReader
     instance
         .get_func("make-future")
         .expect("the component exports `make-future`")
-        .typed::<(), FutureReader<u32>>()
+        .typed::<(), (FutureReader<u32>,)>()
         .expect("`make-future` returns a `future<u32>`")
         .call(store, ())
         .await
         .expect("the readable end crosses to the host")
+        .0
 }
 
 /// Start the guest's asynchronous write of four bytes of its memory to
@@ -617,7 +619,7 @@ async fn it_refuses_to_close_or_lower_a_reader_it_closed_already() {
     let lowered = instance
         .get_func("take")
         .expect("the component exports `take`")
-        .typed::<(StreamReader<u8>,), u32>()
+        .typed::<(StreamReader<u8>,), (u32,)>()
         .expect("`take` takes a `stream<u8>`")
         .call(&mut store, (reader,))
         .await;

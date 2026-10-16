@@ -510,7 +510,7 @@ async fn it_copies_strings_between_a_32_bit_and_a_64_bit_component() {
     let roundtrip = instance
         .get_func("roundtrip")
         .expect("`roundtrip` is exported")
-        .typed::<(String,), String>()
+        .typed::<(String,), (String,)>()
         .expect("typed");
     for text in [
         "hello",
@@ -521,7 +521,8 @@ async fn it_copies_strings_between_a_32_bit_and_a_64_bit_component() {
             roundtrip
                 .call(&mut store, (text.to_owned(),))
                 .await
-                .expect("the string crosses both memories"),
+                .expect("the string crosses both memories")
+                .0,
             text
         );
     }

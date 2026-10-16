@@ -10,10 +10,10 @@ use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
 use crate::abi::layout::size_of;
 use crate::error::{AbiPosition, Error, Result};
-use crate::internal::{ErrorInternal, SourceInternal};
-use crate::linker::ComponentValue;
+use crate::internal::{ErrorInternal, LiftContextInternal, SourceInternal};
 use crate::runtime_layer::AsContextMut;
 use crate::store::{StoreContext, StoreContextInternalExt};
+use crate::typed::{Lift, LiftContext};
 
 use super::copy_buffer::CopyBuffer;
 
@@ -104,7 +104,7 @@ impl<T> Source<'_, T> {
         count: usize,
     ) -> Result<()>
     where
-        T: ComponentValue,
+        T: Lift,
     {
         let count = count.min(self.remaining());
         if count == 0 {
@@ -136,7 +136,7 @@ impl<T> Source<'_, T> {
 /// Lift `count` items of the guest's write `write`, from the first
 /// one no poll has taken yet, onto the end of `buffer`, counting each
 /// in `taken` as it lands.
-fn lift_items<D: 'static, T: ComponentValue>(
+fn lift_items<D: 'static, T: Lift>(
     store: &mut StoreContext<'_, D>,
     write: &CopyBuffer,
     taken: &mut u32,
@@ -156,10 +156,11 @@ fn lift_items<D: 'static, T: ComponentValue>(
         None,
     );
     let size = size_of(ty);
+    let mut cx = LiftContext::new(&mut cx, POINTER_ARGUMENT);
     buffer.reserve(count);
     for _ in 0..count {
         let offset = write.pointer as usize + (write.progress + *taken) as usize * size;
-        buffer.push(T::load(&mut cx, offset, ty, POINTER_ARGUMENT)?);
+        buffer.push(T::lift_memory(&mut cx, ty, offset)?);
         *taken += 1;
     }
     Ok(())

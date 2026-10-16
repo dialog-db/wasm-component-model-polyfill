@@ -286,7 +286,7 @@ async fn calling_the_host(seen: &Seen, pend: bool) -> (Store<()>, Instance) {
                         .await;
                         seen.lock().expect("seen").push(count()??);
                     }
-                    Ok::<u32, Error>(x + 1)
+                    Ok::<(u32,), Error>((x + 1,))
                 }
             },
         )

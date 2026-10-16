@@ -6,6 +6,7 @@
 
 //! One call into an export.
 
+use core::any::Any;
 use std::sync::Arc;
 
 use crate::abi::signature::Signature;
@@ -100,6 +101,10 @@ pub struct Task {
     /// call. `None` for every other task, whose function type is
     /// known and compared structurally.
     pub result_tuple: Option<usize>,
+    /// The lift a typed call into the export carries for the task's
+    /// result, which `task.return` runs in place of lifting a `Val`.
+    /// It names the host data type of the store, so it is held erased.
+    pub return_lift: Option<Box<dyn Any + Send>>,
 }
 
 impl Task {
@@ -126,6 +131,7 @@ impl Task {
             thread_exited: false,
             implicit_thread_exited: false,
             result_tuple: None,
+            return_lift: None,
         }
     }
 

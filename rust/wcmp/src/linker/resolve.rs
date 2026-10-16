@@ -104,11 +104,14 @@ use crate::component::{
     Component, ComponentImport, ExternType, ExternalName, FunctionType, InstanceItem, InstanceType,
     ModuleType,
 };
-use crate::error::{Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypeRendering};
+use crate::error::{
+    Error, LinkError, Result, TypeMismatch, TypeMismatchPosition, TypePathStep, TypeRendering,
+};
 use crate::identifier::InterfaceIdentifier;
-use crate::internal::{LinkerInternal, ResourceTypeInternal};
+use crate::internal::{LinkerInternal, ResourceTypeInternal, TypeCheckErrorInternal};
 use crate::types::{ResourceType, ValueType, value_types_match};
 
+use super::host_func::HostSignature;
 use super::host_func_kind::HostFuncKind;
 use super::linker::Linker;
 use super::module_matching::module_satisfies;
@@ -356,10 +359,17 @@ impl<'a> ItemPosition<'a> {
     }
 
     fn for_item(&self, item: &str) -> TypeMismatchPosition {
+        self.for_item_at(item, Vec::new())
+    }
+
+    /// The position of `item`, with the path to the part of its type
+    /// a typed registration found differs.
+    fn for_item_at(&self, item: &str, path: Vec<TypePathStep>) -> TypeMismatchPosition {
         match self.root {
             PositionRoot::Interface(interface) => TypeMismatchPosition::HostFunctionRegistration {
                 interface: interface.clone(),
                 item: self.qualified(item),
+                path,
             },
             PositionRoot::Root { name, .. } => {
                 TypeMismatchPosition::HostFunctionRegistrationPlain {
@@ -368,6 +378,7 @@ impl<'a> ItemPosition<'a> {
                     } else {
                         format!("{name}.{}", self.qualified(item))
                     },
+                    path,
                 }
             }
         }
@@ -718,12 +729,28 @@ fn check_function_item<T: 'static>(
         }));
     };
     check_registration_kind(position, item_name, declared, &host.kind)?;
-    if !function_types_compatible(&host.signature, declared, resources) {
-        return Err(Error::from(TypeMismatch {
-            position: position.for_item(item_name),
-            expected: TypeRendering::Function(declared.clone()),
-            actual: TypeRendering::Function(host.signature.clone()),
-        }));
+    match &host.signature {
+        HostSignature::Declared(signature) => {
+            if !function_types_compatible(signature, declared, resources) {
+                return Err(Error::from(TypeMismatch {
+                    position: position.for_item(item_name),
+                    expected: TypeRendering::Function(declared.clone()),
+                    actual: TypeRendering::Function(signature.clone()),
+                }));
+            }
+        }
+        // A typed registration walks the declared type with its Rust
+        // types, and names the first part that differs.
+        HostSignature::Typed(check) => {
+            check(declared, &|ty| resources.resolve(ty)).map_err(|error| {
+                let (path, expected, actual) = error.into_parts();
+                Error::from(TypeMismatch {
+                    position: position.for_item_at(item_name, path),
+                    expected,
+                    actual,
+                })
+            })?;
+        }
     }
     Ok(())
 }
@@ -753,7 +780,7 @@ fn check_registration_kind<T: 'static>(
     declared: &FunctionType,
     kind: &HostFuncKind<T>,
 ) -> Result<()> {
-    let concurrent = matches!(kind, HostFuncKind::Concurrent(_));
+    let concurrent = matches!(kind, HostFuncKind::Concurrent(..));
     match (declared.async_, concurrent) {
         (true, false) => Err(Error::from(
             LinkError::SynchronousRegistrationForAsyncImport {

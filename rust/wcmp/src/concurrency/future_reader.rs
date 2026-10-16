@@ -6,6 +6,7 @@
 
 //! The readable end of a future the host holds.
 
+use core::any::Any;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -14,14 +15,15 @@ use crate::abi::context::BoundaryContext;
 use crate::error::{AbiPosition, CopyCause, Error, Result};
 use crate::executor::{close_readable_end, pipe_readable_end};
 use crate::internal::FutureReaderInternal;
-use crate::linker::ComponentValue;
+use crate::internal::LowerContextInternal;
 use crate::store::{StoreContext, StoreContextInternalExt, StoreData};
+use crate::typed::{ComponentType, Lift, Lower, LowerContext};
 use crate::types::ValueType;
-use crate::value::Val;
 
 use super::accessor::Accessor;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
+use super::end_payload::EndPayload;
 use super::future_any::FutureAny;
 use super::future_consumer::FutureConsumer;
 use super::future_producer::FutureProducer;
@@ -37,7 +39,7 @@ use super::source::Source;
 /// producer that writes the one value, and hands the reader to a
 /// guest: as the result of a typed host function, or as an argument
 /// of a typed call. The reader implements
-/// [`ComponentValue`](crate::ComponentValue) for that, and lowering
+/// [`Lower`](crate::Lower) and [`Lift`](crate::Lift) for that, and lowering
 /// it into a guest enters a readable end in the guest's handle table
 /// that shares the future with the producer. The guest's
 /// `future.read` then polls the producer inside a turn of the store.
@@ -48,8 +50,9 @@ use super::source::Source;
 ///
 /// A host receives a reader the other way: a future in the result of
 /// a typed call, or in a parameter of a typed host function, arrives
-/// as one, and the guest's entry for the end is gone. The lift checks
-/// that the guest's future carries the type `T` projects to. The host
+/// as one, and the guest's entry for the end is gone. The type check
+/// of the typed function compared `T` with the payload the future's type
+/// declares when the host acquired or linked it. The host
 /// then reads the value with [`pipe`](Self::pipe), which makes a
 /// [`FutureConsumer`] its reading side, and the guest's
 /// `future.write` polls the consumer inside a turn of the store.
@@ -90,11 +93,11 @@ pub struct FutureReader<T> {
     item: PhantomData<fn() -> T>,
 }
 
-impl<T: ComponentValue> FutureReader<T> {
+impl<T: ComponentType + 'static> FutureReader<T> {
     /// Create a future in the store `store` reaches, whose writable
     /// end is `producer`, and return its readable end.
     ///
-    /// The future carries a value of the type `T` projects to. `D` is
+    /// The future carries a value of the Rust type `T`. `D` is
     /// the store's host data. [`Store::as_context_mut`] reaches the
     /// context from a store the host holds, and a host `async`
     /// function reaches it through [`Accessor::with`].
@@ -104,12 +107,15 @@ impl<T: ComponentValue> FutureReader<T> {
     pub fn new<D: 'static>(
         store: &mut StoreContext<'_, D>,
         producer: impl FutureProducer<D, Item = T>,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    where
+        T: Lower,
+    {
         let (readable, writable) = store
             .internal()
             .lock_tables()?
             .tasks
-            .insert_host_ends(Some(T::value_type()), EndKind::FutureWritable)?;
+            .insert_host_ends(EndPayload::host::<T>(), EndKind::FutureWritable)?;
         store.internal().scheduler_mut().insert_host_writer(
             writable,
             Box::new(ProducerEnd {
@@ -155,7 +161,10 @@ impl<T: ComponentValue> FutureReader<T> {
         self,
         store: &mut StoreContext<'_, D>,
         consumer: impl FutureConsumer<D, Item = T>,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        T: Lift,
+    {
         let consumer = ConsumerEnd {
             consumer: Box::pin(consumer),
             received: false,
@@ -175,8 +184,8 @@ impl<T: ComponentValue> FutureReader<T> {
     }
 
     /// Convert `future` into a reader whose value is of the Rust type
-    /// `T`, after checking that the future carries the type `T`
-    /// projects to. The name is Wasmtime's, and
+    /// `T`, after checking that the future carries values of `T`. The
+    /// name is Wasmtime's, and
     /// [`FutureAny::try_into_future_reader`] states the contract.
     pub fn try_from_future_any(future: FutureAny) -> Result<Self> {
         future.try_into_future_reader()
@@ -264,7 +273,7 @@ struct ProducerEnd<D: 'static, P: FutureProducer<D>> {
 impl<D: 'static, P> HostWriter<D> for ProducerEnd<D, P>
 where
     P: FutureProducer<D>,
-    P::Item: ComponentValue,
+    P::Item: Lower,
 {
     fn poll(
         &mut self,
@@ -311,7 +320,9 @@ where
         count: usize,
     ) -> Result<()> {
         match self.value.take() {
-            Some(value) if count > 0 => value.store(cx, offset, ty, POINTER_ARGUMENT),
+            Some(value) if count > 0 => {
+                value.lower_memory(&mut LowerContext::new(cx, POINTER_ARGUMENT), ty, offset)
+            }
             value => {
                 self.value = value;
                 Ok(())
@@ -319,12 +330,8 @@ where
         }
     }
 
-    fn take_items(&mut self) -> Vec<Val> {
-        self.value
-            .take()
-            .map(ComponentValue::to_val)
-            .into_iter()
-            .collect()
+    fn take_items(&mut self) -> Box<dyn Any> {
+        Box::new(self.value.take().into_iter().collect::<Vec<P::Item>>())
     }
 }
 
@@ -340,7 +347,7 @@ struct ConsumerEnd<D: 'static, C: FutureConsumer<D>> {
 impl<D: 'static, C> HostConsumer<D> for ConsumerEnd<D, C>
 where
     C: FutureConsumer<D>,
-    C::Item: ComponentValue,
+    C::Item: Lift,
 {
     type Item = C::Item;
 
