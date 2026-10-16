@@ -1,0 +1,25 @@
+---
+id: 1cc7ae
+title: bindgen imported and exported resources
+type: feature
+blocked_by: [5290bd, acefba, 39c0c7, e3d75d, c79ad4]
+labels: [PDD028, bindgen]
+created: 2026-10-17T02:55:52Z
+---
+
+## What to build
+
+PDD028, "Resources and `with`" for imported and exported resources without `with` (Wasmtime `lib.rs:3293-3315` at `v49.0.0-rc.1`).
+
+- **Imported resources.** For each resource `r`, a trait `HostR` and a trait `HostRWithStore<T>`, dividing the constructor, methods, and static functions by the plain/`store`/async rule. `HostR` has `drop(&mut self, Resource<R>) -> wcmp::Result<()>`. The registration calls `LinkerInstance::resource` with the name, `ResourceType::host::<R>()`, and a destructor that calls `drop`.
+- **`[drop]r`.** `drop` is synchronous in every interface, including one of async functions. A `[drop]r` rule with `store` moves `drop` to `HostRWithStore<T>`, where it receives an `Access`. A `[drop]r` rule with `async` fails the compile.
+- **`eq` resources.** A resource that one interface `use`s from another is registered only in the interface that defines it, following Wasmtime's rule.
+- **Exported resources.** `ResourceAny`, as in Wasmtime. The interface getter has `call_constructor` and one `call_*` per method and static function, following the export rules (including `async | store`).
+
+## Acceptance criteria
+- [ ] A resource crosses through `Resource<T>`: a generated constructor of an imported resource pushes a host value into a `ResourceTable` and returns its handle. A generated method receives the guest's `borrow` of it, and the rep matches. When the guest drops the handle, `drop` runs once. On both targets.
+- [ ] An exported resource crosses through `ResourceAny`: the host calls the generated `call_constructor` and a generated `call_*` method on the handle, and the method returns the value the guest computes from the constructor's argument.
+- [ ] A `[drop]r` rule with `store` gives `drop` an `Access`, and a `[drop]r` rule with `async` fails the compile with a message that names the rule.
+- [ ] An `eq` resource used by two interfaces links once and keeps one identity.
+- [ ] `lint` passes, and `tests all` is green on both targets with the conformance summary unchanged.
+
