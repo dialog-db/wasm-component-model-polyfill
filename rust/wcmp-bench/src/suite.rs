@@ -17,7 +17,8 @@ use core::task::{Context, Poll, Waker};
 use std::sync::{Arc, Mutex};
 
 use wcmp::{
-    Accessor, Component, Engine, EngineConfig, Func, Instance, Linker, Store, Val, ValField,
+    Accessor, Component, Engine, EngineConfig, ExternType, Func, FunctionType, HostCall, Instance,
+    InterfaceIdentifier, Linker, Store, Val, ValField,
 };
 
 use crate::benchmark::Benchmark;
@@ -26,8 +27,9 @@ use crate::guests;
 use crate::run::Run;
 
 /// Every benchmark of the suite, in the order a report lists them:
-/// the call floor first, then the canonical ABI's heap values, then
-/// handles, composition, host calls in flight, and parsing.
+/// the call floor first, then the canonical ABI's heap values, the
+/// typed path's type check, then handles, composition, host calls in
+/// flight, and parsing.
 pub fn benchmarks() -> Vec<Benchmark> {
     [
         u32_call(),
@@ -41,6 +43,10 @@ pub fn benchmarks() -> Vec<Benchmark> {
         list_u32_roundtrip(),
         list_u32_roundtrip_typed(),
         list_record_roundtrip(),
+        list_record_roundtrip_typed(),
+        typed_acquire(),
+        instantiate_typed_host(),
+        instantiate_untyped_host(),
         resource_handle(),
         composition_call(),
         host_calls_in_flight(),
@@ -328,6 +334,188 @@ async fn list_record_roundtrip(run: &mut Run) -> Result<()> {
         echo.call(&mut store, &arguments).await?;
     }
     Ok(())
+}
+
+/// The record `point` of the `echo`, `shapes`, and host-import guests,
+/// derived rather than written by hand.
+#[derive(Clone, wcmp::ComponentType, wcmp::Lift, wcmp::Lower)]
+#[component(record)]
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+/// The record `wide` of the `shapes` guest: sixteen `u32` fields.
+#[derive(wcmp::ComponentType, wcmp::Lift, wcmp::Lower)]
+#[component(record)]
+struct Wide {
+    f0: u32,
+    f1: u32,
+    f2: u32,
+    f3: u32,
+    f4: u32,
+    f5: u32,
+    f6: u32,
+    f7: u32,
+    f8: u32,
+    f9: u32,
+    f10: u32,
+    f11: u32,
+    f12: u32,
+    f13: u32,
+    f14: u32,
+    f15: u32,
+}
+
+/// The variant `shape` of the `shapes` guest: a record inside a
+/// variant.
+#[derive(wcmp::ComponentType, wcmp::Lift, wcmp::Lower)]
+#[component(variant)]
+enum Shape {
+    #[component(name = "dot")]
+    Dot(Point),
+    #[component(name = "empty")]
+    Empty,
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `echo` component: `echo-list-point: func(xs: list<point>) -> list<point>` over `record point { x: u32, y: u32 }`",
+    payload = "the case's number of two-field records as a derived `Point` through `TypedFunc<(Vec<Point>,), (Vec<Point>,)>`, cloned into each call because the call takes it by value",
+    cases = [16, 256, 4096]
+)]
+async fn list_record_roundtrip_typed(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let (_engine, mut store, instance) = instantiate(run, guests::ECHO).await?;
+    let echo = export(&instance, "echo-list-point")?.typed::<(Vec<Point>,), (Vec<Point>,)>()?;
+    let points: Vec<Point> = (0..count)
+        .map(|index| Point {
+            x: index as u32,
+            y: index as u32,
+        })
+        .collect();
+    run.moves_elements(count);
+    while run.iterate() {
+        echo.call(&mut store, (points.clone(),)).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "one export per case: the `guest` fixture's `double: func(x: u32) -> u32` (`lookup` and `flat`), and the inline `shapes` component's `take-wide: func(w: wide)` over a record of sixteen `u32` fields (`record-16`) and `take-shapes: func(xs: list<shape>)` over `variant shape { dot(point), empty }` (`nested`)",
+    payload = "one `Instance::get_func` and one `Func::typed` per iteration, which runs the type check of the Rust signature against the export's; `lookup` runs the `get_func` alone, since `Func::typed` takes the `Func` and each iteration needs one",
+    cases = ["lookup", "flat", "record-16", "nested"]
+)]
+async fn typed_acquire(run: &mut Run) -> Result<()> {
+    let shape = run.case().name();
+    let (bytes, name) = match shape {
+        "lookup" | "flat" => (guests::GUEST, "double"),
+        "record-16" => (guests::SHAPES, "take-wide"),
+        "nested" => (guests::SHAPES, "take-shapes"),
+        other => return Err(Error::Setup(format!("`{other}` is not a shape"))),
+    };
+    let (_engine, _store, instance) = instantiate(run, bytes).await?;
+    while run.iterate() {
+        let func = export(&instance, name)?;
+        match shape {
+            "lookup" => drop(func),
+            "flat" => drop(func.typed::<(u32,), (u32,)>()?),
+            "record-16" => drop(func.typed::<(Wide,), ()>()?),
+            _ => drop(func.typed::<(Vec<Shape>,), ()>()?),
+        }
+    }
+    Ok(())
+}
+
+/// The interface the host-import guests import their functions from.
+const POINTS: &str = "wcmp-bench:host/points@0.1.0";
+
+/// The host-import guest of `count` imports, `f0` to `f(count - 1)`.
+fn hosts(count: u64) -> Result<&'static [u8]> {
+    match count {
+        1 => Ok(guests::HOSTS_1),
+        16 => Ok(guests::HOSTS_16),
+        other => Err(Error::Setup(format!("no guest imports {other} functions"))),
+    }
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline host-import component of the case's number of imports, each `f<i>: func(p: point) -> point` over `record point { x: u32, y: u32 }`, with no core module",
+    payload = "one instantiation into a fresh store per iteration, against a linker whose imports are `func_wrap` host functions over a derived `Point`: the type check of each typed host function at link time",
+    cases = [1, 16]
+)]
+async fn instantiate_typed_host(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let engine = engine(run)?;
+    let component = Component::new(&engine, hosts(count)?).await?;
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let points: InterfaceIdentifier = POINTS
+        .parse()
+        .map_err(|error| Error::Setup(format!("{POINTS}: {error}")))?;
+    for index in 0..count {
+        linker.instance(&points).func_wrap(
+            format!("f{index}"),
+            |_: HostCall<'_, ()>, (point,): (Point,)| Ok((point,)),
+        )?;
+    }
+    run.moves_elements(count);
+    while run.iterate() {
+        let mut store: Store<()> = Store::new(&engine, ())?;
+        linker.instantiate(&mut store, &component).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline host-import component of the case's number of imports, each `f<i>: func(p: point) -> point` over `record point { x: u32, y: u32 }`, with no core module",
+    payload = "one instantiation into a fresh store per iteration, against a linker whose imports are `func_new` host functions of the declared type: the untyped counterpart of `instantiate-typed-host`",
+    cases = [1, 16]
+)]
+async fn instantiate_untyped_host(run: &mut Run) -> Result<()> {
+    let count = run.case().number();
+    let engine = engine(run)?;
+    let component = Component::new(&engine, hosts(count)?).await?;
+    let ty = import_type(&component, "f0")?;
+    let mut linker: Linker<()> = Linker::new(&engine);
+    let points: InterfaceIdentifier = POINTS
+        .parse()
+        .map_err(|error| Error::Setup(format!("{POINTS}: {error}")))?;
+    for index in 0..count {
+        linker.instance(&points).func_new(
+            format!("f{index}"),
+            ty.clone(),
+            |_: HostCall<'_, ()>, args: &[Val], results: &mut [Val]| {
+                results[0] = args[0].clone();
+                Ok(())
+            },
+        )?;
+    }
+    run.moves_elements(count);
+    while run.iterate() {
+        let mut store: Store<()> = Store::new(&engine, ())?;
+        linker.instantiate(&mut store, &component).await?;
+    }
+    Ok(())
+}
+
+/// The type of the function `name` the host-import guest imports from
+/// [`POINTS`], as the component declares it.
+fn import_type(component: &Component, name: &str) -> Result<FunctionType> {
+    component
+        .imports
+        .iter()
+        .find_map(|import| match &import.ty {
+            ExternType::Instance(instance) => {
+                instance
+                    .items
+                    .iter()
+                    .find_map(|item| match (&item.ty, item.name == name) {
+                        (ExternType::Function(ty), true) => Some(ty.clone()),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Setup(format!("the guest imports no `{name}`")))
 }
 
 #[wcmp_macros::bench(

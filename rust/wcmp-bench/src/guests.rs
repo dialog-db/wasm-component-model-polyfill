@@ -249,3 +249,73 @@ pub const YIELDS: &[u8] = component!(
           (callback (core func $i "spin-callback")))))
     "#
 );
+
+/// A component whose exports take the shapes `typed-acquire` checks: a
+/// record of sixteen `u32` fields, `take-wide: func(w: wide)`, and a
+/// record inside a variant inside a list,
+/// `take-shapes: func(xs: list<shape>)` over
+/// `variant shape { dot(point), empty }`. Neither is ever called, so
+/// their core functions do nothing.
+pub const SHAPES: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (memory (export "memory") 1)
+        (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32) i32.const 16)
+        (func (export "take-wide") (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32))
+        (func (export "take-shapes") (param i32 i32)))
+      (core instance $i (instantiate $m))
+      (type $wide (record (field "f0" u32) (field "f1" u32) (field "f2" u32) (field "f3" u32) (field "f4" u32) (field "f5" u32) (field "f6" u32) (field "f7" u32) (field "f8" u32) (field "f9" u32) (field "f10" u32) (field "f11" u32) (field "f12" u32) (field "f13" u32) (field "f14" u32) (field "f15" u32)))
+      (export $wide-out "wide" (type $wide))
+      (type $point (record (field "x" u32) (field "y" u32)))
+      (export $point-out "point" (type $point))
+      (type $shape (variant (case "dot" $point-out) (case "empty")))
+      (export $shape-out "shape" (type $shape))
+      (func (export "take-wide") (param "w" $wide-out)
+        (canon lift (core func $i "take-wide")))
+      (func (export "take-shapes") (param "xs" (list $shape-out))
+        (canon lift (core func $i "take-shapes")
+          (memory (core memory $i "memory"))
+          (realloc (core func $i "cabi_realloc")))))
+    "#
+);
+
+/// A component that imports one host function over a record,
+/// `f0: func(p: point) -> point`, and does nothing else: instantiating
+/// it is linking that one import.
+pub const HOSTS_1: &[u8] = component!(
+    r#"
+    (component
+      (import "wcmp-bench:host/points@0.1.0" (instance $host
+        (type $point' (record (field "x" u32) (field "y" u32)))
+        (export "point" (type $point (eq $point')))
+        (export "f0" (func (param "p" $point) (result $point))))))
+    "#
+);
+
+/// [`HOSTS_1`] with sixteen imports, `f0` to `f15`, each of the same
+/// type.
+pub const HOSTS_16: &[u8] = component!(
+    r#"
+    (component
+      (import "wcmp-bench:host/points@0.1.0" (instance $host
+        (type $point' (record (field "x" u32) (field "y" u32)))
+        (export "point" (type $point (eq $point')))
+        (export "f0" (func (param "p" $point) (result $point)))
+        (export "f1" (func (param "p" $point) (result $point)))
+        (export "f2" (func (param "p" $point) (result $point)))
+        (export "f3" (func (param "p" $point) (result $point)))
+        (export "f4" (func (param "p" $point) (result $point)))
+        (export "f5" (func (param "p" $point) (result $point)))
+        (export "f6" (func (param "p" $point) (result $point)))
+        (export "f7" (func (param "p" $point) (result $point)))
+        (export "f8" (func (param "p" $point) (result $point)))
+        (export "f9" (func (param "p" $point) (result $point)))
+        (export "f10" (func (param "p" $point) (result $point)))
+        (export "f11" (func (param "p" $point) (result $point)))
+        (export "f12" (func (param "p" $point) (result $point)))
+        (export "f13" (func (param "p" $point) (result $point)))
+        (export "f14" (func (param "p" $point) (result $point)))
+        (export "f15" (func (param "p" $point) (result $point))))))
+    "#
+);
