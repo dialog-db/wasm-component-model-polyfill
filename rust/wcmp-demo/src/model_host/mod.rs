@@ -54,7 +54,7 @@ pub fn define<T: ModelHost>(linker: &mut Linker<T>, component: &Component) -> Re
             ty,
             move |accessor: &Accessor<T>, args: Vec<Val>| {
                 let function = function.clone();
-                let model = accessor.with(|store| store.data().model());
+                let model = accessor.with(|access| access.data().model());
                 async move {
                     let model = model?;
                     let answer = call(&model, &function, &args)

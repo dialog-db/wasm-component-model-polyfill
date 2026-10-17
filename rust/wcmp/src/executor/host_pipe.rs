@@ -88,7 +88,8 @@ impl<T: 'static, H: HostConsumer<T>> HostTaskBody<T> for PipeBody<T, H> {
         accessor: &Accessor<T>,
         context: &mut Context<'_>,
     ) -> Poll<Result<Vec<Val>>> {
-        let polled = accessor.with(|store| {
+        let polled = accessor.with(|mut access| {
+            let store = access.store();
             let poll = self.step(store, context);
             if poll.is_ready() {
                 // Whatever the pipe answered, it is over: let both

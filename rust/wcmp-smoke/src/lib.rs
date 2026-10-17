@@ -1789,12 +1789,12 @@ async fn run_concurrent_outside(engine: &Engine) -> Result<String, String> {
     let outside = Outside::watching();
 
     let mut entry = Box::pin(store.run_concurrent(async |accessor| {
-        let before = accessor.with(|store| store.data().tallies.len())?;
+        let before = accessor.with(|access| access.data().tallies.len())?;
         // Nothing the store owns can resolve this.
         Outside::pause(WAIT_MILLIS).await;
-        let after = accessor.with(|store| {
-            store.data_mut().tallies.push(2);
-            store.data().tallies.len()
+        let after = accessor.with(|mut access| {
+            access.data_mut().tallies.push(2);
+            access.data().tallies.len()
         })?;
         Ok::<String, Error>(format!("{before} then {after}"))
     }));
@@ -2429,7 +2429,7 @@ async fn wait_for_the_host(engine: &Engine) -> Result<String, String> {
         .func_wrap_concurrent(
             "host-echo-u32",
             |accessor: &Accessor<HostState>, (key,): (u32,)| {
-                let asked = accessor.with(|store| store.data_mut().tallies.push(key));
+                let asked = accessor.with(|mut access| access.data_mut().tallies.push(key));
                 async move {
                     asked?;
                     // Nothing the store owns can resolve this.
@@ -2685,7 +2685,7 @@ struct WatchDrop {
 
 impl Drop for WatchDrop {
     fn drop(&mut self) {
-        let in_a_turn = self.accessor.with(|_store| ()).is_ok();
+        let in_a_turn = self.accessor.with(|_access| ()).is_ok();
         if let Ok(mut watch) = self.watch.lock() {
             watch.dropped = true;
             watch.dropped_in_a_turn = in_a_turn;

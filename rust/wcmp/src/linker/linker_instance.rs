@@ -605,7 +605,7 @@ mod tests {
             .func_wrap_concurrent("greet", |accessor: &Accessor<String>, (extra,): (u32,)| {
                 let accessor = accessor.clone();
                 async move {
-                    let reached = accessor.with(|store| store.data().len())?;
+                    let reached = accessor.with(|access| access.data().len())?;
                     Ok((u32::try_from(reached).expect("the host data's length") + extra,))
                 }
             })
@@ -682,9 +682,9 @@ mod tests {
                 let accessor = accessor.clone();
                 async move {
                     PendingOnce::default().await;
-                    accessor.with(|store| {
-                        let reached = store.data().len() as u32 + extra;
-                        store.data_mut().push_str(&format!(" reached {reached}"));
+                    accessor.with(|mut access| {
+                        let reached = access.data().len() as u32 + extra;
+                        access.data_mut().push_str(&format!(" reached {reached}"));
                     })?;
                     Ok(())
                 }
@@ -776,9 +776,9 @@ mod tests {
                         .await
                         .expect("the promise resolves");
                     let from_promise = resolved.as_f64().expect("the promise's value") as u32;
-                    accessor.with(|store| {
-                        let reached = store.data().len() as u32 + from_promise + extra;
-                        store.data_mut().push_str(&format!(" reached {reached}"));
+                    accessor.with(|mut access| {
+                        let reached = access.data().len() as u32 + from_promise + extra;
+                        access.data_mut().push_str(&format!(" reached {reached}"));
                     })?;
                     Ok(())
                 }

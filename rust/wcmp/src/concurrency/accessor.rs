@@ -6,18 +6,18 @@
 
 //! A token that reaches the store from inside a poll.
 
-use core::marker::PhantomData;
-
 use crate::error::Result;
 use crate::internal::AccessorInternal;
+use crate::projection::{Access, HasData, HasSelf};
 use crate::store::StoreContextInternalExt;
-use crate::store::{StoreContext, StoreId};
+use crate::store::StoreId;
 
 use super::poll_scope::PollScope;
 
 /// A token that reaches the store from inside a poll.
 ///
-/// The token carries the identity of one store and nothing else. It
+/// The token carries the identity of one store and a projection of its
+/// host data, as Wasmtime's `Accessor` does, and nothing else. It
 /// borrows nothing, so it has no lifetime and a future can own one
 /// and hold it across its awaits. What it reaches, it reaches
 /// through the slot the store leaves itself in while a poll is
@@ -30,7 +30,14 @@ use super::poll_scope::PollScope;
 ///
 /// Everything the store offers reaches a body this way: the host
 /// data and the resource table a synchronous host function reaches
-/// through its call, and the rest of the store besides. The borrow
+/// through its call, and the rest of the store besides. The closure
+/// is handed an [`Access`], which pairs the store with the token's
+/// projection: [`Access::get`] gives the view the projection `D`
+/// names, and [`Access::store`] the store's context. The token a
+/// driver hands out projects to the whole host data, [`HasSelf`].
+/// [`Accessor::with_getter`] gives a token of the same store with
+/// another projection, which is how a host crate that serves an
+/// interface on a view of the host data reaches that view. The borrow
 /// the closure is given outlives nothing, so a value taken from the
 /// host data must be cloned out of it.
 ///
@@ -51,24 +58,32 @@ use super::poll_scope::PollScope;
 ///   the recursive-driver cause: the outer reach holds the store,
 ///   and the slot it left behind still names it.
 ///
+/// Wasmtime's `with` panics in the first and the last case. The
+/// polyfill's returns the error, so its `with` returns a `Result`.
+///
 /// A nested `run_concurrent` entered from inside a reach fails with
 /// the recursive-driver cause as well: the store is inside a turn
 /// while the closure runs, so the guest work the closure reaches
 /// runs where every other piece of guest work runs. The other two
 /// drivers — a call into an export, an instantiation — cannot be
 /// entered from there at all, because each takes a `&mut Store<T>`
-/// and the closure holds a [`StoreContext`], which nothing turns
-/// back into the store the host owns.
-pub struct Accessor<T: 'static> {
+/// and the closure holds a [`StoreContext`](crate::StoreContext),
+/// which nothing turns back into the store the host owns.
+///
+/// The token is `Clone`, which Wasmtime's is not: the polyfill's host
+/// futures are `'static`, so a future that reaches the store after an
+/// await owns a copy of the token rather than a borrow of it.
+pub struct Accessor<T: 'static, D: HasData + ?Sized = HasSelf<T>> {
     store: StoreId,
-    /// The host data the token's reaches are typed by. The token
-    /// holds none of it, so it is `Send` and `Sync` whatever `T` is:
-    /// what it can reach, it can reach only on the thread whose slot
-    /// holds the store, and a store's identity is never reused.
-    data: PhantomData<fn() -> T>,
+    /// The projection the token's reaches hand their closure. A
+    /// function pointer holds none of the host data, so the token is
+    /// `Send` and `Sync` whatever `T` and `D` are: what it can reach,
+    /// it can reach only on the thread whose slot holds the store,
+    /// and a store's identity is never reused.
+    get_data: fn(&mut T) -> D::Data<'_>,
 }
 
-impl<T: 'static> Accessor<T> {
+impl<T: 'static, D: HasData + ?Sized> Accessor<T, D> {
     /// Run `body` against the store this token names.
     ///
     /// The store is reachable only for the length of the call.
@@ -82,10 +97,31 @@ impl<T: 'static> Accessor<T> {
     /// this token used again from inside `body`. A reach made where
     /// no poll of this store is running fails with the
     /// store-not-in-poll cause.
-    pub fn with<R>(&self, body: impl FnOnce(&mut StoreContext<'_, T>) -> R) -> Result<R> {
+    pub fn with<R>(&self, body: impl FnOnce(Access<'_, T, D>) -> R) -> Result<R> {
+        let get_data = self.get_data;
         PollScope::reach(self.store, |store, waker| {
-            store.internal().run_in_turn(waker, body)
+            store.internal().run_in_turn(waker, |store| {
+                body(Access::new(store.internal().reborrow(), get_data))
+            })
         })?
+    }
+
+    /// The projection this token hands its reaches. The name is
+    /// Wasmtime's.
+    pub fn getter(&self) -> fn(&mut T) -> D::Data<'_> {
+        self.get_data
+    }
+
+    /// A token of the same store whose reaches hand their closure the
+    /// projection `get_data`. The name is Wasmtime's.
+    pub fn with_getter<D2: HasData + ?Sized>(
+        &self,
+        get_data: fn(&mut T) -> D2::Data<'_>,
+    ) -> Accessor<T, D2> {
+        Accessor {
+            store: self.store,
+            get_data,
+        }
     }
 }
 
@@ -93,14 +129,17 @@ impl<T: 'static> AccessorInternal<T> for Accessor<T> {
     fn new(store: StoreId) -> Self {
         Accessor {
             store,
-            data: PhantomData,
+            get_data: |data| data,
         }
     }
 }
 
-impl<T: 'static> Clone for Accessor<T> {
+impl<T: 'static, D: HasData + ?Sized> Clone for Accessor<T, D> {
     fn clone(&self) -> Self {
-        Self::new(self.store)
+        Accessor {
+            store: self.store,
+            get_data: self.get_data,
+        }
     }
 }
 
@@ -151,11 +190,11 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|store| {
-                        store.data_mut().push_str(" reached");
+                    .with(|mut access| {
+                        access.data_mut().push_str(" reached");
                         // The borrow the closure is given outlives
                         // nothing, so what the host keeps is a clone.
-                        store.data().clone()
+                        access.data().clone()
                     })
                     .expect("reach the host data")
             })
@@ -181,9 +220,9 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|_store| {
+                    .with(|_access| {
                         accessor
-                            .with(|_store| ())
+                            .with(|_access| ())
                             .expect_err("the inner reach is refused")
                             .to_string()
                     })
@@ -214,7 +253,7 @@ mod tests {
 
         assert_eq!(
             escaped
-                .with(|_store| ())
+                .with(|_access| ())
                 .expect_err("the reach is refused")
                 .to_string(),
             outside_a_poll(),
@@ -236,7 +275,7 @@ mod tests {
         let seen = second
             .run_concurrent(async move |_accessor| {
                 elsewhere
-                    .with(|_store| ())
+                    .with(|_access| ())
                     .expect_err("the reach is refused")
                     .to_string()
             })
@@ -265,7 +304,7 @@ mod tests {
         let seen = store
             .run_concurrent(async move |_accessor| {
                 mistyped
-                    .with(|store| *store.data())
+                    .with(|access| *access.data())
                     .expect_err("the reach is refused")
                     .to_string()
             })
@@ -298,7 +337,7 @@ mod tests {
             std::panic::set_hook(Box::new(|_| {}));
             let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut entry = Box::pin(store.run_concurrent(async |accessor| {
-                    accessor.with(|_store| panic!("the embedder's closure panicked"))
+                    accessor.with(|_access| panic!("the embedder's closure panicked"))
                 }));
                 poll_once(&mut entry, Waker::noop())
             }));
@@ -340,12 +379,12 @@ mod tests {
                     let hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        accessor.with(|_store| panic!("the embedder's closure panicked"))
+                        accessor.with(|_access| panic!("the embedder's closure panicked"))
                     }));
                     std::panic::set_hook(hook);
                     assert!(unwound.is_err(), "the closure's panic unwound the reach");
                 }
-                accessor.with(|_store| "reached again")
+                accessor.with(|_access| "reached again")
             })
             .await
             .expect("run the closure");
@@ -365,7 +404,8 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|store: &mut StoreContext<'_, ()>| {
+                    .with(|mut access| {
+                        let store = access.store();
                         let mut reborrowed = store.internal().reborrow();
                         let mut nested =
                             Box::pin(reborrowed.internal().run_concurrent(async |_| ()));

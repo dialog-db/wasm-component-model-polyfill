@@ -20,7 +20,7 @@ use crate::store::{StoreContext, StoreContextInternalExt, StoreData};
 use crate::typed::{ComponentType, Lift, Lower, LowerContext};
 use crate::types::ValueType;
 
-use super::accessor::Accessor;
+use super::as_accessor::AsAccessor;
 use super::end_id::EndId;
 use super::end_kind::EndKind;
 use super::end_payload::EndPayload;
@@ -224,8 +224,10 @@ impl<T> FutureReader<T> {
     /// accessor's store is running, and with the recursive-driver
     /// cause from inside another reach of the same store, as
     /// [`Accessor::with`] states.
-    pub fn close_with<D: 'static>(&mut self, accessor: &Accessor<D>) -> Result<()> {
-        accessor.with(|store| self.close(store))?
+    pub fn close_with(&mut self, accessor: impl AsAccessor) -> Result<()> {
+        accessor
+            .as_accessor()
+            .with(|mut access| self.close(access.store()))?
     }
 
     /// Pair this reader with `accessor`, into a guard that closes the
@@ -234,7 +236,7 @@ impl<T> FutureReader<T> {
     /// The guard closes through the accessor, so it reaches the store
     /// only when it drops inside a poll of that store, as
     /// [`GuardedFutureReader`] states.
-    pub fn guard<D: 'static>(self, accessor: Accessor<D>) -> GuardedFutureReader<T, D> {
+    pub fn guard<A: AsAccessor>(self, accessor: A) -> GuardedFutureReader<T, A> {
         GuardedFutureReader::new(accessor, self)
     }
 }

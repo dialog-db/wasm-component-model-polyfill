@@ -6,11 +6,12 @@
 
 //! A stream reader that closes its stream when it drops.
 
-use super::accessor::Accessor;
+use super::as_accessor::AsAccessor;
 use super::stream_reader::StreamReader;
 
-/// A [`StreamReader`] paired with an [`Accessor`], which closes the
-/// stream when it drops. The name is Wasmtime's.
+/// A [`StreamReader`] paired with an accessor, which closes the stream
+/// when it drops. The name is Wasmtime's. The accessor is anything
+/// that gives one, an [`AsAccessor`], whatever its projection.
 ///
 /// [`StreamReader::guard`] makes one, and so does
 /// [`GuardedStreamReader::new`]. [`into_stream`](Self::into_stream)
@@ -35,16 +36,16 @@ use super::stream_reader::StreamReader;
 /// errors instead, and the guard lets the end leak rather than turn
 /// an error into a panic in a drop, which aborts the process when the
 /// drop runs while a thread unwinds.
-pub struct GuardedStreamReader<T, D: 'static> {
+pub struct GuardedStreamReader<T, A: AsAccessor> {
     /// The reader, until the guard drops or gives it back.
     reader: Option<StreamReader<T>>,
-    accessor: Accessor<D>,
+    accessor: A,
 }
 
-impl<T, D: 'static> GuardedStreamReader<T, D> {
+impl<T, A: AsAccessor> GuardedStreamReader<T, A> {
     /// Pair `reader` with `accessor`, which must be an accessor of the
     /// store that holds the reader's stream. The name is Wasmtime's.
-    pub fn new(accessor: Accessor<D>, reader: StreamReader<T>) -> Self {
+    pub fn new(accessor: A, reader: StreamReader<T>) -> Self {
         Self {
             reader: Some(reader),
             accessor,
@@ -58,8 +59,8 @@ impl<T, D: 'static> GuardedStreamReader<T, D> {
     }
 }
 
-impl<T, D: 'static> From<GuardedStreamReader<T, D>> for StreamReader<T> {
-    fn from(mut guard: GuardedStreamReader<T, D>) -> Self {
+impl<T, A: AsAccessor> From<GuardedStreamReader<T, A>> for StreamReader<T> {
+    fn from(mut guard: GuardedStreamReader<T, A>) -> Self {
         guard
             .reader
             .take()
@@ -67,7 +68,7 @@ impl<T, D: 'static> From<GuardedStreamReader<T, D>> for StreamReader<T> {
     }
 }
 
-impl<T, D: 'static> Drop for GuardedStreamReader<T, D> {
+impl<T, A: AsAccessor> Drop for GuardedStreamReader<T, A> {
     fn drop(&mut self) {
         if let Some(mut reader) = self.reader.take() {
             // A guard dropped outside a poll of its store cannot reach

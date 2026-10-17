@@ -584,11 +584,25 @@ impl core::fmt::Debug for wcmp::AbiError
 pub fn wcmp::AbiError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for wcmp::AbiError
 pub fn wcmp::AbiError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct wcmp::Accessor<T: 'static>
-impl<T: 'static> wcmp::Accessor<T>
-pub fn wcmp::Accessor<T>::with<R>(&self, impl core::ops::function::FnOnce(&mut wcmp::StoreContext<'_, T>) -> R) -> wcmp::Result<R>
-impl<T: 'static> core::clone::Clone for wcmp::Accessor<T>
-pub fn wcmp::Accessor<T>::clone(&self) -> Self
+pub struct wcmp::Access<'a, T: 'static, D: wcmp::HasData + ?core::marker::Sized>
+impl<'a, T: 'static, D: wcmp::HasData + ?core::marker::Sized> wcmp::Access<'a, T, D>
+pub fn wcmp::Access<'a, T, D>::data(&self) -> &T
+pub fn wcmp::Access<'a, T, D>::data_mut(&mut self) -> &mut T
+pub fn wcmp::Access<'a, T, D>::get(&mut self) -> <D as wcmp::HasData>::Data
+pub fn wcmp::Access<'a, T, D>::getter(&self) -> fn(&mut T) -> <D as wcmp::HasData>::Data
+pub fn wcmp::Access<'a, T, D>::new(wcmp::StoreContext<'a, T>, fn(&mut T) -> <D as wcmp::HasData>::Data) -> Self
+pub fn wcmp::Access<'a, T, D>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
+pub struct wcmp::Accessor<T: 'static, D: wcmp::HasData + ?core::marker::Sized>
+impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> wcmp::Accessor<T, D>
+pub fn wcmp::Accessor<T, D>::getter(&self) -> fn(&mut T) -> <D as wcmp::HasData>::Data
+pub fn wcmp::Accessor<T, D>::with<R>(&self, impl core::ops::function::FnOnce(wcmp::Access<'_, T, D>) -> R) -> wcmp::Result<R>
+pub fn wcmp::Accessor<T, D>::with_getter<D2: wcmp::HasData + ?core::marker::Sized>(&self, fn(&mut T) -> <D2 as wcmp::HasData>::Data) -> wcmp::Accessor<T, D2>
+impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> core::clone::Clone for wcmp::Accessor<T, D>
+pub fn wcmp::Accessor<T, D>::clone(&self) -> Self
+impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> wcmp::AsAccessor for wcmp::Accessor<T, D>
+pub type wcmp::Accessor<T, D>::AccessorData = D
+pub type wcmp::Accessor<T, D>::Data = T
+pub fn wcmp::Accessor<T, D>::as_accessor(&self) -> &wcmp::Accessor<T, D>
 pub struct wcmp::Component
 pub wcmp::Component::exports: alloc::boxed::Box<[wcmp::ComponentExport]>
 pub wcmp::Component::imports: alloc::boxed::Box<[wcmp::ComponentImport]>
@@ -739,7 +753,7 @@ impl core::marker::StructuralPartialEq for wcmp::FlagsType
 pub struct wcmp::Func
 impl wcmp::Func
 pub async fn wcmp::Func::call<T: 'static>(&self, &mut wcmp::Store<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
-pub async fn wcmp::Func::call_concurrent<T: 'static>(&self, &wcmp::Accessor<T>, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
+pub async fn wcmp::Func::call_concurrent(&self, impl wcmp::AsAccessor, &[wcmp::Val]) -> wcmp::Result<alloc::boxed::Box<[wcmp::Val]>>
 pub fn wcmp::Func::ty(&self) -> wcmp::FunctionType
 impl wcmp::Func
 pub fn wcmp::Func::typed<P, R>(self) -> wcmp::Result<wcmp::TypedFunc<P, R>> where P: wcmp::ComponentNamedList + wcmp::Lower, R: wcmp::ComponentNamedList + wcmp::Lift
@@ -794,10 +808,10 @@ pub fn wcmp::FutureReader<T>::try_from_future_any(wcmp::FutureAny) -> wcmp::Resu
 pub fn wcmp::FutureReader<T>::try_into_future_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::FutureAny>
 impl<T> wcmp::FutureReader<T>
 pub fn wcmp::FutureReader<T>::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::FutureReader<T>::close_with<D: 'static>(&mut self, &wcmp::Accessor<D>) -> wcmp::Result<()>
-pub fn wcmp::FutureReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp::GuardedFutureReader<T, D>
-impl<T, D: 'static> core::convert::From<wcmp::GuardedFutureReader<T, D>> for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, D>) -> Self
+pub fn wcmp::FutureReader<T>::close_with(&mut self, impl wcmp::AsAccessor) -> wcmp::Result<()>
+pub fn wcmp::FutureReader<T>::guard<A: wcmp::AsAccessor>(self, A) -> wcmp::GuardedFutureReader<T, A>
+impl<T, A: wcmp::AsAccessor> core::convert::From<wcmp::GuardedFutureReader<T, A>> for wcmp::FutureReader<T>
+pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, A>) -> Self
 impl<T: wcmp::ComponentType> wcmp::ComponentType for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::FutureReader<T>
@@ -815,26 +829,30 @@ pub fn wcmp::FutureType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt:
 impl core::hash::Hash for wcmp::FutureType
 pub fn wcmp::FutureType::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::StructuralPartialEq for wcmp::FutureType
-pub struct wcmp::GuardedFutureReader<T, D: 'static>
-impl<T, D: 'static> wcmp::GuardedFutureReader<T, D>
-pub fn wcmp::GuardedFutureReader<T, D>::into_future(self) -> wcmp::FutureReader<T>
-pub fn wcmp::GuardedFutureReader<T, D>::new(wcmp::Accessor<D>, wcmp::FutureReader<T>) -> Self
-impl<T, D: 'static> core::convert::From<wcmp::GuardedFutureReader<T, D>> for wcmp::FutureReader<T>
-pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, D>) -> Self
-impl<T, D: 'static> core::ops::drop::Drop for wcmp::GuardedFutureReader<T, D>
-pub fn wcmp::GuardedFutureReader<T, D>::drop(&mut self)
-pub struct wcmp::GuardedStreamReader<T, D: 'static>
-impl<T, D: 'static> wcmp::GuardedStreamReader<T, D>
-pub fn wcmp::GuardedStreamReader<T, D>::into_stream(self) -> wcmp::StreamReader<T>
-pub fn wcmp::GuardedStreamReader<T, D>::new(wcmp::Accessor<D>, wcmp::StreamReader<T>) -> Self
-impl<T, D: 'static> core::convert::From<wcmp::GuardedStreamReader<T, D>> for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, D>) -> Self
-impl<T, D: 'static> core::ops::drop::Drop for wcmp::GuardedStreamReader<T, D>
-pub fn wcmp::GuardedStreamReader<T, D>::drop(&mut self)
+pub struct wcmp::GuardedFutureReader<T, A: wcmp::AsAccessor>
+impl<T, A: wcmp::AsAccessor> wcmp::GuardedFutureReader<T, A>
+pub fn wcmp::GuardedFutureReader<T, A>::into_future(self) -> wcmp::FutureReader<T>
+pub fn wcmp::GuardedFutureReader<T, A>::new(A, wcmp::FutureReader<T>) -> Self
+impl<T, A: wcmp::AsAccessor> core::convert::From<wcmp::GuardedFutureReader<T, A>> for wcmp::FutureReader<T>
+pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, A>) -> Self
+impl<T, A: wcmp::AsAccessor> core::ops::drop::Drop for wcmp::GuardedFutureReader<T, A>
+pub fn wcmp::GuardedFutureReader<T, A>::drop(&mut self)
+pub struct wcmp::GuardedStreamReader<T, A: wcmp::AsAccessor>
+impl<T, A: wcmp::AsAccessor> wcmp::GuardedStreamReader<T, A>
+pub fn wcmp::GuardedStreamReader<T, A>::into_stream(self) -> wcmp::StreamReader<T>
+pub fn wcmp::GuardedStreamReader<T, A>::new(A, wcmp::StreamReader<T>) -> Self
+impl<T, A: wcmp::AsAccessor> core::convert::From<wcmp::GuardedStreamReader<T, A>> for wcmp::StreamReader<T>
+pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, A>) -> Self
+impl<T, A: wcmp::AsAccessor> core::ops::drop::Drop for wcmp::GuardedStreamReader<T, A>
+pub fn wcmp::GuardedStreamReader<T, A>::drop(&mut self)
+pub struct wcmp::HasSelf<T: ?core::marker::Sized>(_)
+impl<T: ?core::marker::Sized + 'static> wcmp::HasData for wcmp::HasSelf<T>
+pub type wcmp::HasSelf<T>::Data<'a> = &'a mut T
 pub struct wcmp::HostCall<'a, T: 'static>
 impl<'a, T: 'static> wcmp::HostCall<'a, T>
 pub fn wcmp::HostCall<'a, T>::data(&self) -> &T
 pub fn wcmp::HostCall<'a, T>::data_mut(&mut self) -> &mut T
+pub fn wcmp::HostCall<'a, T>::into_store(self) -> wcmp::StoreContext<'a, T>
 pub fn wcmp::HostCall<'a, T>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
 pub struct wcmp::Instance
 impl wcmp::Instance
@@ -1213,10 +1231,10 @@ pub fn wcmp::StreamReader<T>::try_from_stream_any(wcmp::StreamAny) -> wcmp::Resu
 pub fn wcmp::StreamReader<T>::try_into_stream_any<D: 'static>(self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<wcmp::StreamAny>
 impl<T> wcmp::StreamReader<T>
 pub fn wcmp::StreamReader<T>::close<D: 'static>(&mut self, &mut wcmp::StoreContext<'_, D>) -> wcmp::Result<()>
-pub fn wcmp::StreamReader<T>::close_with<D: 'static>(&mut self, &wcmp::Accessor<D>) -> wcmp::Result<()>
-pub fn wcmp::StreamReader<T>::guard<D: 'static>(self, wcmp::Accessor<D>) -> wcmp::GuardedStreamReader<T, D>
-impl<T, D: 'static> core::convert::From<wcmp::GuardedStreamReader<T, D>> for wcmp::StreamReader<T>
-pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, D>) -> Self
+pub fn wcmp::StreamReader<T>::close_with(&mut self, impl wcmp::AsAccessor) -> wcmp::Result<()>
+pub fn wcmp::StreamReader<T>::guard<A: wcmp::AsAccessor>(self, A) -> wcmp::GuardedStreamReader<T, A>
+impl<T, A: wcmp::AsAccessor> core::convert::From<wcmp::GuardedStreamReader<T, A>> for wcmp::StreamReader<T>
+pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, A>) -> Self
 impl<T: wcmp::ComponentType> wcmp::ComponentType for wcmp::StreamReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::StreamReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::StreamReader<T>
@@ -1262,7 +1280,7 @@ pub fn wcmp::TypeMismatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fm
 pub struct wcmp::TypedFunc<P, R>
 impl<P, R> wcmp::TypedFunc<P, R> where P: wcmp::ComponentNamedList + wcmp::Lower + 'static, R: wcmp::ComponentNamedList + wcmp::Lift + 'static
 pub async fn wcmp::TypedFunc<P, R>::call<T: 'static>(&self, &mut wcmp::Store<T>, P) -> wcmp::Result<R>
-pub async fn wcmp::TypedFunc<P, R>::call_concurrent<T: 'static>(&self, &wcmp::Accessor<T>, P) -> wcmp::Result<R>
+pub async fn wcmp::TypedFunc<P, R>::call_concurrent(&self, impl wcmp::AsAccessor, P) -> wcmp::Result<R>
 impl<P, R> core::fmt::Debug for wcmp::TypedFunc<P, R>
 pub fn wcmp::TypedFunc<P, R>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::ValField
@@ -1304,6 +1322,18 @@ pub fn wcmp::VariantType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt
 impl core::hash::Hash for wcmp::VariantType
 pub fn wcmp::VariantType::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::StructuralPartialEq for wcmp::VariantType
+pub trait wcmp::AsAccessor
+pub type wcmp::AsAccessor::AccessorData: wcmp::HasData + ?core::marker::Sized
+pub type wcmp::AsAccessor::Data: 'static
+pub fn wcmp::AsAccessor::as_accessor(&self) -> &wcmp::Accessor<Self::Data, Self::AccessorData>
+impl<A: wcmp::AsAccessor + ?core::marker::Sized> wcmp::AsAccessor for &A
+pub type &A::AccessorData = <A as wcmp::AsAccessor>::AccessorData
+pub type &A::Data = <A as wcmp::AsAccessor>::Data
+pub fn &A::as_accessor(&self) -> &wcmp::Accessor<Self::Data, Self::AccessorData>
+impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> wcmp::AsAccessor for wcmp::Accessor<T, D>
+pub type wcmp::Accessor<T, D>::AccessorData = D
+pub type wcmp::Accessor<T, D>::Data = T
+pub fn wcmp::Accessor<T, D>::as_accessor(&self) -> &wcmp::Accessor<T, D>
 pub trait wcmp::ComponentNamedList: wcmp::ComponentType
 impl wcmp::ComponentNamedList for ()
 impl<A: wcmp::ComponentType, B: wcmp::ComponentType, C: wcmp::ComponentType, E: wcmp::ComponentType, F: wcmp::ComponentType, G: wcmp::ComponentType, H: wcmp::ComponentType, I: wcmp::ComponentType, J: wcmp::ComponentType, K: wcmp::ComponentType, L: wcmp::ComponentType, M: wcmp::ComponentType, N: wcmp::ComponentType, O: wcmp::ComponentType, P: wcmp::ComponentType, Q: wcmp::ComponentType, R: wcmp::ComponentType> wcmp::ComponentNamedList for (A, B, C, E, F, G, H, I, J, K, L, M, N, O, P, Q, R)
@@ -1394,6 +1424,10 @@ pub fn wcmp::FutureProducer::poll_produce(core::pin::Pin<&mut Self>, &mut core::
 impl<D, Item, E, F> wcmp::FutureProducer<D> for F where D: 'static, E: core::convert::Into<wcmp::Error>, F: core::future::future::Future<Output = core::result::Result<Item, E>> + ?core::marker::Sized + core::marker::Send + 'static
 pub type F::Item = Item
 pub fn F::poll_produce(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, bool) -> core::task::poll::Poll<wcmp::Result<core::option::Option<Item>>>
+pub trait wcmp::HasData: 'static
+pub type wcmp::HasData::Data<'a>
+impl<T: ?core::marker::Sized + 'static> wcmp::HasData for wcmp::HasSelf<T>
+pub type wcmp::HasSelf<T>::Data<'a> = &'a mut T
 pub trait wcmp::HostFuture<Out>: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 impl<Out, F> wcmp::HostFuture<Out> for F where F: core::future::future::Future<Output = Out> + core::marker::Send + 'static
 pub trait wcmp::Lift: core::marker::Sized + wcmp::ComponentType

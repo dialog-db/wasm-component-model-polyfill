@@ -834,6 +834,67 @@ async fn it_closes_a_future_through_an_accessor_inside_a_poll() {
     );
 }
 
+/// A projection of the unit host data to nothing, so that a test can
+/// hold an accessor whose projection is not `HasSelf`.
+struct HasNothing;
+
+impl crate::HasData for HasNothing {
+    type Data<'a> = ();
+}
+
+#[wcmp_macros::test]
+async fn it_closes_a_stream_through_an_accessor_of_another_projection() {
+    let (mut store, instance) = instantiate().await;
+    let mut reader = make(&mut store, &instance).await;
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+
+    store
+        .run_concurrent(async move |accessor| {
+            reader.close_with(accessor.with_getter::<HasNothing>(|_| ()))
+        })
+        .await
+        .expect("run the closure")
+        .expect("the close reaches the store");
+
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED),
+        "the close through the other projection closed the stream"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_closes_a_guarded_reader_of_another_projection_that_drops_inside_a_poll() {
+    let (mut store, instance) = instantiate().await;
+    let reader = make(&mut store, &instance).await;
+    assert_eq!(write(&mut store, &instance).await, BLOCKED);
+    let future = make_future(&mut store, &instance).await;
+    assert_eq!(future_write(&mut store, &instance).await, BLOCKED);
+
+    store
+        .run_concurrent(async move |accessor| {
+            let projected = accessor.with_getter::<HasNothing>(|_| ());
+            drop(reader.guard(&projected));
+            drop(future.guard(projected));
+        })
+        .await
+        .expect("run the closure");
+
+    let writable = call_u32(&mut store, &instance, "writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "writable").await,
+        (STREAM_WRITE, writable, DROPPED),
+        "the guard over a borrowed accessor closed the stream as it dropped"
+    );
+    let writable = call_u32(&mut store, &instance, "future-writable", &[]).await;
+    assert_eq!(
+        poll_event(&mut store, &instance, "future-writable").await,
+        (FUTURE_WRITE, writable, DROPPED),
+        "the guard over an owned accessor closed the future as it dropped"
+    );
+}
+
 #[wcmp_macros::test]
 async fn it_refuses_a_close_through_an_accessor_outside_a_poll() {
     let (mut store, instance) = instantiate().await;

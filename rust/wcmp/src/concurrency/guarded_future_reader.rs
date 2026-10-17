@@ -6,11 +6,12 @@
 
 //! A future reader that closes its future when it drops.
 
-use super::accessor::Accessor;
+use super::as_accessor::AsAccessor;
 use super::future_reader::FutureReader;
 
-/// A [`FutureReader`] paired with an [`Accessor`], which closes the
-/// future when it drops. The name is Wasmtime's.
+/// A [`FutureReader`] paired with an accessor, which closes the future
+/// when it drops. The name is Wasmtime's. The accessor is anything
+/// that gives one, an [`AsAccessor`], whatever its projection.
 ///
 /// [`FutureReader::guard`] makes one, and so does
 /// [`GuardedFutureReader::new`]. [`into_future`](Self::into_future)
@@ -35,16 +36,16 @@ use super::future_reader::FutureReader;
 /// errors instead, and the guard lets the end leak rather than turn
 /// an error into a panic in a drop, which aborts the process when the
 /// drop runs while a thread unwinds.
-pub struct GuardedFutureReader<T, D: 'static> {
+pub struct GuardedFutureReader<T, A: AsAccessor> {
     /// The reader, until the guard drops or gives it back.
     reader: Option<FutureReader<T>>,
-    accessor: Accessor<D>,
+    accessor: A,
 }
 
-impl<T, D: 'static> GuardedFutureReader<T, D> {
+impl<T, A: AsAccessor> GuardedFutureReader<T, A> {
     /// Pair `reader` with `accessor`, which must be an accessor of the
     /// store that holds the reader's future. The name is Wasmtime's.
-    pub fn new(accessor: Accessor<D>, reader: FutureReader<T>) -> Self {
+    pub fn new(accessor: A, reader: FutureReader<T>) -> Self {
         Self {
             reader: Some(reader),
             accessor,
@@ -58,8 +59,8 @@ impl<T, D: 'static> GuardedFutureReader<T, D> {
     }
 }
 
-impl<T, D: 'static> From<GuardedFutureReader<T, D>> for FutureReader<T> {
-    fn from(mut guard: GuardedFutureReader<T, D>) -> Self {
+impl<T, A: AsAccessor> From<GuardedFutureReader<T, A>> for FutureReader<T> {
+    fn from(mut guard: GuardedFutureReader<T, A>) -> Self {
         guard
             .reader
             .take()
@@ -67,7 +68,7 @@ impl<T, D: 'static> From<GuardedFutureReader<T, D>> for FutureReader<T> {
     }
 }
 
-impl<T, D: 'static> Drop for GuardedFutureReader<T, D> {
+impl<T, A: AsAccessor> Drop for GuardedFutureReader<T, A> {
     fn drop(&mut self) {
         if let Some(mut reader) = self.reader.take() {
             // A guard dropped outside a poll of its store cannot reach

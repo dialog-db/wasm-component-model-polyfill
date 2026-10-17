@@ -528,7 +528,10 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                 let flag = flag.clone();
                 let counted = counted.clone();
                 async move {
-                    let before = accessor.with(|store| store.internal().scheduler().items_run())?;
+                    let before = accessor.with(|mut access| {
+                        let store = access.store();
+                        store.internal().scheduler().items_run()
+                    })?;
                     core::future::poll_fn(|_context| {
                         if *flag.lock().expect("flag") {
                             Poll::Ready(())
@@ -537,7 +540,10 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                         }
                     })
                     .await;
-                    let after = accessor.with(|store| store.internal().scheduler().items_run())?;
+                    let after = accessor.with(|mut access| {
+                        let store = access.store();
+                        store.internal().scheduler().items_run()
+                    })?;
                     *counted.lock().expect("items run") = Some(after - before);
                     Ok::<(u32,), Error>((x * 2,))
                 }

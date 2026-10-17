@@ -420,7 +420,10 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
                 after_one_pending_poll(0).await?;
                 let (producer, _) = Scripted::new([Step::Deliver(b"later")]);
                 accessor
-                    .with(|store| StreamReader::new(store, producer))?
+                    .with(|mut access| {
+                        let store = access.store();
+                        StreamReader::new(store, producer)
+                    })?
                     .map(|reader| (reader,))
             }
         })

@@ -99,7 +99,8 @@ async fn it_leaves_the_store_usable_after_an_arity_mismatch_a_recursive_driver_o
     let refused = store
         .run_concurrent(async |accessor| {
             accessor
-                .with(|store| {
+                .with(|mut access| {
+                    let store = access.store();
                     let mut reborrowed = store.internal().reborrow();
                     let mut nested = Box::pin(reborrowed.internal().run_concurrent(async |_| ()));
                     match poll_once(&mut nested, Waker::noop()) {

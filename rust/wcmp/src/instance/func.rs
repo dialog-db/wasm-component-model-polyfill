@@ -17,7 +17,8 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::component::{FunctionParameter, FunctionType};
 use crate::concurrency::{
-    Accessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId, WakeSlot,
+    Accessor, AsAccessor, Driver, InstanceId, Item, ItemKind, ResultChannel, Scope, TaskId,
+    WakeSlot,
 };
 use crate::error::{
     AbiCause, AbiError, AbiPosition, Error, InstantiationError, Result, SchedulerCause, TaskCause,
@@ -26,6 +27,7 @@ use crate::executor::ir::CanonOptions;
 use crate::executor::{AsyncLift, CallbackTask};
 use crate::instance::ExportedFunction;
 use crate::internal::{ErrorInternal, FuncInternal, FuncParts};
+use crate::projection::HasData;
 use crate::resource::TableId;
 use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::{Store, StoreContext, StoreId};
@@ -423,9 +425,9 @@ impl Func {
     /// the next time it is polled.
     ///
     /// [`Store`]: crate::Store
-    pub async fn call_concurrent<T: 'static>(
+    pub async fn call_concurrent(
         &self,
-        accessor: &Accessor<T>,
+        accessor: impl AsAccessor,
         args: &[Val],
     ) -> Result<Box<[Val]>> {
         self.call_concurrent_values(accessor, args.to_vec()).await
@@ -436,16 +438,18 @@ impl Func {
     /// values.
     #[doc(hidden)]
     #[tracing::instrument(level = "debug", name = "Func::call_concurrent", skip_all, fields(export = %self.export.name))]
-    pub async fn call_concurrent_values<T: 'static, C: CallValues>(
+    pub async fn call_concurrent_values<C: CallValues>(
         &self,
-        accessor: &Accessor<T>,
+        accessor: impl AsAccessor,
         values: C,
     ) -> Result<C::Output> {
+        let accessor = accessor.as_accessor();
         // The start runs inside one reach into the store, which is a
         // turn: it queues the task's start and runs none of it. What
         // it hands back is what the task leaves behind, which
         // outlives this future.
-        let delivery = accessor.with(|store| self.start_concurrent(store, values))??;
+        let delivery =
+            accessor.with(|mut access| self.start_concurrent(access.store(), values))??;
 
         core::future::poll_fn(move |context| {
             let waker = context.waker();
@@ -992,9 +996,9 @@ fn trap<T: 'static>(store: &mut StoreContext<'_, T>, error: Error) -> Result<()>
 /// Whether a trap poisoned the store `accessor` reaches, read from
 /// inside a poll of it. A reach that fails answers no: the poll that
 /// is not lending the store is not one this reads for.
-fn poisoned<T: 'static>(accessor: &Accessor<T>) -> bool {
+fn poisoned<T: 'static, D: HasData + ?Sized>(accessor: &Accessor<T, D>) -> bool {
     matches!(
-        accessor.with(|store| store.internal().enter_guest()),
+        accessor.with(|mut access| access.store().internal().enter_guest()),
         Ok(Err(_))
     )
 }

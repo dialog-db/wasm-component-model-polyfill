@@ -269,6 +269,7 @@ mod instance;
 mod internal;
 mod linker;
 mod module;
+mod projection;
 mod resource;
 mod runtime_layer;
 mod store;
@@ -284,9 +285,9 @@ pub use crate::component::{
     FunctionType, InstanceItem, InstanceType, ModuleType,
 };
 pub use crate::concurrency::{
-    Accessor, Destination, EndKind, ErrorContext, ErrorContextAny, FutureAny, FutureConsumer,
-    FutureProducer, FutureReader, GuardedFutureReader, GuardedStreamReader, HostFuture, Source,
-    StreamAny, StreamConsumer, StreamProducer, StreamReader, StreamResult,
+    Accessor, AsAccessor, Destination, EndKind, ErrorContext, ErrorContextAny, FutureAny,
+    FutureConsumer, FutureProducer, FutureReader, GuardedFutureReader, GuardedStreamReader,
+    HostFuture, Source, StreamAny, StreamConsumer, StreamProducer, StreamReader, StreamResult,
 };
 pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
@@ -303,6 +304,7 @@ pub use crate::linker::{HostCall, Linker, LinkerInstance};
 pub use crate::module::{
     CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
 };
+pub use crate::projection::{Access, HasData, HasSelf};
 pub use crate::resource::{Resource, ResourceAny, ResourceDynamic, ResourceTable};
 pub use crate::store::{Store, StoreContext, StoreId};
 pub use crate::suspend_provider_kind::SuspendProviderKind;

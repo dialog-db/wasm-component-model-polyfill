@@ -347,7 +347,10 @@ async fn two_calls(
         if at_gate.is_none() {
             at_gate = Some(
                 accessor
-                    .with(|store| store.internal().scheduler().waiting_at_gate())
+                    .with(|mut access| {
+                        let store = access.store();
+                        store.internal().scheduler().waiting_at_gate()
+                    })
                     .expect("reach the store"),
             );
         }

@@ -77,11 +77,11 @@ async fn it_runs_its_closure_with_an_accessor_that_reaches_the_host_data() {
     let seen = store
         .run_concurrent(async |accessor| {
             accessor
-                .with(|store| {
-                    store.data_mut().push("second".to_owned());
+                .with(|mut access| {
+                    access.data_mut().push("second".to_owned());
                     // The borrow the closure is given outlives
                     // nothing, so what the host keeps is a clone.
-                    store.data().clone()
+                    access.data().clone()
                 })
                 .expect("reach the host data")
         })
@@ -108,7 +108,8 @@ async fn it_refuses_a_driver_entered_from_inside_the_closure() {
     let seen = store
         .run_concurrent(async |accessor| {
             accessor
-                .with(|store| {
+                .with(|mut access| {
+                    let store = access.store();
                     let mut reborrowed = store.internal().reborrow();
                     let mut nested = Box::pin(reborrowed.internal().run_concurrent(async |_| ()));
                     cause(poll_once(&mut nested, Waker::noop()))
@@ -147,7 +148,7 @@ async fn it_refuses_a_reach_made_outside_any_poll() {
         .expect("run the closure");
 
     let refused = escaped
-        .with(|store| store.data().len())
+        .with(|access| access.data().len())
         .expect_err("the reach is refused");
 
     assert_eq!(
@@ -177,7 +178,7 @@ async fn it_refuses_a_reach_with_the_accessor_of_another_store() {
     let seen = second
         .run_concurrent(async move |_accessor| {
             elsewhere
-                .with(|store| store.data().len())
+                .with(|access| access.data().len())
                 .expect_err("the reach is refused")
                 .to_string()
         })
@@ -210,7 +211,7 @@ async fn it_refuses_a_reach_with_an_accessor_typed_by_other_host_data() {
     let refused = store
         .run_concurrent(async move |_accessor| {
             let refused = mistyped
-                .with(|store| *store.data())
+                .with(|access| *access.data())
                 .expect_err("the reach is refused");
             (refused.to_string(), refused)
         })
@@ -243,7 +244,7 @@ async fn it_calls_an_export_once_the_entry_has_returned() {
 
     store
         .run_concurrent(async |accessor| {
-            accessor.with(|_store| ()).expect("reach the store");
+            accessor.with(|_access| ()).expect("reach the store");
         })
         .await
         .expect("run the closure");

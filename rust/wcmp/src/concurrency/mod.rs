@@ -174,6 +174,7 @@
 //! baseline is the case of one task per instance at a time.
 
 mod accessor;
+mod as_accessor;
 mod block_step;
 mod blocking_builtin;
 mod call_bridge;
@@ -273,6 +274,7 @@ mod yield_wake;
 // `TaskTables`, so only the names other modules spell are
 // re-exported here.
 pub use accessor::Accessor;
+pub use as_accessor::AsAccessor;
 pub use block_step::BlockStep;
 pub use blocking_builtin::BlockingBuiltin;
 pub use call_bridge::CallBridge;

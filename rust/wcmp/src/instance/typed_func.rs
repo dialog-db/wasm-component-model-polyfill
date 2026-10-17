@@ -25,7 +25,7 @@
 
 use core::marker::PhantomData;
 
-use crate::concurrency::Accessor;
+use crate::concurrency::AsAccessor;
 use crate::error::{Error, Result, TypeMismatch, TypeMismatchPosition};
 use crate::internal::{
     ErrorInternal, FuncInternal, ResourceTypeInternal, TypeCheckErrorInternal, TypedFuncInternal,
@@ -152,7 +152,7 @@ where
     /// [`Func::call_concurrent`]: super::Func::call_concurrent
     /// [`Store`]: crate::Store
     /// [`Instance`]: super::Instance
-    pub async fn call_concurrent<T: 'static>(&self, accessor: &Accessor<T>, args: P) -> Result<R> {
+    pub async fn call_concurrent(&self, accessor: impl AsAccessor, args: P) -> Result<R> {
         self.inner
             .call_concurrent_values(accessor, TypedCall::<P, R>::new(args))
             .await

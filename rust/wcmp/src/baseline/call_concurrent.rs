@@ -502,7 +502,8 @@ async fn join_gated<F: Future>(accessor: &Accessor<()>, calls: Vec<F>) -> Vec<Op
 /// forward.
 fn store_is_spent(accessor: &Accessor<()>) -> bool {
     accessor
-        .with(|store| {
+        .with(|mut access| {
+            let store = access.store();
             !store.internal().has_pending_work() && store.internal().scheduler().queued_items() == 0
         })
         .expect("reach the store")
@@ -571,7 +572,8 @@ async fn two_calls(
         if held.is_none() {
             held = Some(
                 accessor
-                    .with(|store| {
+                    .with(|mut access| {
+                        let store = access.store();
                         (
                             store.internal().scheduler().waiting_at_gate(),
                             store.internal().scheduler().queued_items(),
@@ -648,12 +650,18 @@ async fn it_runs_a_call_into_a_synchronous_export_while_a_callback_task_waits() 
             // no turn ever fills, so its callback item is held in the
             // store and its task is in its event loop.
             let held_before = accessor
-                .with(|store| store.internal().scheduler().held_callbacks())
+                .with(|mut access| {
+                    let store = access.store();
+                    store.internal().scheduler().held_callbacks()
+                })
                 .expect("reach the store");
             let double_args = [Val::U32(21)];
             let doubled = double.call_concurrent(accessor, &double_args).await;
             let held_after = accessor
-                .with(|store| store.internal().scheduler().held_callbacks())
+                .with(|mut access| {
+                    let store = access.store();
+                    store.internal().scheduler().held_callbacks()
+                })
                 .expect("reach the store");
             (returned, held_before, doubled, held_after)
         })

@@ -97,7 +97,10 @@ impl<T: 'static> HostTaskBody<T> for WriterBody {
         context: &mut Context<'_>,
     ) -> Poll<Result<Vec<Val>>> {
         let writer = self.writer;
-        match accessor.with(|store| poll_writer(store, writer, context)) {
+        match accessor.with(|mut access| {
+            let store = access.store();
+            poll_writer(store, writer, context)
+        }) {
             Ok(poll) => poll.map(|outcome| outcome.map(|()| Vec::new())),
             Err(error) => Poll::Ready(Err(error)),
         }

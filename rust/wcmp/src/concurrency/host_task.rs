@@ -347,7 +347,7 @@ mod tests {
             }
             // The borrow the closure is given outlives nothing, so
             // what the body keeps is a clone.
-            match accessor.with(|store| store.data().clone()) {
+            match accessor.with(|access| access.data().clone()) {
                 Ok(data) => {
                     *self.seen.lock().expect("what the body read") = Some(data);
                     Poll::Ready(Ok(vec![Val::U32(1)]))
@@ -480,7 +480,7 @@ mod tests {
                     PendingOnce::default().await;
                     // The borrow the closure is given outlives
                     // nothing, so what the body keeps is a clone.
-                    let data = accessor.with(|store| store.data().clone())?;
+                    let data = accessor.with(|access| access.data().clone())?;
                     *seen.lock().expect("what the body read") = Some(data);
                     Ok(vec![Val::U32(7)])
                 })

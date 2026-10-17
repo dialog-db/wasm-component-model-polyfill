@@ -56,8 +56,10 @@ pub fn define<T: HttpHost>(linker: &mut Linker<T>, component: &Component) -> Res
             async move {
                 let answer = match send(&accessor, args).await {
                     Ok(rep) => {
-                        let handle =
-                            accessor.with(|store| http_types::response_handle(store, rep))??;
+                        let handle = accessor.with(|mut access| {
+                            let store = access.store();
+                            http_types::response_handle(store, rep)
+                        })??;
                         Val::Result(Ok(Some(Box::new(Val::Resource(handle)))))
                     }
                     Err(reason) => Val::Result(Err(Some(Box::new(internal_error(&reason))))),
@@ -79,12 +81,16 @@ async fn send<T: HttpHost>(accessor: &Accessor<T>, args: Vec<Val>) -> Result<u32
     // The host takes the request over: its handle leaves the store's
     // host table, and the host keeps the request by its representation.
     let rep = accessor
-        .with(|store| handle.try_into_resource_dynamic(store))
+        .with(|mut access| {
+            let store = access.store();
+            handle.try_into_resource_dynamic(store)
+        })
         .and_then(|request| request)
         .map_err(|error| error.to_string())?
         .rep();
     let (request, body) = accessor
-        .with(|store| {
+        .with(|mut access| {
+            let store = access.store();
             let request =
                 store.data_mut().http().take_request(rep).ok_or_else(|| {
                     "`send` was given a request the host does not hold".to_string()
@@ -106,7 +112,7 @@ async fn send<T: HttpHost>(accessor: &Accessor<T>, args: Vec<Val>) -> Result<u32
         .await
         .map_err(|error| format!("{error:?}"))?;
     accessor
-        .with(|store| store.data_mut().http().insert_response(response))
+        .with(|mut access| access.data_mut().http().insert_response(response))
         .map_err(|error| error.to_string())
 }
 

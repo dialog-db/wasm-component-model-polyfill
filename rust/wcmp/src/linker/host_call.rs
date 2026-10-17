@@ -98,4 +98,11 @@ impl<'a, T: 'static> HostCall<'a, T> {
     pub fn store(&mut self) -> &mut StoreContext<'a, T> {
         &mut self.store
     }
+
+    /// The store this call runs against, by value, for the length of
+    /// the call: what [`Access::new`](crate::Access::new) pairs with
+    /// a projection of the host data.
+    pub fn into_store(self) -> StoreContext<'a, T> {
+        self.store
+    }
 }

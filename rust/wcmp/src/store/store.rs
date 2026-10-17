@@ -575,7 +575,10 @@ mod tests {
 
         let handle = store
             .run_concurrent(async |accessor: &crate::Accessor<()>| {
-                accessor.with(|context| context.internal().mint_own(type_id, 9))
+                accessor.with(|mut access| {
+                    let context = access.store();
+                    context.internal().mint_own(type_id, 9)
+                })
             })
             .await
             .expect("the driver runs")

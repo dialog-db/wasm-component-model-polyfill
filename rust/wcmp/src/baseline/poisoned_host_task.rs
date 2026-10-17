@@ -220,7 +220,10 @@ impl Future for Boom {
     fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
         let polls = self.seen.polls.fetch_add(1, Ordering::Relaxed) + 1;
         if polls == self.plan.at.load(Ordering::Relaxed) {
-            if let Err(error) = self.accessor.with(|store| self.plan.release(store)) {
+            if let Err(error) = self.accessor.with(|mut access| {
+                let store = access.store();
+                self.plan.release(store)
+            }) {
                 *self.plan.released.lock().expect("the release") = Some(Err(error.to_string()));
             }
             if self.plan.answers.load(Ordering::Relaxed) {
@@ -593,7 +596,10 @@ async fn it_fails_a_pending_concurrent_call_with_the_cannot_enter_cause_after_th
                 poll_fn(|context| Poll::Ready(called.as_mut().poll(context).is_ready())).await;
             assert!(!first, "the call is pending before the store is poisoned");
             accessor
-                .with(|store| plan.release(store))
+                .with(|mut access| {
+                    let store = access.store();
+                    plan.release(store)
+                })
                 .expect("the closure reaches the store");
             called.await
         })

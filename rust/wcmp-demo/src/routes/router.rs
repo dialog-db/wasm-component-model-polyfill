@@ -330,7 +330,8 @@ async fn serve<S: Storage + 'static>(
                 other => return Err(format!("`handle` answered {other:?}")),
             };
             let (status, headers, body) = accessor
-                .with(|store| {
+                .with(|mut access| {
+                    let store = access.store();
                     // The host takes the response over: its handle leaves
                     // the store's host table, and the host keeps the
                     // response by its representation.
