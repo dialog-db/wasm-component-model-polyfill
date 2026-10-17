@@ -197,6 +197,7 @@ pub fn resolve_imports<T: 'static>(
                         &instance.items,
                         registration,
                         &ItemPosition::interface(chosen),
+                        &defined,
                         &mut resources,
                     )?;
                 }
@@ -495,6 +496,7 @@ fn resolve_root<T: 'static>(
                     &instance.items,
                     registration,
                     &ItemPosition::root(&import.name, name),
+                    defined,
                     resources,
                 )?;
                 Ok(bound())
@@ -548,11 +550,21 @@ fn resolve_one(
 /// that satisfies it. A nested instance item is checked against the
 /// nested registration under its name, and needs none when it is
 /// vacuous.
+///
+/// An `eq` resource item whose resource an earlier import defined,
+/// whose table index is in `defined`, needs no registration under this
+/// instance: it is the resource an interface `use`s from another,
+/// `(export "r" (type (eq …)))`, which names the resource the other
+/// interface brought in. Wasmtime's linker accepts it with no
+/// definition of its own (`TypeChecker::definition` in
+/// `component/matching.rs`). A registration that is present must
+/// still carry the identity the earlier import recorded.
 fn check_instance_items<T: 'static>(
     import_name: &ExternalName,
     items: &[InstanceItem],
     registration: &InstanceRegistration<T>,
     position: &ItemPosition<'_>,
+    defined: &HashSet<usize>,
     resources: &mut ImportedResources,
 ) -> Result<()> {
     // The first name each resource the instance declares goes by.
@@ -562,6 +574,14 @@ fn check_instance_items<T: 'static>(
             ExternType::Function(declared) => {
                 check_function_item(position, &item.name, declared, registration, resources)?;
             }
+            // A fresh `(sub resource)` has an index of its own, which no
+            // earlier import defined, so the test alone tells an `eq`.
+            ExternType::Resource(resource) | ExternType::ResourceEquals(resource)
+                if registration.resource(&item.name).is_none()
+                    && registration.kind_of(&item.name).is_none()
+                    && resource
+                        .resource_index()
+                        .is_some_and(|index| defined.contains(&index)) => {}
             ExternType::Resource(resource) | ExternType::ResourceEquals(resource) => {
                 // An item declared equal to a resource the instance
                 // names earlier needs no registration of its own, as
@@ -606,6 +626,7 @@ fn check_instance_items<T: 'static>(
                         &inner.items,
                         nested,
                         &position.inside(&item.name),
+                        defined,
                         resources,
                     )?;
                 }
