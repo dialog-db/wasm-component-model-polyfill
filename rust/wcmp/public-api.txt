@@ -159,6 +159,7 @@ pub wcmp::Error::BackendEngineConstruction(anyhow::Error)
 pub wcmp::Error::BackendStoreCreation(anyhow::Error)
 pub wcmp::Error::Copy(wcmp::CopyCause)
 pub wcmp::Error::ErrorContext(wcmp::ErrorContextCause)
+pub wcmp::Error::Host(anyhow::Error)
 pub wcmp::Error::Instantiation(alloc::boxed::Box<wcmp::InstantiationError>)
 pub wcmp::Error::Internal
 pub wcmp::Error::Internal::message: alloc::string::String
@@ -183,6 +184,8 @@ pub wcmp::Error::WrongTypeKind
 pub wcmp::Error::WrongTypeKind::actual: &'static str
 pub wcmp::Error::WrongTypeKind::expected: &'static str
 pub wcmp::Error::WrongTypeKind::index: u32
+impl core::convert::From<anyhow::Error> for wcmp::Error
+pub fn wcmp::Error::from(anyhow::Error) -> Self
 impl core::convert::From<wcmp::AbiError> for wcmp::Error
 pub fn wcmp::Error::from(wcmp::AbiError) -> Self
 impl core::convert::From<wcmp::InstantiationError> for wcmp::Error

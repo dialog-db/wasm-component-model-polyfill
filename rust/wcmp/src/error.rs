@@ -14,9 +14,11 @@
 //! Underlying causes are captured as `#[source]` fields so the
 //! origin of an error is preserved without leaking the runtime
 //! layer's types into the public API. [`anyhow::Error`] appears in
-//! `#[source]` fields only because the runtime layer surfaces
-//! fallible operations as `anyhow::Result`; consumers should treat
-//! the inner cause as opaque.
+//! `#[source]` fields for two reasons: the runtime layer surfaces
+//! fallible operations as `anyhow::Result`, and consumers should
+//! treat that inner cause as opaque; and a host reports an error of
+//! its own as [`Error::Host`], whose source is the host's error, so
+//! the host can downcast it.
 
 use semver::Version;
 use thiserror::Error;
@@ -207,6 +209,46 @@ pub enum Error {
     #[error("error-context error: {0}")]
     ErrorContext(#[source] ErrorContextCause),
 
+    /// A host function failed with an error of the host's own.
+    ///
+    /// A host reports a failure of its own with this variant. `Error`
+    /// converts from an [`anyhow::Error`], so a host function uses `?`
+    /// on its own errors, and `anyhow::Context` on them, as on
+    /// Wasmtime:
+    ///
+    /// ```rust
+    /// use anyhow::Context;
+    ///
+    /// fn read(path: &str) -> wcmp::Result<Vec<u8>> {
+    ///     let bytes = std::fs::read(path).with_context(|| format!("read {path}"))?;
+    ///     Ok(bytes)
+    /// }
+    ///
+    /// let error = read("/a/path/that/does/not/exist").unwrap_err();
+    /// assert!(matches!(error, wcmp::Error::Host(_)));
+    /// ```
+    ///
+    /// The failure traps the guest, and the trap poisons the store.
+    /// The host's call into the guest returns this same error. Its
+    /// source is the host's error, so the host downcasts the source to
+    /// its own type, and the rest of the host's chain follows the
+    /// source, each layer that `anyhow::Context` added included.
+    ///
+    /// The conversion from an `anyhow::Error` that holds a polyfill
+    /// `Error` gives that `Error` back rather than this variant, so a
+    /// polyfill error a host function passes on with `?` comes back as
+    /// itself, whether directly or through an `anyhow::Error`. An
+    /// `anyhow::Error` that `anyhow::Context` wrapped around a polyfill
+    /// `Error` becomes this variant, with the context and the `Error`
+    /// in its chain.
+    ///
+    /// In the browser a JavaScript exception is a `JsValue`, which is
+    /// not `Send` and so cannot be the source of an `anyhow::Error`. A
+    /// browser host turns the exception into a message first, for
+    /// example with `anyhow::anyhow!("{exception:?}")`, and wraps that.
+    #[error("host error: {0}")]
+    Host(#[source] anyhow::Error),
+
     /// The store refused this use, because a host function reached it
     /// past the context it was handed.
     ///
@@ -264,6 +306,24 @@ impl ErrorInternal for Error {
         Error::Internal {
             message: message.into(),
         }
+    }
+}
+
+impl From<anyhow::Error> for Error {
+    /// A host's own error, as [`Error::Host`], or the polyfill error an
+    /// `anyhow::Error` holds as itself.
+    ///
+    /// Only the error the `anyhow::Error` holds outermost comes back as
+    /// itself. One that `anyhow::Context` wrapped stays inside the
+    /// chain of an [`Error::Host`], so the context is not lost.
+    fn from(error: anyhow::Error) -> Self {
+        if (*error).is::<Error>() {
+            return match error.downcast::<Error>() {
+                Ok(error) => error,
+                Err(error) => Error::Host(error),
+            };
+        }
+        Error::Host(error)
     }
 }
 
