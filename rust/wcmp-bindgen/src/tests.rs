@@ -117,6 +117,35 @@ fn it_refuses_a_second_trappable_error_type_for_one_wit_type() {
 }
 
 #[test]
+fn it_keeps_only_the_last_trappable_error_type_option() {
+    let code = expand(
+        quote!({
+            inline: "
+                package test:refusals;
+
+                interface log {
+                    enum log-error { full }
+                    write: func(message: string) -> result<_, log-error>;
+                }
+
+                world refusals {
+                    import log;
+                }
+            ",
+            trappable_error_type: { "test:refusals/log.log-error" => FirstError },
+            trappable_error_type: { "test:refusals/log.log-error" => SecondError },
+        }),
+        Path::new("."),
+    )
+    .expect("a later option replaces an earlier one, so no entry repeats")
+    .to_string();
+    assert!(
+        code.contains("SecondError") && !code.contains("FirstError"),
+        "the last option's entry maps the type: {code}"
+    );
+}
+
+#[test]
 fn it_passes_the_docs_of_a_flags_type_into_flags() {
     let code = expand(
         quote!({

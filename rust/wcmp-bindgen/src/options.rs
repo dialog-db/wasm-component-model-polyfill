@@ -154,7 +154,10 @@ impl Parse for Options {
                 Opt::IncludeGeneratedCodeFromFile(value) => {
                     options.include_generated_code_from_file = value;
                 }
-                Opt::AdditionalDerives(paths) => options.additional_derives.extend(paths),
+                // As in Wasmtime, a later `additional_derives` or
+                // `trappable_error_type` replaces an earlier one, where
+                // a later `with` adds to it.
+                Opt::AdditionalDerives(paths) => options.additional_derives = paths,
                 Opt::WcmpCrate(path) => options.wcmp_crate = Some(path),
                 Opt::Imports(config, span) => {
                     if imports.replace(config).is_some() {
@@ -173,7 +176,7 @@ impl Parse for Options {
                     }
                 }
                 Opt::With(entries) => options.with.extend(entries),
-                Opt::TrappableErrorType(entries) => options.trappable_error_type.extend(entries),
+                Opt::TrappableErrorType(entries) => options.trappable_error_type = entries,
                 Opt::Ownership(ownership) => options.ownership = ownership,
                 Opt::NamedImports(span) => options.named_imports = Some(span),
                 Opt::IncludeComponentType(value, span) => {
