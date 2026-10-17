@@ -27,11 +27,13 @@ kanban-plugin: basic
 - [ ] [[7db599]]
 - [ ] [[015f12]]
 - [ ] [[f3afd9]]
-- [ ] [[b0a51e]]
-- [ ] [[2f73a6]]
 - [ ] [[178248]]
+- [ ] [[d5c6c1]]
 
 ## In Progress
+
+- [ ] [[b0a51e]]
+- [ ] [[2f73a6]]
 
 ## Needs Review
 
