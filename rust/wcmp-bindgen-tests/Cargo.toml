@@ -23,6 +23,9 @@ wcmp-wasm-core = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+# The other runtime of the test of one host core under both macros: its
+# glue module runs over `wasmtime::component::bindgen!` natively.
+wasmtime = { workspace = true }
 wcmp-wasm-core-wasmi = { workspace = true }
 wcmp-wasm-core-wasmtime = { workspace = true }
 

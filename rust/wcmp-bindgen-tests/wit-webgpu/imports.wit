@@ -1,0 +1,5 @@
+package wasi:webgpu@0.3.0-rc.2;
+
+world imports {
+  import webgpu;
+}

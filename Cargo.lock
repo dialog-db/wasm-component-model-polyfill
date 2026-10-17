@@ -2373,6 +2373,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "wasmtime",
  "wcmp",
  "wcmp-macros",
  "wcmp-wasm-core",

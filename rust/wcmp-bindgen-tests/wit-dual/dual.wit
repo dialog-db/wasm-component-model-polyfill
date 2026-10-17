@@ -1,0 +1,64 @@
+package test:dual;
+
+/// The types that cross in both directions.
+interface types {
+  record point { x: u32, y: u32 }
+  variant shape { circle(u32), square(point), none }
+  flags perms { read, write }
+}
+
+/// What the host serves.
+interface host {
+  use types.{point, shape, perms};
+
+  /// A resource `with` maps to a type of the host core.
+  resource counter {
+    constructor(start: u32);
+    get: func() -> u32;
+  }
+
+  enum fs-error { not-found, denied }
+
+  /// Takes a variant and a flags value and returns a record.
+  describe: func(shape: shape, perms: perms) -> point;
+  /// A `trappable` import, which fails for zero.
+  checked: func(x: u32) -> u32;
+  /// A `trappable` import whose error `trappable_error_type` maps.
+  read: func(code: u32) -> result<u32, fs-error>;
+  /// An async import.
+  answer: async func(x: u32) -> u32;
+  /// A plain import with the `store` flag that returns a future.
+  lost: func() -> future<u32>;
+}
+
+/// What the guest exports.
+interface guest {
+  use types.{point, shape};
+  use host.{fs-error};
+
+  /// An exported resource.
+  resource accumulator {
+    constructor(start: u32);
+    total: func() -> u32;
+  }
+
+  /// Takes a record and returns a variant.
+  shape-of: func(point: point) -> shape;
+  /// Calls `describe` with `circle(r)` and both permissions.
+  call-describe: func(r: u32) -> point;
+  /// Calls `checked`.
+  call-checked: func(x: u32) -> u32;
+  /// Calls `read`.
+  call-read: func(code: u32) -> result<u32, fs-error>;
+  /// Makes a counter, gets it, and drops it.
+  call-counter: func(start: u32) -> u32;
+  /// Calls `answer`, waiting for it.
+  call-answer: async func(x: u32) -> u32;
+  /// Calls `lost`, and reads the future it returns.
+  call-lost: async func() -> u32;
+}
+
+world dual {
+  import host;
+  export guest;
+}
