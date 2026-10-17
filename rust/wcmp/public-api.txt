@@ -168,6 +168,9 @@ pub wcmp::Error::InvalidComponentBinary
 pub wcmp::Error::InvalidComponentBinary::message: alloc::string::String
 pub wcmp::Error::InvalidComponentBinary::offset: u64
 pub wcmp::Error::Link(alloc::boxed::Box<wcmp::LinkError>)
+pub wcmp::Error::MissingExport
+pub wcmp::Error::MissingExport::instance: core::option::Option<alloc::string::String>
+pub wcmp::Error::MissingExport::name: alloc::string::String
 pub wcmp::Error::NotAComponent
 pub wcmp::Error::ResourceTable(wcmp::ResourceTableError)
 pub wcmp::Error::Scheduler(wcmp::SchedulerCause)
@@ -819,6 +822,8 @@ pub fn wcmp::FutureReader<T>::from(wcmp::GuardedFutureReader<T, A>) -> Self
 impl<T: wcmp::ComponentType> wcmp::ComponentType for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::FutureReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::FutureReader<T>
+impl<T> core::fmt::Debug for wcmp::FutureReader<T>
+pub fn wcmp::FutureReader<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::FutureType
 impl wcmp::FutureType
 pub fn wcmp::FutureType::new(core::option::Option<wcmp::ValueType>) -> Self
@@ -1242,6 +1247,8 @@ pub fn wcmp::StreamReader<T>::from(wcmp::GuardedStreamReader<T, A>) -> Self
 impl<T: wcmp::ComponentType> wcmp::ComponentType for wcmp::StreamReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lift for wcmp::StreamReader<T>
 impl<T: wcmp::ComponentType> wcmp::Lower for wcmp::StreamReader<T>
+impl<T> core::fmt::Debug for wcmp::StreamReader<T>
+pub fn wcmp::StreamReader<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct wcmp::StreamType
 impl wcmp::StreamType
 pub fn wcmp::StreamType::new(core::option::Option<wcmp::ValueType>) -> Self

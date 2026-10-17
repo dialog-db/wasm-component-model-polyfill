@@ -1,0 +1,72 @@
+#[doc = concat!
+(" The bindings of an instance of a component that implements the world `",
+"the-world", "`.")] pub struct TheWorld {} impl TheWorld
+{
+    #[doc = r" Instantiate `component` into `store` with `linker`,"]
+    #[doc = r" and acquire the world's exports from the instance."] pub async
+    fn instantiate_async < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , component : & :: wcmp ::
+    Component, linker : & :: wcmp :: Linker < _T > ,) -> :: wcmp :: Result <
+    TheWorld >
+    {
+        let instance = linker.instantiate(store, component).await ? ; TheWorld
+        :: new(store, & instance)
+    } #[doc = r" Acquire the world's exports from `instance`, running"]
+    #[doc = r" the type check of each one here and never in a call."]
+    #[doc = r""] #[doc = r" `store` is not read: it keeps the signature of"]
+    #[doc = r" Wasmtime's `new`."] pub fn new < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , instance : & :: wcmp ::
+    Instance,) -> :: wcmp :: Result < TheWorld >
+    {
+        let _ = store; let exports = instance.exports(); let lookup = | func :
+        & str |
+        {
+            exports.func(func).ok_or_else(|| :: wcmp :: Error :: MissingExport
+            {
+                name : :: std :: string :: String :: from(func), instance : ::
+                core :: option :: Option :: None,
+            })
+        }; let _ = & lookup; :: wcmp :: Result :: Ok(TheWorld {})
+    } #[doc = r" Register every import of the world on the linker."] pub fn
+    add_to_linker < _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : :: wcmp ::
+    HasData + imports :: HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+    imports :: Host, _T : 'static,
+    {
+        let _ = (& linker, host_getter); imports :: add_to_linker :: < _T, _D
+        > (linker, host_getter) ? ; :: wcmp :: Result :: Ok(())
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod imports
+{
+    pub trait HostWithStore < _T > : :: wcmp :: HasData {} impl < _H : ?
+    Sized, _T > HostWithStore < _T > for _H where _H : :: wcmp :: HasData {}
+    pub trait Host : { fn y(& mut self,) -> (); } impl < _T : Host + ? Sized >
+    Host for & mut _T { fn y(& mut self,) -> () { Host :: y(* self,) } }
+    #[doc = r" Register the host functions of this interface on `inst`,"]
+    #[doc = r" each calling the trait method on what `host_getter`"]
+    #[doc = r" reaches from the host data."] pub fn add_to_linker_instance <
+    _T, _D >
+    (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+    fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D
+    : HostWithStore < _T > , for < 'a > _D :: Data < 'a > : Host, _T :
+    'static,
+    {
+        let _ = (& inst, host_getter);
+        inst.func_wrap("y", move | mut caller : :: wcmp :: HostCall < '_, _T >
+        , () : () |
+        {
+            let mut host = host_getter(caller.data_mut()); let r = Host ::
+            y(& mut host,); :: wcmp :: Result :: Ok(r)
+        },) ? ; :: wcmp :: Result :: Ok(())
+    } #[doc = r" Register the host functions of this interface on the"]
+    #[doc = r" linker, under the interface's name."] pub fn add_to_linker <
+    _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : HostWithStore
+    < _T > , for < 'a > _D :: Data < 'a > : Host, _T : 'static,
+    {
+        let mut root = linker.root(); let mut inst = root.instance("imports");
+        add_to_linker_instance :: < _T, _D > (& mut inst, host_getter)
+    }
+}

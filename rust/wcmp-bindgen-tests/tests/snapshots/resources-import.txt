@@ -1,0 +1,805 @@
+pub enum WorldResource {} pub trait HostWorldResourceWithStore < _T > : ::
+wcmp :: HasData {} impl < _H : ? Sized, _T > HostWorldResourceWithStore < _T >
+for _H where _H : :: wcmp :: HasData {} pub trait HostWorldResource :
+{
+    fn new(& mut self,) -> :: wcmp :: Resource < WorldResource > ; fn
+    foo(& mut self, self_ : :: wcmp :: Resource < WorldResource >) -> (); fn
+    static_foo(& mut self,) -> ();
+    #[doc = r" Drop the resource `rep`, which the guest dropped."] fn
+    drop(& mut self, rep : :: wcmp :: Resource < WorldResource >) -> :: wcmp
+    :: Result < () > ;
+} impl < _T : HostWorldResource + ? Sized > HostWorldResource for & mut _T
+{
+    fn new(& mut self,) -> :: wcmp :: Resource < WorldResource >
+    { HostWorldResource :: new(* self,) } fn
+    foo(& mut self, self_ : :: wcmp :: Resource < WorldResource >) -> ()
+    { HostWorldResource :: foo(* self, self_) } fn static_foo(& mut self,) ->
+    () { HostWorldResource :: static_foo(* self,) } fn
+    drop(& mut self, rep : :: wcmp :: Resource < WorldResource >) -> :: wcmp
+    :: Result < () > { HostWorldResource :: drop(* self, rep) }
+} pub trait TheWorldImportsWithStore < _T > : :: wcmp :: HasData +
+HostWorldResourceWithStore < _T > {} impl < _H : ? Sized, _T >
+TheWorldImportsWithStore < _T > for _H where _H : :: wcmp :: HasData +
+HostWorldResourceWithStore < _T > {} pub trait TheWorldImports :
+HostWorldResource
+{ fn some_world_func(& mut self,) -> :: wcmp :: Resource < WorldResource > ; }
+impl < _T : TheWorldImports + ? Sized > TheWorldImports for & mut _T
+{
+    fn some_world_func(& mut self,) -> :: wcmp :: Resource < WorldResource >
+    { TheWorldImports :: some_world_func(* self,) }
+} #[doc = r" Register the host functions the world imports outside an"]
+#[doc = r" interface on the linker's root."] pub fn add_to_linker_imports <
+_T, _D >
+(linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) -> _D ::
+Data < '_ > ,) -> :: wcmp :: Result < () > where _D : TheWorldImportsWithStore
+< _T > , for < 'a > _D :: Data < 'a > : TheWorldImports, _T : 'static,
+{
+    let mut inst = linker.root();
+    inst.resource("world-resource", :: wcmp :: ResourceType :: host :: <
+    WorldResource > (), move | mut store : :: wcmp :: StoreContext < '_, _T >
+    , rep : u32 | -> :: wcmp :: Result < () >
+    {
+        let resource = :: wcmp :: Resource :: new_own(rep); let _ = & mut
+        store; HostWorldResource ::
+        drop(& mut host_getter(store.data_mut()), resource)
+    },) ? ;
+    inst.func_wrap("[constructor]world-resource", move | mut caller : :: wcmp
+    :: HostCall < '_, _T > , () : () |
+    {
+        let mut host = host_getter(caller.data_mut()); let r =
+        HostWorldResource :: new(& mut host,); :: wcmp :: Result :: Ok((r,))
+    },) ? ;
+    inst.func_wrap("[method]world-resource.foo", move | mut caller : :: wcmp
+    :: HostCall < '_, _T > , (arg0,) :
+    (:: wcmp :: Resource < WorldResource > ,) |
+    {
+        let mut host = host_getter(caller.data_mut()); let r =
+        HostWorldResource :: foo(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+    },) ? ;
+    inst.func_wrap("[static]world-resource.static-foo", move | mut caller : ::
+    wcmp :: HostCall < '_, _T > , () : () |
+    {
+        let mut host = host_getter(caller.data_mut()); let r =
+        HostWorldResource :: static_foo(& mut host,); :: wcmp :: Result ::
+        Ok(r)
+    },) ? ;
+    inst.func_wrap("some-world-func", move | mut caller : :: wcmp :: HostCall
+    < '_, _T > , () : () |
+    {
+        let mut host = host_getter(caller.data_mut()); let r = TheWorldImports
+        :: some_world_func(& mut host,); :: wcmp :: Result :: Ok((r,))
+    },) ? ; :: wcmp :: Result :: Ok(())
+}
+#[doc = concat!
+(" The bindings of an instance of a component that implements the world `",
+"the-world", "`.")] pub struct TheWorld
+{
+    interface0 : exports :: foo :: foo :: uses_resource_transitively :: Guest,
+    some_world_func2 : :: wcmp :: TypedFunc < (),
+    (:: wcmp :: Resource < WorldResource > ,) > ,
+} impl TheWorld
+{
+    #[doc = r" Instantiate `component` into `store` with `linker`,"]
+    #[doc = r" and acquire the world's exports from the instance."] pub async
+    fn instantiate_async < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , component : & :: wcmp ::
+    Component, linker : & :: wcmp :: Linker < _T > ,) -> :: wcmp :: Result <
+    TheWorld >
+    {
+        let instance = linker.instantiate(store, component).await ? ; TheWorld
+        :: new(store, & instance)
+    } #[doc = r" Acquire the world's exports from `instance`, running"]
+    #[doc = r" the type check of each one here and never in a call."]
+    #[doc = r""] #[doc = r" `store` is not read: it keeps the signature of"]
+    #[doc = r" Wasmtime's `new`."] pub fn new < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , instance : & :: wcmp ::
+    Instance,) -> :: wcmp :: Result < TheWorld >
+    {
+        let _ = store; let exports = instance.exports(); let lookup = | func :
+        & str |
+        {
+            exports.func(func).ok_or_else(|| :: wcmp :: Error :: MissingExport
+            {
+                name : :: std :: string :: String :: from(func), instance : ::
+                core :: option :: Option :: None,
+            })
+        }; let _ = & lookup; :: wcmp :: Result ::
+        Ok(TheWorld
+        {
+            interface0 : exports :: foo :: foo :: uses_resource_transitively
+            :: Guest :: new(instance) ? , some_world_func2 :
+            lookup("some-world-func2") ? .typed() ? ,
+        })
+    } #[doc = r" Register every import of the world on the linker."] pub fn
+    add_to_linker < _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : :: wcmp ::
+    HasData + foo :: foo :: resources :: HostWithStore < _T > + foo :: foo ::
+    long_use_chain1 :: HostWithStore < _T > + foo :: foo :: long_use_chain2 ::
+    HostWithStore < _T > + foo :: foo :: long_use_chain3 :: HostWithStore < _T
+    > + foo :: foo :: long_use_chain4 :: HostWithStore < _T > + foo :: foo ::
+    transitive_interface_with_resource :: HostWithStore < _T > +
+    TheWorldImportsWithStore < _T > , for < 'a > _D :: Data < 'a > : foo ::
+    foo :: resources :: Host + foo :: foo :: long_use_chain1 :: Host + foo ::
+    foo :: long_use_chain2 :: Host + foo :: foo :: long_use_chain3 :: Host +
+    foo :: foo :: long_use_chain4 :: Host + foo :: foo ::
+    transitive_interface_with_resource :: Host + TheWorldImports, _T :
+    'static,
+    {
+        let _ = (& linker, host_getter); foo :: foo :: resources ::
+        add_to_linker :: < _T, _D > (linker, host_getter) ? ; foo :: foo ::
+        long_use_chain1 :: add_to_linker :: < _T, _D > (linker, host_getter) ?
+        ; foo :: foo :: long_use_chain2 :: add_to_linker :: < _T, _D >
+        (linker, host_getter) ? ; foo :: foo :: long_use_chain3 ::
+        add_to_linker :: < _T, _D > (linker, host_getter) ? ; foo :: foo ::
+        long_use_chain4 :: add_to_linker :: < _T, _D > (linker, host_getter) ?
+        ; foo :: foo :: transitive_interface_with_resource :: add_to_linker ::
+        < _T, _D > (linker, host_getter) ? ; add_to_linker_imports :: < _T, _D
+        > (linker, host_getter) ? ; :: wcmp :: Result :: Ok(())
+    } #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_uses_resource_transitively(& self) -> & exports :: foo :: foo ::
+    uses_resource_transitively :: Guest { & self.interface0 }
+    #[doc = r" The typed function of this export, acquired when the"]
+    #[doc = r" bindings were made."] pub fn func_some_world_func2(& self) -> &
+    :: wcmp :: TypedFunc < (), (:: wcmp :: Resource < WorldResource > ,) >
+    { & self.some_world_func2 } pub async fn call_some_world_func2 < _T :
+    'static > (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp ::
+    Result < :: wcmp :: Resource < WorldResource > >
+    {
+        let (ret0,) = self.some_world_func2.call(store, ()).await ? ; :: wcmp
+        :: Result :: Ok(ret0)
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod exports
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+        {
+            #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+            uses_resource_transitively
+            {
+                pub type Foo = super :: super :: super :: super :: foo :: foo
+                :: transitive_interface_with_resource :: Foo;
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    handle : :: wcmp :: TypedFunc <
+                    (:: wcmp :: Resource < Foo > ,), () > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/uses-resource-transitively").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/uses-resource-transitively"), instance : ::
+                                core :: option :: Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String ::
+                                from("foo:foo/uses-resource-transitively")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest { handle : lookup("handle") ? .typed() ? , })
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn func_handle(& self)
+                    -> & :: wcmp :: TypedFunc < (:: wcmp :: Resource < Foo > ,),
+                    () > { & self.handle } pub async fn call_handle < _T :
+                    'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : ::
+                    wcmp :: Resource < Foo >) -> :: wcmp :: Result < () >
+                    {
+                        let () = self.handle.call(store, (arg0,)).await ? ; :: wcmp
+                        :: Result :: Ok(())
+                    }
+                }
+            }
+        }
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        long_use_chain1
+        {
+            pub enum A {} pub trait HostAWithStore < _T > : :: wcmp :: HasData
+            {} impl < _H : ? Sized, _T > HostAWithStore < _T > for _H where _H
+            : :: wcmp :: HasData {} pub trait HostA :
+            {
+                #[doc = r" Drop the resource `rep`, which the guest dropped."]
+                fn drop(& mut self, rep : :: wcmp :: Resource < A >) -> ::
+                wcmp :: Result < () > ;
+            } impl < _T : HostA + ? Sized > HostA for & mut _T
+            {
+                fn drop(& mut self, rep : :: wcmp :: Resource < A >) -> ::
+                wcmp :: Result < () > { HostA :: drop(* self, rep) }
+            } pub trait HostWithStore < _T > : :: wcmp :: HasData +
+            HostAWithStore < _T > {} impl < _H : ? Sized, _T > HostWithStore <
+            _T > for _H where _H : :: wcmp :: HasData + HostAWithStore < _T >
+            {} pub trait Host : HostA {} impl < _T : Host + ? Sized > Host for
+            & mut _T {}
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.resource("a", :: wcmp :: ResourceType :: host :: < A >
+                (), move | mut store : :: wcmp :: StoreContext < '_, _T > ,
+                rep : u32 | -> :: wcmp :: Result < () >
+                {
+                    let resource = :: wcmp :: Resource :: new_own(rep); let _ =
+                    & mut store; HostA ::
+                    drop(& mut host_getter(store.data_mut()), resource)
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/long-use-chain1") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        long_use_chain2
+        {
+            pub type A = super :: super :: super :: foo :: foo ::
+            long_use_chain1 :: A; pub trait HostWithStore < _T > : :: wcmp ::
+            HasData {} impl < _H : ? Sized, _T > HostWithStore < _T > for _H
+            where _H : :: wcmp :: HasData {} pub trait Host : {} impl < _T :
+            Host + ? Sized > Host for & mut _T {}
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            { let _ = (& inst, host_getter); :: wcmp :: Result :: Ok(()) }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/long-use-chain2") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        long_use_chain3
+        {
+            pub type A = super :: super :: super :: foo :: foo ::
+            long_use_chain2 :: A; pub trait HostWithStore < _T > : :: wcmp ::
+            HasData {} impl < _H : ? Sized, _T > HostWithStore < _T > for _H
+            where _H : :: wcmp :: HasData {} pub trait Host : {} impl < _T :
+            Host + ? Sized > Host for & mut _T {}
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            { let _ = (& inst, host_getter); :: wcmp :: Result :: Ok(()) }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/long-use-chain3") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        long_use_chain4
+        {
+            pub type A = super :: super :: super :: foo :: foo ::
+            long_use_chain3 :: A; pub trait HostWithStore < _T > : :: wcmp ::
+            HasData {} impl < _H : ? Sized, _T > HostWithStore < _T > for _H
+            where _H : :: wcmp :: HasData {} pub trait Host :
+            { fn foo(& mut self,) -> :: wcmp :: Resource < A > ; } impl < _T :
+            Host + ? Sized > Host for & mut _T
+            {
+                fn foo(& mut self,) -> :: wcmp :: Resource < A >
+                { Host :: foo(* self,) }
+            }
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.func_wrap("foo", move | mut caller : :: wcmp :: HostCall
+                < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: foo(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/long-use-chain4") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        } #[allow(clippy :: all, unused_imports, dead_code)] pub mod resources
+        {
+            pub enum Bar {}
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Debug)] pub struct NestedOwn
+            {
+                #[component(name = "nested-bar")] pub nested_bar : :: wcmp ::
+                Resource < Bar > ,
+            } const _ : () =
+            {
+                assert!
+                (4 == < NestedOwn as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < NestedOwn as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            };
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Debug)] pub struct
+            NestedBorrow
+            {
+                #[component(name = "nested-bar")] pub nested_bar : :: wcmp ::
+                Resource < Bar > ,
+            } const _ : () =
+            {
+                assert!
+                (4 == < NestedBorrow as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < NestedBorrow as :: wcmp :: ComponentType > :: ALIGN32
+                as usize);
+            }; pub type SomeHandle = :: wcmp :: Resource < Bar > ; const _ :
+            () =
+            {
+                assert!
+                (4 == < SomeHandle as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < SomeHandle as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            }; pub enum Fallible {} pub trait HostBarWithStore < _T > : ::
+            wcmp :: HasData {} impl < _H : ? Sized, _T > HostBarWithStore < _T
+            > for _H where _H : :: wcmp :: HasData {} pub trait HostBar :
+            {
+                fn new(& mut self,) -> :: wcmp :: Resource < Bar > ; fn
+                static_a(& mut self,) -> u32; fn
+                method_a(& mut self, self_ : :: wcmp :: Resource < Bar >) ->
+                u32;
+                #[doc = r" Drop the resource `rep`, which the guest dropped."]
+                fn drop(& mut self, rep : :: wcmp :: Resource < Bar >) -> ::
+                wcmp :: Result < () > ;
+            } impl < _T : HostBar + ? Sized > HostBar for & mut _T
+            {
+                fn new(& mut self,) -> :: wcmp :: Resource < Bar >
+                { HostBar :: new(* self,) } fn static_a(& mut self,) -> u32
+                { HostBar :: static_a(* self,) } fn
+                method_a(& mut self, self_ : :: wcmp :: Resource < Bar >) ->
+                u32 { HostBar :: method_a(* self, self_) } fn
+                drop(& mut self, rep : :: wcmp :: Resource < Bar >) -> :: wcmp
+                :: Result < () > { HostBar :: drop(* self, rep) }
+            } pub trait HostFallibleWithStore < _T > : :: wcmp :: HasData {}
+            impl < _H : ? Sized, _T > HostFallibleWithStore < _T > for _H
+            where _H : :: wcmp :: HasData {} pub trait HostFallible :
+            {
+                fn new(& mut self,) -> :: core :: result :: Result < :: wcmp
+                :: Resource < Fallible > , :: std :: string :: String > ;
+                #[doc = r" Drop the resource `rep`, which the guest dropped."]
+                fn drop(& mut self, rep : :: wcmp :: Resource < Fallible >) ->
+                :: wcmp :: Result < () > ;
+            } impl < _T : HostFallible + ? Sized > HostFallible for & mut _T
+            {
+                fn new(& mut self,) -> :: core :: result :: Result < :: wcmp
+                :: Resource < Fallible > , :: std :: string :: String >
+                { HostFallible :: new(* self,) } fn
+                drop(& mut self, rep : :: wcmp :: Resource < Fallible >) -> ::
+                wcmp :: Result < () > { HostFallible :: drop(* self, rep) }
+            } pub trait HostWithStore < _T > : :: wcmp :: HasData +
+            HostBarWithStore < _T > + HostFallibleWithStore < _T > {} impl <
+            _H : ? Sized, _T > HostWithStore < _T > for _H where _H : :: wcmp
+            :: HasData + HostBarWithStore < _T > + HostFallibleWithStore < _T
+            > {} pub trait Host : HostBar + HostFallible
+            {
+                fn bar_own_arg(& mut self, x : :: wcmp :: Resource < Bar >) ->
+                (); fn
+                bar_borrow_arg(& mut self, x : :: wcmp :: Resource < Bar >) ->
+                (); fn bar_result(& mut self,) -> :: wcmp :: Resource < Bar >
+                ; fn
+                tuple_own_arg(& mut self, x :
+                (:: wcmp :: Resource < Bar > , u32,)) -> (); fn
+                tuple_borrow_arg(& mut self, x :
+                (:: wcmp :: Resource < Bar > , u32,)) -> (); fn
+                tuple_result(& mut self,) ->
+                (:: wcmp :: Resource < Bar > , u32,); fn
+                option_own_arg(& mut self, x : :: core :: option :: Option <
+                :: wcmp :: Resource < Bar > >) -> (); fn
+                option_borrow_arg(& mut self, x : :: core :: option :: Option
+                < :: wcmp :: Resource < Bar > >) -> (); fn
+                option_result(& mut self,) -> :: core :: option :: Option < ::
+                wcmp :: Resource < Bar > > ; fn
+                result_own_arg(& mut self, x : :: core :: result :: Result <
+                :: wcmp :: Resource < Bar > , () >) -> (); fn
+                result_borrow_arg(& mut self, x : :: core :: result :: Result
+                < :: wcmp :: Resource < Bar > , () >) -> (); fn
+                result_result(& mut self,) -> :: core :: result :: Result < ::
+                wcmp :: Resource < Bar > , () > ; fn
+                list_own_arg(& mut self, x : :: std :: vec :: Vec < :: wcmp ::
+                Resource < Bar > >) -> (); fn
+                list_borrow_arg(& mut self, x : :: std :: vec :: Vec < :: wcmp
+                :: Resource < Bar > >) -> (); fn list_result(& mut self,) ->
+                :: std :: vec :: Vec < :: wcmp :: Resource < Bar > > ; fn
+                record_own_arg(& mut self, x : NestedOwn) -> (); fn
+                record_borrow_arg(& mut self, x : NestedBorrow) -> (); fn
+                record_result(& mut self,) -> NestedOwn; fn
+                func_with_handle_typedef(& mut self, x : SomeHandle) -> ();
+            } impl < _T : Host + ? Sized > Host for & mut _T
+            {
+                fn bar_own_arg(& mut self, x : :: wcmp :: Resource < Bar >) ->
+                () { Host :: bar_own_arg(* self, x) } fn
+                bar_borrow_arg(& mut self, x : :: wcmp :: Resource < Bar >) ->
+                () { Host :: bar_borrow_arg(* self, x) } fn
+                bar_result(& mut self,) -> :: wcmp :: Resource < Bar >
+                { Host :: bar_result(* self,) } fn
+                tuple_own_arg(& mut self, x :
+                (:: wcmp :: Resource < Bar > , u32,)) -> ()
+                { Host :: tuple_own_arg(* self, x) } fn
+                tuple_borrow_arg(& mut self, x :
+                (:: wcmp :: Resource < Bar > , u32,)) -> ()
+                { Host :: tuple_borrow_arg(* self, x) } fn
+                tuple_result(& mut self,) ->
+                (:: wcmp :: Resource < Bar > , u32,)
+                { Host :: tuple_result(* self,) } fn
+                option_own_arg(& mut self, x : :: core :: option :: Option <
+                :: wcmp :: Resource < Bar > >) -> ()
+                { Host :: option_own_arg(* self, x) } fn
+                option_borrow_arg(& mut self, x : :: core :: option :: Option
+                < :: wcmp :: Resource < Bar > >) -> ()
+                { Host :: option_borrow_arg(* self, x) } fn
+                option_result(& mut self,) -> :: core :: option :: Option < ::
+                wcmp :: Resource < Bar > > { Host :: option_result(* self,) }
+                fn
+                result_own_arg(& mut self, x : :: core :: result :: Result <
+                :: wcmp :: Resource < Bar > , () >) -> ()
+                { Host :: result_own_arg(* self, x) } fn
+                result_borrow_arg(& mut self, x : :: core :: result :: Result
+                < :: wcmp :: Resource < Bar > , () >) -> ()
+                { Host :: result_borrow_arg(* self, x) } fn
+                result_result(& mut self,) -> :: core :: result :: Result < ::
+                wcmp :: Resource < Bar > , () >
+                { Host :: result_result(* self,) } fn
+                list_own_arg(& mut self, x : :: std :: vec :: Vec < :: wcmp ::
+                Resource < Bar > >) -> () { Host :: list_own_arg(* self, x) }
+                fn
+                list_borrow_arg(& mut self, x : :: std :: vec :: Vec < :: wcmp
+                :: Resource < Bar > >) -> ()
+                { Host :: list_borrow_arg(* self, x) } fn
+                list_result(& mut self,) -> :: std :: vec :: Vec < :: wcmp ::
+                Resource < Bar > > { Host :: list_result(* self,) } fn
+                record_own_arg(& mut self, x : NestedOwn) -> ()
+                { Host :: record_own_arg(* self, x) } fn
+                record_borrow_arg(& mut self, x : NestedBorrow) -> ()
+                { Host :: record_borrow_arg(* self, x) } fn
+                record_result(& mut self,) -> NestedOwn
+                { Host :: record_result(* self,) } fn
+                func_with_handle_typedef(& mut self, x : SomeHandle) -> ()
+                { Host :: func_with_handle_typedef(* self, x) }
+            }
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.resource("bar", :: wcmp :: ResourceType :: host :: < Bar
+                > (), move | mut store : :: wcmp :: StoreContext < '_, _T > ,
+                rep : u32 | -> :: wcmp :: Result < () >
+                {
+                    let resource = :: wcmp :: Resource :: new_own(rep); let _ =
+                    & mut store; HostBar ::
+                    drop(& mut host_getter(store.data_mut()), resource)
+                },) ? ;
+                inst.func_wrap("[constructor]bar", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r =
+                    HostBar :: new(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("[static]bar.static-a", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r =
+                    HostBar :: static_a(& mut host,); :: wcmp :: Result ::
+                    Ok((r,))
+                },) ? ;
+                inst.func_wrap("[method]bar.method-a", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , (arg0,) :
+                (:: wcmp :: Resource < Bar > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r =
+                    HostBar :: method_a(& mut host, arg0); :: wcmp :: Result ::
+                    Ok((r,))
+                },) ? ;
+                inst.resource("fallible", :: wcmp :: ResourceType :: host :: <
+                Fallible > (), move | mut store : :: wcmp :: StoreContext <
+                '_, _T > , rep : u32 | -> :: wcmp :: Result < () >
+                {
+                    let resource = :: wcmp :: Resource :: new_own(rep); let _ =
+                    & mut store; HostFallible ::
+                    drop(& mut host_getter(store.data_mut()), resource)
+                },) ? ;
+                inst.func_wrap("[constructor]fallible", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r =
+                    HostFallible :: new(& mut host,); :: wcmp :: Result ::
+                    Ok((r,))
+                },) ? ;
+                inst.func_wrap("bar-own-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) :
+                (:: wcmp :: Resource < Bar > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: bar_own_arg(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+                },) ? ;
+                inst.func_wrap("bar-borrow-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) :
+                (:: wcmp :: Resource < Bar > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: bar_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("bar-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: bar_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("tuple-own-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) :
+                ((:: wcmp :: Resource < Bar > , u32,),) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: tuple_own_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("tuple-borrow-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) :
+                ((:: wcmp :: Resource < Bar > , u32,),) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: tuple_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("tuple-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: tuple_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("option-own-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) :
+                (:: core :: option :: Option < :: wcmp :: Resource < Bar > >
+                ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: option_own_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("option-borrow-arg", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , (arg0,) :
+                (:: core :: option :: Option < :: wcmp :: Resource < Bar > >
+                ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: option_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("option-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: option_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("result-own-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) :
+                (:: core :: result :: Result < :: wcmp :: Resource < Bar > ,
+                () > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: result_own_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("result-borrow-arg", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , (arg0,) :
+                (:: core :: result :: Result < :: wcmp :: Resource < Bar > ,
+                () > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: result_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("result-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: result_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("list-own-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) :
+                (:: std :: vec :: Vec < :: wcmp :: Resource < Bar > > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: list_own_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("list-borrow-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) :
+                (:: std :: vec :: Vec < :: wcmp :: Resource < Bar > > ,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: list_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("list-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: list_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("record-own-arg", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , (arg0,) : (NestedOwn,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: record_own_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("record-borrow-arg", move | mut caller : ::
+                wcmp :: HostCall < '_, _T > , (arg0,) : (NestedBorrow,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: record_borrow_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("record-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: record_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("func-with-handle-typedef", move | mut caller :
+                :: wcmp :: HostCall < '_, _T > , (arg0,) : (SomeHandle,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: func_with_handle_typedef(& mut host, arg0); :: wcmp ::
+                    Result :: Ok(r)
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/resources") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        transitive_interface_with_resource
+        {
+            pub enum Foo {} pub trait HostFooWithStore < _T > : :: wcmp ::
+            HasData {} impl < _H : ? Sized, _T > HostFooWithStore < _T > for
+            _H where _H : :: wcmp :: HasData {} pub trait HostFoo :
+            {
+                #[doc = r" Drop the resource `rep`, which the guest dropped."]
+                fn drop(& mut self, rep : :: wcmp :: Resource < Foo >) -> ::
+                wcmp :: Result < () > ;
+            } impl < _T : HostFoo + ? Sized > HostFoo for & mut _T
+            {
+                fn drop(& mut self, rep : :: wcmp :: Resource < Foo >) -> ::
+                wcmp :: Result < () > { HostFoo :: drop(* self, rep) }
+            } pub trait HostWithStore < _T > : :: wcmp :: HasData +
+            HostFooWithStore < _T > {} impl < _H : ? Sized, _T > HostWithStore
+            < _T > for _H where _H : :: wcmp :: HasData + HostFooWithStore <
+            _T > {} pub trait Host : HostFoo {} impl < _T : Host + ? Sized >
+            Host for & mut _T {}
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.resource("foo", :: wcmp :: ResourceType :: host :: < Foo
+                > (), move | mut store : :: wcmp :: StoreContext < '_, _T > ,
+                rep : u32 | -> :: wcmp :: Result < () >
+                {
+                    let resource = :: wcmp :: Resource :: new_own(rep); let _ =
+                    & mut store; HostFoo ::
+                    drop(& mut host_getter(store.data_mut()), resource)
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/transitive-interface-with-resource") ? ;
+                let mut inst = linker.instance(& id); add_to_linker_instance
+                :: < _T, _D > (& mut inst, host_getter)
+            }
+        }
+    }
+}

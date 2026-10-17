@@ -350,6 +350,16 @@ pub mod __private {
     pub use anyhow;
     pub use tracing;
 
+    /// Borrow `store` again, for the length of the borrow of it: what a
+    /// generated `store`-flag registration pairs with a projection in
+    /// an `Access`, keeping the call's context for after the method.
+    pub fn reborrow<'a, T: 'static>(
+        store: &'a mut crate::StoreContext<'_, T>,
+    ) -> crate::StoreContext<'a, T> {
+        use crate::store::StoreContextInternalExt as _;
+        store.internal().reborrow()
+    }
+
     /// The identity of the interface `name` names, as a generated
     /// `add_to_linker` registers under it. The macro read `name` from
     /// WIT, so it parses; a name that does not is an internal error.

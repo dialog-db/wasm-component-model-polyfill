@@ -38,7 +38,6 @@ struct Rule {
 pub struct FunctionConfig {
     rules: Vec<Rule>,
     default: FunctionFlags,
-    default_span: Option<Span>,
 }
 
 impl FunctionConfig {
@@ -54,26 +53,8 @@ impl FunctionConfig {
     }
 
     /// Set the flags of every function no rule names.
-    pub fn set_default(&mut self, flags: FunctionFlags, span: Span) {
+    pub fn set_default(&mut self, flags: FunctionFlags) {
         self.default = flags;
-        self.default_span = Some(span);
-    }
-
-    /// The flags of `default`.
-    pub fn default_flags(&self) -> FunctionFlags {
-        self.default
-    }
-
-    /// Every rule, with the flags it gives and where it was written,
-    /// and `default` last when it was written.
-    pub fn rules(&self) -> impl Iterator<Item = (&str, FunctionFlags, Span)> {
-        self.rules
-            .iter()
-            .map(|rule| (rule.filter.as_str(), rule.flags, rule.span))
-            .chain(
-                self.default_span
-                    .map(|span| ("default", self.default, span)),
-            )
     }
 
     /// The flags of `func`, which `key` names the interface of, or

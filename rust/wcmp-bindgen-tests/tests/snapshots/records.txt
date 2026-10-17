@@ -1,0 +1,604 @@
+#[doc = concat!
+(" The bindings of an instance of a component that implements the world `",
+"the-world", "`.")] pub struct TheWorld
+{ interface0 : exports :: foo :: foo :: records :: Guest, } impl TheWorld
+{
+    #[doc = r" Instantiate `component` into `store` with `linker`,"]
+    #[doc = r" and acquire the world's exports from the instance."] pub async
+    fn instantiate_async < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , component : & :: wcmp ::
+    Component, linker : & :: wcmp :: Linker < _T > ,) -> :: wcmp :: Result <
+    TheWorld >
+    {
+        let instance = linker.instantiate(store, component).await ? ; TheWorld
+        :: new(store, & instance)
+    } #[doc = r" Acquire the world's exports from `instance`, running"]
+    #[doc = r" the type check of each one here and never in a call."]
+    #[doc = r""] #[doc = r" `store` is not read: it keeps the signature of"]
+    #[doc = r" Wasmtime's `new`."] pub fn new < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , instance : & :: wcmp ::
+    Instance,) -> :: wcmp :: Result < TheWorld >
+    {
+        let _ = store; let exports = instance.exports(); let lookup = | func :
+        & str |
+        {
+            exports.func(func).ok_or_else(|| :: wcmp :: Error :: MissingExport
+            {
+                name : :: std :: string :: String :: from(func), instance : ::
+                core :: option :: Option :: None,
+            })
+        }; let _ = & lookup; :: wcmp :: Result ::
+        Ok(TheWorld
+        {
+            interface0 : exports :: foo :: foo :: records :: Guest ::
+            new(instance) ? ,
+        })
+    } #[doc = r" Register every import of the world on the linker."] pub fn
+    add_to_linker < _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : :: wcmp ::
+    HasData + foo :: foo :: records :: HostWithStore < _T > , for < 'a > _D ::
+    Data < 'a > : foo :: foo :: records :: Host, _T : 'static,
+    {
+        let _ = (& linker, host_getter); foo :: foo :: records ::
+        add_to_linker :: < _T, _D > (linker, host_getter) ? ; :: wcmp ::
+        Result :: Ok(())
+    } #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_records(& self) -> & exports :: foo :: foo :: records :: Guest
+    { & self.interface0 }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod exports
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+        {
+            #[allow(clippy :: all, unused_imports, dead_code)] pub mod records
+            {
+                #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+                Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+                struct Empty {} const _ : () =
+                {
+                    assert!
+                    (0 == < Empty as :: wcmp :: ComponentType > :: SIZE32);
+                    assert!
+                    (1 == < Empty as :: wcmp :: ComponentType > :: ALIGN32 as
+                    usize);
+                }; #[doc = " A record containing two scalar fields"]
+                #[doc = " that both have the same type"]
+                #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+                Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+                struct Scalars
+                {
+                    #[doc = " The first field, named a"]
+                    #[component(name = "a")] pub a : u32,
+                    #[doc = " The second field, named b"]
+                    #[component(name = "b")] pub b : u32,
+                } const _ : () =
+                {
+                    assert!
+                    (8 == < Scalars as :: wcmp :: ComponentType > :: SIZE32);
+                    assert!
+                    (4 == < Scalars as :: wcmp :: ComponentType > :: ALIGN32 as
+                    usize);
+                }; #[doc = " A record that is really just flags"]
+                #[doc = " All of the fields are bool"]
+                #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+                Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+                struct ReallyFlags
+                {
+                    #[component(name = "a")] pub a : bool,
+                    #[component(name = "b")] pub b : bool,
+                    #[component(name = "c")] pub c : bool,
+                    #[component(name = "d")] pub d : bool,
+                    #[component(name = "e")] pub e : bool,
+                    #[component(name = "f")] pub f : bool,
+                    #[component(name = "g")] pub g : bool,
+                    #[component(name = "h")] pub h : bool,
+                    #[component(name = "i")] pub i : bool,
+                } const _ : () =
+                {
+                    assert!
+                    (9 == < ReallyFlags as :: wcmp :: ComponentType > ::
+                    SIZE32); assert!
+                    (1 == < ReallyFlags as :: wcmp :: ComponentType > :: ALIGN32
+                    as usize);
+                };
+                #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+                Lower)] #[component(record)] #[derive(Clone, Debug)] pub
+                struct Aggregates
+                {
+                    #[component(name = "a")] pub a : Scalars,
+                    #[component(name = "b")] pub b : u32,
+                    #[component(name = "c")] pub c : Empty,
+                    #[component(name = "d")] pub d : :: std :: string :: String,
+                    #[component(name = "e")] pub e : ReallyFlags,
+                } const _ : () =
+                {
+                    assert!
+                    (32 == < Aggregates as :: wcmp :: ComponentType > ::
+                    SIZE32); assert!
+                    (4 == < Aggregates as :: wcmp :: ComponentType > :: ALIGN32
+                    as usize);
+                }; pub type TupleTypedef = (i32,); const _ : () =
+                {
+                    assert!
+                    (4 == < TupleTypedef as :: wcmp :: ComponentType > ::
+                    SIZE32); assert!
+                    (4 == < TupleTypedef as :: wcmp :: ComponentType > ::
+                    ALIGN32 as usize);
+                }; pub type IntTypedef = i32; const _ : () =
+                {
+                    assert!
+                    (4 == < IntTypedef as :: wcmp :: ComponentType > :: SIZE32);
+                    assert!
+                    (4 == < IntTypedef as :: wcmp :: ComponentType > :: ALIGN32
+                    as usize);
+                }; pub type TupleTypedef2 = (IntTypedef,); const _ : () =
+                {
+                    assert!
+                    (4 == < TupleTypedef2 as :: wcmp :: ComponentType > ::
+                    SIZE32); assert!
+                    (4 == < TupleTypedef2 as :: wcmp :: ComponentType > ::
+                    ALIGN32 as usize);
+                };
+                #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+                Lower)] #[component(record)] #[derive(Debug)] pub struct
+                FuturesAndStreams
+                {
+                    #[component(name = "a")] pub a : :: wcmp :: FutureReader <
+                    u8 > , #[component(name = "b")] pub b : :: wcmp ::
+                    StreamReader < u8 > , #[component(name = "c")] pub c : ::
+                    wcmp :: StreamReader < :: wcmp :: FutureReader < :: wcmp ::
+                    StreamReader < () > > > , #[component(name = "d")] pub d :
+                    :: wcmp :: FutureReader < :: wcmp :: StreamReader < :: wcmp
+                    :: FutureReader < () > > > ,
+                } const _ : () =
+                {
+                    assert!
+                    (16 == < FuturesAndStreams as :: wcmp :: ComponentType > ::
+                    SIZE32); assert!
+                    (4 == < FuturesAndStreams as :: wcmp :: ComponentType > ::
+                    ALIGN32 as usize);
+                };
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    tuple_arg : :: wcmp :: TypedFunc < ((char, u32,),), () > ,
+                    tuple_result : :: wcmp :: TypedFunc < (), ((char, u32,),) >
+                    , empty_arg : :: wcmp :: TypedFunc < (Empty,), () > ,
+                    empty_result : :: wcmp :: TypedFunc < (), (Empty,) > ,
+                    scalar_arg : :: wcmp :: TypedFunc < (Scalars,), () > ,
+                    scalar_result : :: wcmp :: TypedFunc < (), (Scalars,) > ,
+                    flags_arg : :: wcmp :: TypedFunc < (ReallyFlags,), () > ,
+                    flags_result : :: wcmp :: TypedFunc < (), (ReallyFlags,) > ,
+                    aggregate_arg : :: wcmp :: TypedFunc < (Aggregates,), () > ,
+                    aggregate_result : :: wcmp :: TypedFunc < (), (Aggregates,)
+                    > , typedef_inout : :: wcmp :: TypedFunc < (TupleTypedef2,),
+                    (i32,) > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/records").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/records"), instance : :: core :: option ::
+                                Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String :: from("foo:foo/records")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest
+                        {
+                            tuple_arg : lookup("tuple-arg") ? .typed() ? , tuple_result
+                            : lookup("tuple-result") ? .typed() ? , empty_arg :
+                            lookup("empty-arg") ? .typed() ? , empty_result :
+                            lookup("empty-result") ? .typed() ? , scalar_arg :
+                            lookup("scalar-arg") ? .typed() ? , scalar_result :
+                            lookup("scalar-result") ? .typed() ? , flags_arg :
+                            lookup("flags-arg") ? .typed() ? , flags_result :
+                            lookup("flags-result") ? .typed() ? , aggregate_arg :
+                            lookup("aggregate-arg") ? .typed() ? , aggregate_result :
+                            lookup("aggregate-result") ? .typed() ? , typedef_inout :
+                            lookup("typedef-inout") ? .typed() ? ,
+                        })
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_tuple_arg(& self) -> & :: wcmp :: TypedFunc <
+                    ((char, u32,),), () > { & self.tuple_arg } pub async fn
+                    call_tuple_arg < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 :
+                    (char, u32,)) -> :: wcmp :: Result < () >
+                    {
+                        let () = self.tuple_arg.call(store, (arg0,)).await ? ; ::
+                        wcmp :: Result :: Ok(())
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_tuple_result(& self) -> & :: wcmp :: TypedFunc < (),
+                    ((char, u32,),) > { & self.tuple_result } pub async fn
+                    call_tuple_result < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < (char, u32,) >
+                    {
+                        let (ret0,) = self.tuple_result.call(store, ()).await ? ; ::
+                        wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_empty_arg(& self) -> & :: wcmp :: TypedFunc < (Empty,),
+                    () > { & self.empty_arg } pub async fn call_empty_arg < _T :
+                    'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 :
+                    Empty) -> :: wcmp :: Result < () >
+                    {
+                        let () = self.empty_arg.call(store, (arg0,)).await ? ; ::
+                        wcmp :: Result :: Ok(())
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_empty_result(& self) -> & :: wcmp :: TypedFunc < (),
+                    (Empty,) > { & self.empty_result } pub async fn
+                    call_empty_result < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < Empty >
+                    {
+                        let (ret0,) = self.empty_result.call(store, ()).await ? ; ::
+                        wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_scalar_arg(& self) -> & :: wcmp :: TypedFunc <
+                    (Scalars,), () > { & self.scalar_arg } pub async fn
+                    call_scalar_arg < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 :
+                    Scalars) -> :: wcmp :: Result < () >
+                    {
+                        let () = self.scalar_arg.call(store, (arg0,)).await ? ; ::
+                        wcmp :: Result :: Ok(())
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_scalar_result(& self) -> & :: wcmp :: TypedFunc < (),
+                    (Scalars,) > { & self.scalar_result } pub async fn
+                    call_scalar_result < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < Scalars >
+                    {
+                        let (ret0,) = self.scalar_result.call(store, ()).await ? ;
+                        :: wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_flags_arg(& self) -> & :: wcmp :: TypedFunc <
+                    (ReallyFlags,), () > { & self.flags_arg } pub async fn
+                    call_flags_arg < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 :
+                    ReallyFlags) -> :: wcmp :: Result < () >
+                    {
+                        let () = self.flags_arg.call(store, (arg0,)).await ? ; ::
+                        wcmp :: Result :: Ok(())
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_flags_result(& self) -> & :: wcmp :: TypedFunc < (),
+                    (ReallyFlags,) > { & self.flags_result } pub async fn
+                    call_flags_result < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < ReallyFlags >
+                    {
+                        let (ret0,) = self.flags_result.call(store, ()).await ? ; ::
+                        wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_aggregate_arg(& self) -> & :: wcmp :: TypedFunc <
+                    (Aggregates,), () > { & self.aggregate_arg } pub async fn
+                    call_aggregate_arg < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : &
+                    Aggregates) -> :: wcmp :: Result < () >
+                    {
+                        let () =
+                        self.aggregate_arg.call(store,
+                        (:: core :: clone :: Clone :: clone(arg0),)).await ? ; ::
+                        wcmp :: Result :: Ok(())
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_aggregate_result(& self) -> & :: wcmp :: TypedFunc <
+                    (), (Aggregates,) > { & self.aggregate_result } pub async fn
+                    call_aggregate_result < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < Aggregates >
+                    {
+                        let (ret0,) = self.aggregate_result.call(store, ()).await ?
+                        ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_typedef_inout(& self) -> & :: wcmp :: TypedFunc <
+                    (TupleTypedef2,), (i32,) > { & self.typedef_inout } pub
+                    async fn call_typedef_inout < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 :
+                    TupleTypedef2) -> :: wcmp :: Result < i32 >
+                    {
+                        let (ret0,) = self.typedef_inout.call(store, (arg0,)).await
+                        ? ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                }
+            }
+        }
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod records
+        {
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+            struct Empty {} const _ : () =
+            {
+                assert!
+                (0 == < Empty as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (1 == < Empty as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            }; #[doc = " A record containing two scalar fields"]
+            #[doc = " that both have the same type"]
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+            struct Scalars
+            {
+                #[doc = " The first field, named a"] #[component(name = "a")]
+                pub a : u32, #[doc = " The second field, named b"]
+                #[component(name = "b")] pub b : u32,
+            } const _ : () =
+            {
+                assert!
+                (8 == < Scalars as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < Scalars as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            }; #[doc = " A record that is really just flags"]
+            #[doc = " All of the fields are bool"]
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Clone, Copy, Debug)] pub
+            struct ReallyFlags
+            {
+                #[component(name = "a")] pub a : bool,
+                #[component(name = "b")] pub b : bool,
+                #[component(name = "c")] pub c : bool,
+                #[component(name = "d")] pub d : bool,
+                #[component(name = "e")] pub e : bool,
+                #[component(name = "f")] pub f : bool,
+                #[component(name = "g")] pub g : bool,
+                #[component(name = "h")] pub h : bool,
+                #[component(name = "i")] pub i : bool,
+            } const _ : () =
+            {
+                assert!
+                (9 == < ReallyFlags as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (1 == < ReallyFlags as :: wcmp :: ComponentType > :: ALIGN32
+                as usize);
+            };
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Clone, Debug)] pub struct
+            Aggregates
+            {
+                #[component(name = "a")] pub a : Scalars,
+                #[component(name = "b")] pub b : u32, #[component(name = "c")]
+                pub c : Empty, #[component(name = "d")] pub d : :: std ::
+                string :: String, #[component(name = "e")] pub e :
+                ReallyFlags,
+            } const _ : () =
+            {
+                assert!
+                (32 == < Aggregates as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < Aggregates as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            }; pub type TupleTypedef = (i32,); const _ : () =
+            {
+                assert!
+                (4 == < TupleTypedef as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < TupleTypedef as :: wcmp :: ComponentType > :: ALIGN32
+                as usize);
+            }; pub type IntTypedef = i32; const _ : () =
+            {
+                assert!
+                (4 == < IntTypedef as :: wcmp :: ComponentType > :: SIZE32);
+                assert!
+                (4 == < IntTypedef as :: wcmp :: ComponentType > :: ALIGN32 as
+                usize);
+            }; pub type TupleTypedef2 = (IntTypedef,); const _ : () =
+            {
+                assert!
+                (4 == < TupleTypedef2 as :: wcmp :: ComponentType > ::
+                SIZE32); assert!
+                (4 == < TupleTypedef2 as :: wcmp :: ComponentType > :: ALIGN32
+                as usize);
+            };
+            #[derive(:: wcmp :: ComponentType, :: wcmp :: Lift, :: wcmp ::
+            Lower)] #[component(record)] #[derive(Debug)] pub struct
+            FuturesAndStreams
+            {
+                #[component(name = "a")] pub a : :: wcmp :: FutureReader < u8
+                > , #[component(name = "b")] pub b : :: wcmp :: StreamReader <
+                u8 > , #[component(name = "c")] pub c : :: wcmp ::
+                StreamReader < :: wcmp :: FutureReader < :: wcmp ::
+                StreamReader < () > > > , #[component(name = "d")] pub d : ::
+                wcmp :: FutureReader < :: wcmp :: StreamReader < :: wcmp ::
+                FutureReader < () > > > ,
+            } const _ : () =
+            {
+                assert!
+                (16 == < FuturesAndStreams as :: wcmp :: ComponentType > ::
+                SIZE32); assert!
+                (4 == < FuturesAndStreams as :: wcmp :: ComponentType > ::
+                ALIGN32 as usize);
+            }; pub trait HostWithStore < _T > : :: wcmp :: HasData {} impl <
+            _H : ? Sized, _T > HostWithStore < _T > for _H where _H : :: wcmp
+            :: HasData {} pub trait Host :
+            {
+                fn tuple_arg(& mut self, x : (char, u32,)) -> (); fn
+                tuple_result(& mut self,) -> (char, u32,); fn
+                empty_arg(& mut self, x : Empty) -> (); fn
+                empty_result(& mut self,) -> Empty; fn
+                scalar_arg(& mut self, x : Scalars) -> (); fn
+                scalar_result(& mut self,) -> Scalars; fn
+                flags_arg(& mut self, x : ReallyFlags) -> (); fn
+                flags_result(& mut self,) -> ReallyFlags; fn
+                aggregate_arg(& mut self, x : Aggregates) -> (); fn
+                aggregate_result(& mut self,) -> Aggregates; fn
+                typedef_inout(& mut self, e : TupleTypedef2) -> i32;
+            } impl < _T : Host + ? Sized > Host for & mut _T
+            {
+                fn tuple_arg(& mut self, x : (char, u32,)) -> ()
+                { Host :: tuple_arg(* self, x) } fn tuple_result(& mut self,)
+                -> (char, u32,) { Host :: tuple_result(* self,) } fn
+                empty_arg(& mut self, x : Empty) -> ()
+                { Host :: empty_arg(* self, x) } fn empty_result(& mut self,)
+                -> Empty { Host :: empty_result(* self,) } fn
+                scalar_arg(& mut self, x : Scalars) -> ()
+                { Host :: scalar_arg(* self, x) } fn
+                scalar_result(& mut self,) -> Scalars
+                { Host :: scalar_result(* self,) } fn
+                flags_arg(& mut self, x : ReallyFlags) -> ()
+                { Host :: flags_arg(* self, x) } fn flags_result(& mut self,)
+                -> ReallyFlags { Host :: flags_result(* self,) } fn
+                aggregate_arg(& mut self, x : Aggregates) -> ()
+                { Host :: aggregate_arg(* self, x) } fn
+                aggregate_result(& mut self,) -> Aggregates
+                { Host :: aggregate_result(* self,) } fn
+                typedef_inout(& mut self, e : TupleTypedef2) -> i32
+                { Host :: typedef_inout(* self, e) }
+            }
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.func_wrap("tuple-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : ((char, u32,),) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: tuple_arg(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+                },) ? ;
+                inst.func_wrap("tuple-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: tuple_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("empty-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : (Empty,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: empty_arg(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+                },) ? ;
+                inst.func_wrap("empty-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: empty_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("scalar-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : (Scalars,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: scalar_arg(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+                },) ? ;
+                inst.func_wrap("scalar-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: scalar_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("flags-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : (ReallyFlags,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: flags_arg(& mut host, arg0); :: wcmp :: Result :: Ok(r)
+                },) ? ;
+                inst.func_wrap("flags-result", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: flags_result(& mut host,); :: wcmp :: Result :: Ok((r,))
+                },) ? ;
+                inst.func_wrap("aggregate-arg", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : (Aggregates,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: aggregate_arg(& mut host, arg0); :: wcmp :: Result ::
+                    Ok(r)
+                },) ? ;
+                inst.func_wrap("aggregate-result", move | mut caller : :: wcmp
+                :: HostCall < '_, _T > , () : () |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: aggregate_result(& mut host,); :: wcmp :: Result ::
+                    Ok((r,))
+                },) ? ;
+                inst.func_wrap("typedef-inout", move | mut caller : :: wcmp ::
+                HostCall < '_, _T > , (arg0,) : (TupleTypedef2,) |
+                {
+                    let mut host = host_getter(caller.data_mut()); let r = Host
+                    :: typedef_inout(& mut host, arg0); :: wcmp :: Result ::
+                    Ok((r,))
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/records") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        }
+    }
+}

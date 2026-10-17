@@ -209,6 +209,19 @@ pub enum Error {
     #[error("error-context error: {0}")]
     ErrorContext(#[source] ErrorContextCause),
 
+    /// The component does not export an interface or a function that
+    /// the world of `wcmp::bindgen!` declares. The world struct's `new`
+    /// fails with it, as Wasmtime's `load` fails when an export is
+    /// missing.
+    #[error("{}", missing_export(.name, .instance.as_deref()))]
+    MissingExport {
+        /// The name of the export that is missing.
+        name: String,
+        /// The exported instance that does not have it, or `None` for
+        /// an export of the component itself.
+        instance: Option<String>,
+    },
+
     /// A host function failed with an error of the host's own.
     ///
     /// A host reports a failure of its own with this variant. `Error`
@@ -306,6 +319,14 @@ impl ErrorInternal for Error {
         Error::Internal {
             message: message.into(),
         }
+    }
+}
+
+/// The message of [`Error::MissingExport`], in Wasmtime's words.
+fn missing_export(name: &str, instance: Option<&str>) -> String {
+    match instance {
+        Some(instance) => format!("instance export `{instance}` does not have export `{name}`"),
+        None => format!("no export `{name}` found"),
     }
 }
 

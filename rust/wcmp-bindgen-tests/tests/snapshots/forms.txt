@@ -1,4 +1,44 @@
-#[allow(clippy :: all, unused_imports, dead_code)] pub mod test
+#[doc = concat!
+(" The bindings of an instance of a component that implements the world `",
+"forms", "`.")] pub struct Forms {} impl Forms
+{
+    #[doc = r" Instantiate `component` into `store` with `linker`,"]
+    #[doc = r" and acquire the world's exports from the instance."] pub async
+    fn instantiate_async < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , component : & :: wcmp ::
+    Component, linker : & :: wcmp :: Linker < _T > ,) -> :: wcmp :: Result <
+    Forms >
+    {
+        let instance = linker.instantiate(store, component).await ? ; Forms ::
+        new(store, & instance)
+    } #[doc = r" Acquire the world's exports from `instance`, running"]
+    #[doc = r" the type check of each one here and never in a call."]
+    #[doc = r""] #[doc = r" `store` is not read: it keeps the signature of"]
+    #[doc = r" Wasmtime's `new`."] pub fn new < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , instance : & :: wcmp ::
+    Instance,) -> :: wcmp :: Result < Forms >
+    {
+        let _ = store; let exports = instance.exports(); let lookup = | func :
+        & str |
+        {
+            exports.func(func).ok_or_else(|| :: wcmp :: Error :: MissingExport
+            {
+                name : :: std :: string :: String :: from(func), instance : ::
+                core :: option :: Option :: None,
+            })
+        }; let _ = & lookup; :: wcmp :: Result :: Ok(Forms {})
+    } #[doc = r" Register every import of the world on the linker."] pub fn
+    add_to_linker < _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : :: wcmp ::
+    HasData + test :: forms :: shapes :: HostWithStore < _T > , for < 'a > _D
+    :: Data < 'a > : test :: forms :: shapes :: Host, _T : 'static,
+    {
+        let _ = (& linker, host_getter); test :: forms :: shapes ::
+        add_to_linker :: < _T, _D > (linker, host_getter) ? ; :: wcmp ::
+        Result :: Ok(())
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod test
 {
     #[allow(clippy :: all, unused_imports, dead_code)] pub mod forms
     {
@@ -17,31 +57,31 @@
                 assert!
                 (4 == < Point as :: wcmp :: ComponentType > :: ALIGN32 as
                 usize);
-            }; pub trait HostWithStore < T > : :: wcmp :: HasData {} impl < _H
-            : ? Sized, T > HostWithStore < T > for _H where _H : :: wcmp ::
-            HasData {} pub trait Host {} impl < _T : Host + ? Sized > Host for
-            & mut _T {}
+            }; pub trait HostWithStore < _T > : :: wcmp :: HasData {} impl <
+            _H : ? Sized, _T > HostWithStore < _T > for _H where _H : :: wcmp
+            :: HasData {} pub trait Host : {} impl < _T : Host + ? Sized >
+            Host for & mut _T {}
             #[doc =
             r" Register the host functions of this interface on `inst`,"]
             #[doc = r" each calling the trait method on what `host_getter`"]
             #[doc = r" reaches from the host data."] pub fn
-            add_to_linker_instance < T, D >
-            (inst : & mut :: wcmp :: LinkerInstance < '_, T > , host_getter :
-            fn(& mut T) -> D :: Data < '_ > ,) -> :: wcmp :: Result < () >
-            where D : HostWithStore < T > , for < 'a > D :: Data < 'a > :
-            Host, T : 'static,
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
             { let _ = (& inst, host_getter); :: wcmp :: Result :: Ok(()) }
             #[doc = r" Register the host functions of this interface on the"]
             #[doc = r" linker, under the interface's name."] pub fn
-            add_to_linker < T, D >
-            (linker : & mut :: wcmp :: Linker < T > , host_getter :
-            fn(& mut T) -> D :: Data < '_ > ,) -> :: wcmp :: Result < () >
-            where D : HostWithStore < T > , for < 'a > D :: Data < 'a > :
-            Host, T : 'static,
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
             {
                 let id = :: wcmp :: __private ::
                 interface_id("test:forms/shapes") ? ; let mut inst =
-                linker.instance(& id); add_to_linker_instance :: < T, D >
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
                 (& mut inst, host_getter)
             }
         }

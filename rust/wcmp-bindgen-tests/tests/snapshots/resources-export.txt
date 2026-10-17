@@ -1,0 +1,470 @@
+#[doc = concat!
+(" The bindings of an instance of a component that implements the world `",
+"w", "`.")] pub struct W
+{
+    interface0 : exports :: foo :: foo :: simple_export :: Guest, interface1 :
+    exports :: foo :: foo :: export_using_import :: Guest, interface2 :
+    exports :: foo :: foo :: export_using_export1 :: Guest, interface3 :
+    exports :: foo :: foo :: export_using_export2 :: Guest,
+} impl W
+{
+    #[doc = r" Instantiate `component` into `store` with `linker`,"]
+    #[doc = r" and acquire the world's exports from the instance."] pub async
+    fn instantiate_async < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , component : & :: wcmp ::
+    Component, linker : & :: wcmp :: Linker < _T > ,) -> :: wcmp :: Result < W
+    >
+    {
+        let instance = linker.instantiate(store, component).await ? ; W ::
+        new(store, & instance)
+    } #[doc = r" Acquire the world's exports from `instance`, running"]
+    #[doc = r" the type check of each one here and never in a call."]
+    #[doc = r""] #[doc = r" `store` is not read: it keeps the signature of"]
+    #[doc = r" Wasmtime's `new`."] pub fn new < _T : 'static >
+    (store : & mut :: wcmp :: Store < _T > , instance : & :: wcmp ::
+    Instance,) -> :: wcmp :: Result < W >
+    {
+        let _ = store; let exports = instance.exports(); let lookup = | func :
+        & str |
+        {
+            exports.func(func).ok_or_else(|| :: wcmp :: Error :: MissingExport
+            {
+                name : :: std :: string :: String :: from(func), instance : ::
+                core :: option :: Option :: None,
+            })
+        }; let _ = & lookup; :: wcmp :: Result ::
+        Ok(W
+        {
+            interface0 : exports :: foo :: foo :: simple_export :: Guest ::
+            new(instance) ? , interface1 : exports :: foo :: foo ::
+            export_using_import :: Guest :: new(instance) ? , interface2 :
+            exports :: foo :: foo :: export_using_export1 :: Guest ::
+            new(instance) ? , interface3 : exports :: foo :: foo ::
+            export_using_export2 :: Guest :: new(instance) ? ,
+        })
+    } #[doc = r" Register every import of the world on the linker."] pub fn
+    add_to_linker < _T, _D >
+    (linker : & mut :: wcmp :: Linker < _T > , host_getter : fn(& mut _T) ->
+    _D :: Data < '_ > ,) -> :: wcmp :: Result < () > where _D : :: wcmp ::
+    HasData + foo :: foo :: transitive_import :: HostWithStore < _T > , for <
+    'a > _D :: Data < 'a > : foo :: foo :: transitive_import :: Host, _T :
+    'static,
+    {
+        let _ = (& linker, host_getter); foo :: foo :: transitive_import ::
+        add_to_linker :: < _T, _D > (linker, host_getter) ? ; :: wcmp ::
+        Result :: Ok(())
+    } #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_simple_export(& self) -> & exports :: foo :: foo :: simple_export
+    :: Guest { & self.interface0 }
+    #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_export_using_import(& self) -> & exports :: foo :: foo ::
+    export_using_import :: Guest { & self.interface1 }
+    #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_export_using_export1(& self) -> & exports :: foo :: foo ::
+    export_using_export1 :: Guest { & self.interface2 }
+    #[doc = r" The calls of the exported interface."] pub fn
+    foo_foo_export_using_export2(& self) -> & exports :: foo :: foo ::
+    export_using_export2 :: Guest { & self.interface3 }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod exports
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+        {
+            #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+            export_using_export1
+            {
+                pub type A = :: wcmp :: ResourceAny;
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    constructor_a_constructor : :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: ResourceAny,) > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/export-using-export1").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/export-using-export1"), instance : :: core ::
+                                option :: Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String ::
+                                from("foo:foo/export-using-export1")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest
+                        {
+                            constructor_a_constructor : lookup("[constructor]a") ?
+                            .typed() ? ,
+                        })
+                    } #[doc = r" The calls of the exported resource."] pub fn
+                    a(& self) -> GuestA < '_ > { GuestA { funcs : self } }
+                } #[doc = r" The calls of an exported resource."] pub struct
+                GuestA < 'a > { funcs : & 'a Guest, } impl GuestA < '_ >
+                {
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_constructor(& self) -> & :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: ResourceAny,) >
+                    { & self.funcs.constructor_a_constructor } pub async fn
+                    call_constructor < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < :: wcmp :: ResourceAny >
+                    {
+                        let (ret0,) =
+                        self.funcs.constructor_a_constructor.call(store, ()).await ?
+                        ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                }
+            } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+            export_using_export2
+            {
+                pub type A = super :: super :: super :: super :: exports ::
+                foo :: foo :: export_using_export1 :: A; pub type B = :: wcmp
+                :: ResourceAny;
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    constructor_b_constructor : :: wcmp :: TypedFunc <
+                    (:: wcmp :: ResourceAny,), (:: wcmp :: ResourceAny,) > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/export-using-export2").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/export-using-export2"), instance : :: core ::
+                                option :: Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String ::
+                                from("foo:foo/export-using-export2")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest
+                        {
+                            constructor_b_constructor : lookup("[constructor]b") ?
+                            .typed() ? ,
+                        })
+                    } #[doc = r" The calls of the exported resource."] pub fn
+                    b(& self) -> GuestB < '_ > { GuestB { funcs : self } }
+                } #[doc = r" The calls of an exported resource."] pub struct
+                GuestB < 'a > { funcs : & 'a Guest, } impl GuestB < '_ >
+                {
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_constructor(& self) -> & :: wcmp :: TypedFunc <
+                    (:: wcmp :: ResourceAny,), (:: wcmp :: ResourceAny,) >
+                    { & self.funcs.constructor_b_constructor } pub async fn
+                    call_constructor < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : ::
+                    wcmp :: ResourceAny) -> :: wcmp :: Result < :: wcmp ::
+                    ResourceAny >
+                    {
+                        let (ret0,) =
+                        self.funcs.constructor_b_constructor.call(store,
+                        (arg0,)).await ? ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                }
+            } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+            export_using_import
+            {
+                pub type Y = super :: super :: super :: super :: foo :: foo ::
+                transitive_import :: Y; pub type A = :: wcmp :: ResourceAny;
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    constructor_a_constructor : :: wcmp :: TypedFunc <
+                    (:: wcmp :: Resource < Y > ,), (:: wcmp :: ResourceAny,) > ,
+                    static_a_static_a : :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: Resource < Y > ,) > , method_a_method_a : ::
+                    wcmp :: TypedFunc <
+                    (:: wcmp :: ResourceAny, :: wcmp :: Resource < Y > ,),
+                    (:: wcmp :: Resource < Y > ,) > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/export-using-import").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/export-using-import"), instance : :: core ::
+                                option :: Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String ::
+                                from("foo:foo/export-using-import")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest
+                        {
+                            constructor_a_constructor : lookup("[constructor]a") ?
+                            .typed() ? , static_a_static_a :
+                            lookup("[static]a.static-a") ? .typed() ? ,
+                            method_a_method_a : lookup("[method]a.method-a") ? .typed()
+                            ? ,
+                        })
+                    } #[doc = r" The calls of the exported resource."] pub fn
+                    a(& self) -> GuestA < '_ > { GuestA { funcs : self } }
+                } #[doc = r" The calls of an exported resource."] pub struct
+                GuestA < 'a > { funcs : & 'a Guest, } impl GuestA < '_ >
+                {
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_constructor(& self) -> & :: wcmp :: TypedFunc <
+                    (:: wcmp :: Resource < Y > ,), (:: wcmp :: ResourceAny,) >
+                    { & self.funcs.constructor_a_constructor } pub async fn
+                    call_constructor < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : ::
+                    wcmp :: Resource < Y >) -> :: wcmp :: Result < :: wcmp ::
+                    ResourceAny >
+                    {
+                        let (ret0,) =
+                        self.funcs.constructor_a_constructor.call(store,
+                        (arg0,)).await ? ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_static_a(& self) -> & :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: Resource < Y > ,) >
+                    { & self.funcs.static_a_static_a } pub async fn
+                    call_static_a < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < :: wcmp :: Resource < Y > >
+                    {
+                        let (ret0,) =
+                        self.funcs.static_a_static_a.call(store, ()).await ? ; ::
+                        wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_method_a(& self) -> & :: wcmp :: TypedFunc <
+                    (:: wcmp :: ResourceAny, :: wcmp :: Resource < Y > ,),
+                    (:: wcmp :: Resource < Y > ,) >
+                    { & self.funcs.method_a_method_a } pub async fn
+                    call_method_a < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : ::
+                    wcmp :: ResourceAny, arg1 : :: wcmp :: Resource < Y >) -> ::
+                    wcmp :: Result < :: wcmp :: Resource < Y > >
+                    {
+                        let (ret0,) =
+                        self.funcs.method_a_method_a.call(store,
+                        (arg0, arg1,)).await ? ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                }
+            } #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+            simple_export
+            {
+                pub type A = :: wcmp :: ResourceAny;
+                #[doc =
+                r" The calls of this exported interface, acquired from an"]
+                #[doc = r" instance with their type checks done."] pub struct
+                Guest
+                {
+                    constructor_a_constructor : :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: ResourceAny,) > , static_a_static_a : :: wcmp ::
+                    TypedFunc < (), (u32,) > , method_a_method_a : :: wcmp ::
+                    TypedFunc < (:: wcmp :: ResourceAny,), (u32,) > ,
+                } impl Guest
+                {
+                    #[doc =
+                    r" Acquire each function of this interface from the"]
+                    #[doc =
+                    r" instance's export of it, running each type check."]
+                    #[doc(hidden)] pub fn new(instance : & :: wcmp :: Instance)
+                    -> :: wcmp :: Result < Guest >
+                    {
+                        let exports = instance.exports(); let interface =
+                        exports.instance("foo:foo/simple-export").ok_or_else(||
+                        {
+                            :: wcmp :: Error :: MissingExport
+                            {
+                                name : :: std :: string :: String ::
+                                from("foo:foo/simple-export"), instance : :: core :: option
+                                :: Option :: None,
+                            }
+                        }) ? ; let lookup = | func : & str |
+                        {
+                            interface.func(func).ok_or_else(|| :: wcmp :: Error ::
+                            MissingExport
+                            {
+                                name : :: std :: string :: String :: from(func), instance :
+                                :: core :: option :: Option ::
+                                Some(:: std :: string :: String ::
+                                from("foo:foo/simple-export")),
+                            })
+                        }; let _ = & lookup; :: wcmp :: Result ::
+                        Ok(Guest
+                        {
+                            constructor_a_constructor : lookup("[constructor]a") ?
+                            .typed() ? , static_a_static_a :
+                            lookup("[static]a.static-a") ? .typed() ? ,
+                            method_a_method_a : lookup("[method]a.method-a") ? .typed()
+                            ? ,
+                        })
+                    } #[doc = r" The calls of the exported resource."] pub fn
+                    a(& self) -> GuestA < '_ > { GuestA { funcs : self } }
+                } #[doc = r" The calls of an exported resource."] pub struct
+                GuestA < 'a > { funcs : & 'a Guest, } impl GuestA < '_ >
+                {
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_constructor(& self) -> & :: wcmp :: TypedFunc < (),
+                    (:: wcmp :: ResourceAny,) >
+                    { & self.funcs.constructor_a_constructor } pub async fn
+                    call_constructor < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < :: wcmp :: ResourceAny >
+                    {
+                        let (ret0,) =
+                        self.funcs.constructor_a_constructor.call(store, ()).await ?
+                        ; :: wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_static_a(& self) -> & :: wcmp :: TypedFunc < (), (u32,)
+                    > { & self.funcs.static_a_static_a } pub async fn
+                    call_static_a < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > ,) -> :: wcmp
+                    :: Result < u32 >
+                    {
+                        let (ret0,) =
+                        self.funcs.static_a_static_a.call(store, ()).await ? ; ::
+                        wcmp :: Result :: Ok(ret0)
+                    }
+                    #[doc =
+                    r" The typed function of this export, acquired when the"]
+                    #[doc = r" bindings were made."] pub fn
+                    func_method_a(& self) -> & :: wcmp :: TypedFunc <
+                    (:: wcmp :: ResourceAny,), (u32,) >
+                    { & self.funcs.method_a_method_a } pub async fn
+                    call_method_a < _T : 'static >
+                    (& self, store : & mut :: wcmp :: Store < _T > , arg0 : ::
+                    wcmp :: ResourceAny) -> :: wcmp :: Result < u32 >
+                    {
+                        let (ret0,) =
+                        self.funcs.method_a_method_a.call(store, (arg0,)).await ? ;
+                        :: wcmp :: Result :: Ok(ret0)
+                    }
+                }
+            }
+        }
+    }
+} #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+{
+    #[allow(clippy :: all, unused_imports, dead_code)] pub mod foo
+    {
+        #[allow(clippy :: all, unused_imports, dead_code)] pub mod
+        transitive_import
+        {
+            pub enum Y {} pub trait HostYWithStore < _T > : :: wcmp :: HasData
+            {} impl < _H : ? Sized, _T > HostYWithStore < _T > for _H where _H
+            : :: wcmp :: HasData {} pub trait HostY :
+            {
+                #[doc = r" Drop the resource `rep`, which the guest dropped."]
+                fn drop(& mut self, rep : :: wcmp :: Resource < Y >) -> ::
+                wcmp :: Result < () > ;
+            } impl < _T : HostY + ? Sized > HostY for & mut _T
+            {
+                fn drop(& mut self, rep : :: wcmp :: Resource < Y >) -> ::
+                wcmp :: Result < () > { HostY :: drop(* self, rep) }
+            } pub trait HostWithStore < _T > : :: wcmp :: HasData +
+            HostYWithStore < _T > {} impl < _H : ? Sized, _T > HostWithStore <
+            _T > for _H where _H : :: wcmp :: HasData + HostYWithStore < _T >
+            {} pub trait Host : HostY {} impl < _T : Host + ? Sized > Host for
+            & mut _T {}
+            #[doc =
+            r" Register the host functions of this interface on `inst`,"]
+            #[doc = r" each calling the trait method on what `host_getter`"]
+            #[doc = r" reaches from the host data."] pub fn
+            add_to_linker_instance < _T, _D >
+            (inst : & mut :: wcmp :: LinkerInstance < '_, _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let _ = (& inst, host_getter);
+                inst.resource("y", :: wcmp :: ResourceType :: host :: < Y >
+                (), move | mut store : :: wcmp :: StoreContext < '_, _T > ,
+                rep : u32 | -> :: wcmp :: Result < () >
+                {
+                    let resource = :: wcmp :: Resource :: new_own(rep); let _ =
+                    & mut store; HostY ::
+                    drop(& mut host_getter(store.data_mut()), resource)
+                },) ? ; :: wcmp :: Result :: Ok(())
+            }
+            #[doc = r" Register the host functions of this interface on the"]
+            #[doc = r" linker, under the interface's name."] pub fn
+            add_to_linker < _T, _D >
+            (linker : & mut :: wcmp :: Linker < _T > , host_getter :
+            fn(& mut _T) -> _D :: Data < '_ > ,) -> :: wcmp :: Result < () >
+            where _D : HostWithStore < _T > , for < 'a > _D :: Data < 'a > :
+            Host, _T : 'static,
+            {
+                let id = :: wcmp :: __private ::
+                interface_id("foo:foo/transitive-import") ? ; let mut inst =
+                linker.instance(& id); add_to_linker_instance :: < _T, _D >
+                (& mut inst, host_getter)
+            }
+        }
+    }
+}

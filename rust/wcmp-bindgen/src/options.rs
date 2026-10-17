@@ -296,8 +296,10 @@ impl Parse for Opt {
             let span = input.parse::<kw::wasmtime_crate>()?.span;
             Err(syn::Error::new(
                 span,
-                "`wasmtime_crate` is not supported: the polyfill's macro emits paths under \
-                 `wcmp`; use `wcmp_crate: path` to name the crate that re-exports the polyfill",
+                format!(
+                    "`wasmtime_crate` is not supported: {}",
+                    crate::ledger::WASMTIME_CRATE
+                ),
             ))
         } else if l.peek(kw::wcmp_crate) {
             input.parse::<kw::wcmp_crate>()?;
@@ -397,7 +399,7 @@ fn parse_function_config(input: ParseStream<'_>) -> syn::Result<FunctionConfig> 
     for rule in Punctuated::<Rule, Token![,]>::parse_terminated(&content)? {
         match rule.filter {
             Some(filter) => config.push(filter.value(), rule.flags, filter.span()),
-            None => config.set_default(rule.flags, rule.span),
+            None => config.set_default(rule.flags),
         }
     }
     Ok(config)
@@ -407,12 +409,10 @@ fn parse_function_config(input: ParseStream<'_>) -> syn::Result<FunctionConfig> 
 struct Rule {
     filter: Option<LitStr>,
     flags: FunctionFlags,
-    span: Span,
 }
 
 impl Parse for Rule {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let span = input.span();
         let l = input.lookahead1();
         let filter = if l.peek(LitStr) {
             Some(input.parse::<LitStr>()?)
@@ -453,10 +453,6 @@ impl Parse for Rule {
                 break;
             }
         }
-        Ok(Rule {
-            filter,
-            flags,
-            span,
-        })
+        Ok(Rule { filter, flags })
     }
 }

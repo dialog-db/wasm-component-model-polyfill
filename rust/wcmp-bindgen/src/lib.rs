@@ -18,17 +18,15 @@
 //! See the polyfill's documentation of `wcmp::bindgen!` for the
 //! invocation forms, the options, and the code the macro writes.
 
-// The front-end parses every option of Wasmtime's macro, and the
-// generator reads each one as its behaviour lands.
-#![allow(dead_code)]
-
 mod config;
 mod direction;
+mod exports;
 mod function_config;
 mod function_flags;
 mod generator;
 mod imports;
 mod interface_name;
+mod ledger;
 mod lookup;
 mod module_tree;
 mod names;
@@ -36,9 +34,12 @@ mod options;
 mod ownership;
 #[cfg(test)]
 mod tests;
+mod trait_extras;
 mod trappable_error;
+mod trappable_errors;
 mod type_info;
 mod type_mode;
+mod with;
 mod with_entry;
 
 use std::path::{Path, PathBuf};
@@ -99,26 +100,64 @@ use crate::options::Options;
 /// traits `{World}Imports` and `{World}ImportsWithStore<T>`, which
 /// `add_to_linker_imports` registers.
 ///
+/// An imported WIT `async func` is a method of `HostWithStore<T>` that
+/// takes `&Accessor<T, Self>` and returns a future, registered through
+/// `func_wrap_concurrent`. Natively the future and the traits are
+/// `Send`; in the browser they need not be, because the bound is
+/// `wcmp::MaybeSend`.
+///
+/// An imported resource `r` has the traits `HostR`, with its
+/// constructor, its methods, its static functions, and `drop`, and
+/// `HostRWithStore<T>`, which the interface's traits extend. Its
+/// registration names `ResourceType::host::<R>()`. A resource another
+/// interface `use`s is the same resource, registered once, where it is
+/// defined.
+///
+/// Each exported interface has a struct `Guest`, with a `call_*` method
+/// for each function and a getter `r()` for each exported resource `r`,
+/// whose calls take its `ResourceAny`. The world has a struct named
+/// after it, with `instantiate_async`, `new`, `add_to_linker`, one getter
+/// for each exported interface, and a `call_*` method for each function
+/// the world exports. `new` acquires every export as a `TypedFunc`, so
+/// the type checks run there and never in a call; a missing export
+/// fails it with `Error::MissingExport`. Every call into a component is
+/// an `async fn`. A `call_*` method takes `&mut Store<T>` and borrowed
+/// parameters (`&str`, `&[T]`, `&T`), which it copies into the call. An
+/// export with the `async` and `store` flags, and every WIT `async func`
+/// export, takes an `impl AsAccessor` and owned parameters, and calls
+/// `call_concurrent`. The world has no `instantiate`, `{World}Pre`, or
+/// `{World}Indices`.
+///
 /// # Options
 ///
 /// | Option | |
 /// | --- | --- |
-/// | `world`, `path`, `inline`, `interfaces` | the WIT, as in Wasmtime |
-/// | `imports` | the flags of each import, as in Wasmtime: the first rule that matches a function applies, `default` applies when none does, and a rule that matches no function fails the compile |
+/// | `world`, `path`, `inline`, `interfaces` | the WIT, as in Wasmtime; `interfaces` writes no world struct |
+/// | `imports`, `exports` | the flags of each function, as in Wasmtime: the first rule that matches a function applies, `default` applies when none does, and a rule that matches no function fails the compile |
+/// | `with` | an interface, a package, a namespace, a version of a package, or one resource, mapped to Rust code; the most specific key applies, and a key that matches nothing fails the compile. A mapped interface's module must be one `wcmp::bindgen!` wrote: a module from Wasmtime's macro names Wasmtime's types, and the code does not compile |
+/// | `trappable_error_type` | the Rust error a trappable function that returns that WIT error returns, which `convert_*` turns back |
 /// | `additional_derives` | derives each generated record, variant, and enum carries |
 /// | `stringify` | the generated code, as a string |
 /// | `debug`, `include_generated_code_from_file` | the generated code, from a file the macro writes |
 /// | `skip_mut_forwarding_impls` | no `impl Host for &mut T` |
 /// | `require_store_data_send` | `T: Send` natively, and nothing in the browser |
-/// | `anyhow` | trappable methods return `anyhow::Result` |
+/// | `anyhow` | trappable methods return `anyhow::Result`; an error that holds a polyfill `Error` comes back as it, any other as `Error::Host` |
+/// | `ownership: Owning` | the default |
 /// | `wcmp_crate` | the path of the polyfill, for a crate that re-exports it |
 ///
 /// The flags of a function are `trappable` (the method returns a
-/// `Result`, and an `Err` traps the guest), `store`, `tracing`,
-/// `verbose_tracing`, and `exact`. `async` on a plain import is refused:
-/// the polyfill has no host function that holds the store across an
-/// await, so the function is declared `async func` in the WIT instead.
-/// `wasmtime_crate` is refused, and names `wcmp_crate`.
+/// `Result`, and an `Err` traps the guest), `store` (the method takes an
+/// `Access` for the store), `tracing`, `verbose_tracing`, and `exact`.
+/// `async` on an export changes nothing, and with `store` it gives the
+/// accessor form.
+///
+/// The macro refuses, with a compile error that names the option and
+/// the reason: `async` on a plain import, because the polyfill has no
+/// host function that holds the store across an await (declare the
+/// function `async func` instead); `async` on a destructor;
+/// `ownership: Borrowing { … }`; `named_imports`;
+/// `include_component_type`; and `wasmtime_crate`, which names
+/// `wcmp_crate`.
 #[proc_macro]
 pub fn bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let root = std::env::var_os("CARGO_MANIFEST_DIR")

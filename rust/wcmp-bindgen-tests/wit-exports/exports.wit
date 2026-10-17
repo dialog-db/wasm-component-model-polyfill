@@ -1,0 +1,17 @@
+package test:exports;
+
+/// The functions the export tests call.
+interface shapes {
+  record point { x: u32, y: u32 }
+  variant shape { circle(u32), none }
+
+  /// Takes a record and returns a variant.
+  shape-of: func(point: point) -> shape;
+  /// Takes a string, which the call borrows.
+  echo: func(text: string) -> string;
+}
+
+world exports {
+  export shapes;
+  export add: func(a: u32, b: u32) -> u32;
+}

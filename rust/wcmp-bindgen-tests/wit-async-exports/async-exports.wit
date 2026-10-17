@@ -1,0 +1,6 @@
+package test:concurrent-exports;
+
+world async-exports {
+  /// An async function, which takes an accessor with no `exports` flag.
+  export compute: async func(x: u32) -> u32;
+}

@@ -93,6 +93,16 @@ pub struct FutureReader<T> {
     item: PhantomData<fn() -> T>,
 }
 
+// A reader is shown by the end it names, whatever it carries, as
+// Wasmtime's is, so that a type a host derives `Debug` for can hold one.
+impl<T> core::fmt::Debug for FutureReader<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FutureReader")
+            .field("end", &self.end)
+            .finish()
+    }
+}
+
 impl<T: ComponentType + 'static> FutureReader<T> {
     /// Create a future in the store `store` reaches, whose writable
     /// end is `producer`, and return its readable end.

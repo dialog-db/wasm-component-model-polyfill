@@ -1,0 +1,31 @@
+package test:resources;
+
+/// A resource the host defines.
+interface counters {
+  resource counter {
+    constructor(start: u32);
+    get: func() -> u32;
+    increment: func();
+  }
+}
+
+/// An interface that uses the resource of another, an `eq` resource.
+interface users {
+  use counters.{counter};
+  read: func(c: borrow<counter>) -> u32;
+}
+
+/// A resource the guest defines.
+interface guest-made {
+  resource accumulator {
+    constructor(start: u32);
+    total: func() -> u32;
+    add: func(x: u32);
+  }
+}
+
+world resources {
+  import counters;
+  import users;
+  export guest-made;
+}

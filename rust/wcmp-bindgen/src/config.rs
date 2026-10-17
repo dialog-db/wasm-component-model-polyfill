@@ -33,7 +33,7 @@ impl Config {
     /// and no inline source, read `root/wit`.
     pub fn new(options: Options, root: &Path) -> syn::Result<Self> {
         let call_site = Span::call_site();
-        let failed = |error: anyhow::Error| syn::Error::new(call_site, format!("{error:?}"));
+        let failed = |error: anyhow::Error| syn::Error::new(call_site, format!("{error:#}"));
 
         // Every item behind a feature gate generates, as Wasmtime's
         // macro reads them: as though every feature is on.

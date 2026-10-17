@@ -1,0 +1,21 @@
+package test:concurrent;
+
+/// The host functions the async import tests serve.
+interface host {
+  /// Awaits a host future.
+  answer: async func(x: u32) -> u32;
+  /// Reaches a view of the host data with two borrows.
+  touch: func(x: u32) -> u32;
+  /// Calls another component's export and closes a future, through the
+  /// method's own accessor.
+  relay: async func(x: u32) -> u32;
+}
+
+world async-host {
+  import host;
+}
+
+/// The component the `relay` method calls.
+world doubler {
+  export double: func(x: u32) -> u32;
+}

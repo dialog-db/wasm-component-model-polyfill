@@ -18,6 +18,7 @@
 //! API alone and stays in `tests/`.
 
 mod async_start_call;
+mod bindgen_world;
 mod call_concurrent;
 mod callback_export;
 mod canonical_abi;

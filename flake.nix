@@ -974,6 +974,38 @@
               ''
           );
 
+        # The copies of Wasmtime's macro sources and codegen corpus that the
+        # tests of `wcmp::bindgen!` read (`rust/wcmp-bindgen-tests/wasmtime`)
+        # are the ones the pinned Wasmtime crates hold, so the option ledger
+        # and the corpus test cannot drift from the pin.
+        bindgenPinCheck =
+          let
+            manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+            pinned = pkgs.lib.removePrefix "=" manifest.workspace.dependencies.wasmtime;
+            vendor = publishCrane.vendorCargoDeps { cargoLock = ./Cargo.lock; };
+            copies = ./rust/wcmp-bindgen-tests/wasmtime;
+          in
+          pkgs.runCommand "bindgen-pin-check" { } ''
+            find_crate() {
+              find -L ${vendor} -maxdepth 3 -type d -name "$1-${pinned}" | head -n 1
+            }
+            macro=$(find_crate wasmtime-internal-component-macro)
+            generator=$(find_crate wasmtime-internal-wit-bindgen)
+            test -n "$macro" -a -n "$generator" || {
+              echo "the vendored crates hold no Wasmtime macro at ${pinned}" >&2
+              exit 1
+            }
+            status=0
+            diff -u "$macro/src/bindgen.rs" ${copies}/bindgen.rs.txt || status=1
+            diff -u "$generator/src/config.rs" ${copies}/config.rs.txt || status=1
+            diff -ru "$macro/tests/codegen" ${copies}/codegen || status=1
+            if [ "$status" != 0 ]; then
+              echo "rust/wcmp-bindgen-tests/wasmtime differs from Wasmtime ${pinned}; see its README" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
+
         # The wasm32 test runner (see `.cargo/config.toml`). nextest runs
         # each browser test in its own runner process, and the stock
         # `wasm-bindgen-test-runner` boots a ChromeDriver and a headless
@@ -3223,6 +3255,9 @@
             zena-wasmtime = zenaWasmtime;
             zena-wasmtime-run = zenaWasmtimeCheck;
             wasmtime-version = wasmtimeVersionCheck;
+            # The copies the tests of `wcmp::bindgen!` read are Wasmtime's at
+            # the pin: see `bindgenPinCheck`.
+            bindgen-pin = bindgenPinCheck;
             # The doctests are not in a nextest archive (nextest does not run
             # them), so they get a derivation of their own: the workspace's
             # `cargo test --doc` against the `dev` dependency bundle.

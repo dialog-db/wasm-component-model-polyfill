@@ -37,28 +37,6 @@ impl FunctionFlags {
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
-
-    /// Whether no flag is set.
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The flags of this set, by their names in an invocation, in
-    /// Wasmtime's order.
-    pub fn names(self) -> Vec<&'static str> {
-        [
-            (Self::ASYNC, "async"),
-            (Self::TRAPPABLE, "trappable"),
-            (Self::STORE, "store"),
-            (Self::TRACING, "tracing"),
-            (Self::VERBOSE_TRACING, "verbose_tracing"),
-            (Self::EXACT, "exact"),
-        ]
-        .into_iter()
-        .filter(|(flag, _)| self.contains(*flag))
-        .map(|(_, name)| name)
-        .collect()
-    }
 }
 
 impl BitOr for FunctionFlags {

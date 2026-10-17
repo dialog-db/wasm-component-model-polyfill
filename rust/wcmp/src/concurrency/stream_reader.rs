@@ -98,6 +98,16 @@ pub struct StreamReader<T> {
     item: PhantomData<fn() -> T>,
 }
 
+// A reader is shown by the end it names, whatever it carries, as
+// Wasmtime's is, so that a type a host derives `Debug` for can hold one.
+impl<T> core::fmt::Debug for StreamReader<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StreamReader")
+            .field("end", &self.end)
+            .finish()
+    }
+}
+
 impl<T: ComponentType + 'static> StreamReader<T> {
     /// Create a stream in the store `store` reaches, whose writable
     /// end is `producer`, and return its readable end.

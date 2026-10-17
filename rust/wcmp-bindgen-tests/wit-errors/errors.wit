@@ -1,0 +1,17 @@
+package test:errors;
+
+/// The host functions the error tests serve.
+interface host {
+  enum fs-error { not-found, denied }
+
+  /// Returns a `result` whose error type `trappable_error_type` maps.
+  read: func(code: u32) -> result<u32, fs-error>;
+  /// Fails with the host's own error.
+  fail: func(code: u32) -> u32;
+  /// Fails with a polyfill error the host passes on.
+  table-fail: func() -> u32;
+}
+
+world errors {
+  import host;
+}
