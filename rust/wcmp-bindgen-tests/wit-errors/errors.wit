@@ -12,6 +12,22 @@ interface host {
   table-fail: func() -> u32;
 }
 
+/// The host functions of the error tests whose errors a method that
+/// reaches the store returns.
+interface store-host {
+  enum fs-error { not-found, denied }
+
+  /// A `store`-flag function whose error type `trappable_error_type`
+  /// maps.
+  read-store: func(code: u32) -> result<u32, fs-error>;
+  /// An async function whose error type `trappable_error_type` maps.
+  read-async: async func(code: u32) -> result<u32, fs-error>;
+}
+
 world errors {
   import host;
+}
+
+world store-errors {
+  import store-host;
 }
