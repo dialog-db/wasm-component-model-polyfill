@@ -287,7 +287,8 @@ pub use crate::component::{
 pub use crate::concurrency::{
     Accessor, AsAccessor, Destination, EndKind, ErrorContext, ErrorContextAny, FutureAny,
     FutureConsumer, FutureProducer, FutureReader, GuardedFutureReader, GuardedStreamReader,
-    HostFuture, Source, StreamAny, StreamConsumer, StreamProducer, StreamReader, StreamResult,
+    HostFuture, MaybeSend, Source, StreamAny, StreamConsumer, StreamProducer, StreamReader,
+    StreamResult,
 };
 pub use crate::engine::Engine;
 pub use crate::engine_config::EngineConfig;
@@ -315,6 +316,7 @@ pub use crate::types::{
     ValueType, VariantCase, VariantType,
 };
 pub use crate::value::{Val, ValField};
+pub use wcmp_bindgen::bindgen;
 pub use wcmp_macros::{ComponentType, Lift, Lower, flags};
 
 // The crate's own conformance harness registers the item Wasmtime's
@@ -341,6 +343,21 @@ pub mod __private {
         typecheck_enum, typecheck_flags, typecheck_record, typecheck_variant,
     };
     pub use wasmtime_environ::component::CanonicalAbiInfo;
+
+    // What the code `wcmp::bindgen!` writes names: the `anyhow` of
+    // `anyhow: true`, the `tracing` of the `tracing` flag, and the
+    // identity of an interface it registers under.
+    pub use anyhow;
+    pub use tracing;
+
+    /// The identity of the interface `name` names, as a generated
+    /// `add_to_linker` registers under it. The macro read `name` from
+    /// WIT, so it parses; a name that does not is an internal error.
+    pub fn interface_id(name: &str) -> crate::Result<crate::InterfaceIdentifier> {
+        name.parse().map_err(|error| crate::Error::Internal {
+            message: format!("the interface name `{name}` does not parse: {error}"),
+        })
+    }
 }
 
 // The crate's own unit tests reach a browser in the web lane, where

@@ -1,0 +1,24 @@
+package test:imports;
+
+/// The host functions the import tests serve.
+interface host {
+  variant shape { circle(u32), none }
+  flags permissions { read, write }
+  record report { area: u32, writable: bool }
+
+  /// Takes a variant and a flags value and returns a record.
+  describe: func(shape: shape, permissions: permissions) -> report;
+  /// Fails with the host's own error, under the `trappable` flag.
+  fail: func(code: u32) -> u32;
+  /// Returns a future the host makes, under the `store` flag, with the
+  /// shape of `wasi:webgpu`'s `lost`.
+  lost: func() -> future<u32>;
+
+  /// A function behind a feature gate, which the guest does not import.
+  @unstable(feature = experimental)
+  gated: func() -> u32;
+}
+
+world imports {
+  import host;
+}

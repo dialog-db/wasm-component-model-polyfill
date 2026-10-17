@@ -1,0 +1,6 @@
+package test:versions;
+
+world versions {
+  import my:dep/a@0.1.0;
+  import my:dep/a@0.2.0;
+}

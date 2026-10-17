@@ -10,8 +10,11 @@
 //!
 //! The type holds its flags as the words the Canonical ABI lays them
 //! out in: one `u8` for at most 8 flags, one `u16` for at most 16, and
-//! one `u32` for each 32 beyond that. It takes no crate path, as in
-//! Wasmtime: the code it writes names `::wcmp`.
+//! one `u32` for each 32 beyond that. The code it writes names `::wcmp`,
+//! as Wasmtime's names `wasmtime`. An outer `#[component(wcmp_crate =
+//! path)]` before the type's name moves it, which Wasmtime's `flags!`
+//! does not take: `wcmp::bindgen!` writes it for its `wcmp_crate`
+//! option.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -36,14 +39,32 @@ impl Parse for Flag {
     }
 }
 
-/// The input of `flags!`: the type's name and its flags.
+/// The input of `flags!`: the crate path, the type's name, and its
+/// flags.
 pub struct Flags {
+    docs: Vec<syn::Attribute>,
+    crate_path: Option<syn::Path>,
     name: syn::Ident,
     flags: Vec<Flag>,
 }
 
 impl Parse for Flags {
     fn parse(input: ParseStream) -> Result<Self> {
+        let mut docs = Vec::new();
+        let mut crate_path = None;
+        for attribute in syn::Attribute::parse_outer(input)? {
+            if attribute.path().is_ident("doc") {
+                docs.push(attribute);
+            } else if attribute.path().is_ident("component") {
+                crate_path = Some(super::component::parse_crate_path(&attribute)?);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    attribute,
+                    "only documentation and `#[component(wcmp_crate = path)]` may precede \
+                     the type's name",
+                ));
+            }
+        }
         let name = input.parse::<syn::Ident>()?;
         let content;
         braced!(content in input);
@@ -51,7 +72,12 @@ impl Parse for Flags {
             .parse_terminated(Flag::parse, Token![;])?
             .into_iter()
             .collect();
-        Ok(Self { name, flags })
+        Ok(Self {
+            docs,
+            crate_path,
+            name,
+            flags,
+        })
     }
 }
 
@@ -71,8 +97,12 @@ fn words(count: usize) -> (TokenStream, usize, usize) {
 
 /// Expand `flags!`.
 pub fn expand(flags: &Flags) -> Result<TokenStream> {
-    let c = quote!(::wcmp);
+    let c = match &flags.crate_path {
+        Some(path) => quote!(#path),
+        None => quote!(::wcmp),
+    };
     let name = &flags.name;
+    let docs = &flags.docs;
     let count = flags.flags.len();
     let (word, width, word_count) = words(count);
     let fields: Vec<_> = (0..word_count)
@@ -147,6 +177,7 @@ pub fn expand(flags: &Flags) -> Result<TokenStream> {
         .map(|field| quote!(#[doc(hidden)] #field: #word,));
 
     Ok(quote! {
+        #(#docs)*
         #[derive(Copy, Clone, Default)]
         pub struct #name { #(#field_decls)* }
 

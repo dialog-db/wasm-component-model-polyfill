@@ -224,6 +224,7 @@ mod item;
 mod item_action;
 mod item_kind;
 mod lower_kind;
+mod maybe_send;
 mod outcome;
 mod pairing;
 mod parked_thread;
@@ -293,6 +294,7 @@ pub use error_context::ErrorContext;
 pub use error_context_any::ErrorContextAny;
 pub use error_context_id::ErrorContextId;
 pub use event::Event;
+pub use maybe_send::MaybeSend;
 // An event code is spelled outside this module only by the tests that
 // leave a copy event on an end by hand; the built-ins that finish a
 // copy reach the code through the task tables.

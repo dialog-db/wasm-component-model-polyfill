@@ -2,6 +2,8 @@
 members = [
   "rust/wcmp",
   "rust/wcmp-bench",
+  "rust/wcmp-bindgen",
+  "rust/wcmp-bindgen-tests",
   "rust/wcmp-demo",
   "rust/wcmp-demo-lane",
   "rust/wcmp-macros",
@@ -26,6 +28,10 @@ repository = "https://github.com/cdata/wasm-component-model-polyfill"
 
 [workspace.dependencies]
 anyhow = "1"
+# The Rust names of WIT names in the code `wcmp::bindgen!` writes, as
+# Wasmtime's generator spells them. The version is the one Wasmtime's own
+# generator already links, so the graph keeps one.
+heck = "0.5"
 # The demo's async plumbing: a lock that waits, channels, and a set of
 # futures that a store's driver polls together.
 futures = "0.3"
@@ -86,9 +92,20 @@ wasmtime-environ = { version = "=49.0.0-rc.1", default-features = false, feature
 # and it is this workspace's. Only the p2 and p3 interfaces are linked.
 wasmtime-wasi = { version = "=49.0.0-rc.1", default-features = false, features = ["p2", "p3"] }
 wat = "1"
+# The WIT parser `wcmp::bindgen!` reads WIT with, at compile time on the
+# build machine. The version is the one Wasmtime 49's generator links, so
+# the graph keeps one.
+wit-parser = "0.258"
 
 [workspace.dependencies.wcmp]
 path = "./rust/wcmp"
+
+[workspace.dependencies.wcmp-bindgen]
+path = "./rust/wcmp-bindgen"
+# The polyfill re-exports the macro, so a published polyfill depends on the
+# published macro, and the path carries the version too. It moves with the
+# workspace version.
+version = "0.1.0"
 
 [workspace.dependencies.wcmp-macros]
 path = "./rust/wcmp-macros"

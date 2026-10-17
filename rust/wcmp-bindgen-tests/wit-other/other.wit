@@ -1,0 +1,9 @@
+package test:other;
+
+interface sizes {
+  enum size { small, large }
+}
+
+world other {
+  import sizes;
+}

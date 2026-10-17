@@ -1,0 +1,34 @@
+[package]
+name = "wcmp-bindgen-tests"
+description = "The tests of wcmp::bindgen!: the code it writes, natively and in the browser"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+# The tests invoke the macro from this crate, so `bindgen!()` with no path
+# reads `wit/` beside this manifest, and every relative path resolves
+# against this directory.
+[dependencies]
+wcmp = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+wcmp-macros = { workspace = true }
+# The backend choice the polyfill's own tests make, under
+# `rust/wcmp/tests/support/backend.rs`, which the tests include by path.
+wcmp-wasm-core = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+wcmp-wasm-core-wasmi = { workspace = true }
+wcmp-wasm-core-wasmtime = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+wasm-bindgen-test = { workspace = true }
+wcmp-wasm-core-web = { workspace = true }

@@ -1,0 +1,22 @@
+package test:types;
+
+/// The types the front-end tests generate.
+interface shapes {
+  /// A point.
+  record point { x: u32, y: u32 }
+  variant shape { circle(u32), none }
+  enum level { info, error }
+  flags permissions { read, write }
+  type points = list<point>;
+  type maybe-point = option<point>;
+  type pair = tuple<u32, string>;
+
+  /// A type behind a feature gate, which generates as though the
+  /// feature is on.
+  @unstable(feature = experimental)
+  record gated { value: u32 }
+}
+
+world types {
+  import shapes;
+}

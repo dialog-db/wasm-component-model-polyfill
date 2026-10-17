@@ -1269,10 +1269,12 @@
         publishCrane = (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
         # The crates a consumer of the polyfill downloads: the polyfill, the
-        # runtime layer and its three published backends, and the macros the
-        # browser backend runs when it builds. The order is the order they
+        # runtime layer and its three published backends, the macros the
+        # browser backend runs when it builds, and `bindgen!`, which the
+        # polyfill re-exports. The order is the order they
         # publish in: each comes after every crate it depends on.
         publishedCrates = [
+          "wcmp-bindgen"
           "wcmp-macros"
           "wcmp-wasm-core"
           "wcmp-wasm-core-wasmi"

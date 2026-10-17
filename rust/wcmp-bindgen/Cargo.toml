@@ -1,0 +1,23 @@
+[package]
+name = "wcmp-bindgen"
+description = "The bindgen! macro of the Wasm Component Model Polyfill, which writes host bindings from WIT"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# The Rust names of WIT names, as Wasmtime's generator spells them.
+heck = { workspace = true }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+# The WIT parser. The macro runs on the build machine, so no browser
+# binary contains it.
+wit-parser = { workspace = true }
+# The errors `wit-parser` reports.
+anyhow = { workspace = true }

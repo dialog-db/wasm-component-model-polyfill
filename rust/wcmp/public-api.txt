@@ -2,6 +2,7 @@ pub mod wcmp
 pub use wcmp::ComponentType
 pub use wcmp::Lift
 pub use wcmp::Lower
+pub use wcmp::bindgen
 pub use wcmp::flags
 #[non_exhaustive] pub enum wcmp::AbiCause
 pub wcmp::AbiCause::CopyBudgetSpent
@@ -1532,6 +1533,8 @@ impl<T: wcmp::Lower, const N: usize> wcmp::Lower for [T; N]
 impl<T: wcmp::Lower> wcmp::Lower for [T]
 impl<T: wcmp::Lower> wcmp::Lower for alloc::vec::Vec<T>
 impl<T: wcmp::Lower> wcmp::Lower for core::option::Option<T>
+pub trait wcmp::MaybeSend: core::marker::Send
+impl<T: core::marker::Send + ?core::marker::Sized> wcmp::MaybeSend for T
 pub trait wcmp::StreamConsumer<D: 'static>: core::marker::Send + 'static
 pub type wcmp::StreamConsumer::Item
 pub fn wcmp::StreamConsumer::poll_consume(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>, &mut wcmp::StoreContext<'_, D>, wcmp::Source<'_, Self::Item>, bool) -> core::task::poll::Poll<wcmp::Result<wcmp::StreamResult>>

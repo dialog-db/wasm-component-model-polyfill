@@ -99,6 +99,18 @@ impl Parse for ComponentAttr {
 }
 
 /// The WIT name a field or a case gives with `#[component(name = "…")]`.
+/// The path of `#[component(wcmp_crate = path)]`, which `flags!` takes
+/// before the type's name.
+pub fn parse_crate_path(attribute: &syn::Attribute) -> Result<syn::Path> {
+    match attribute.parse_args()? {
+        ComponentAttr::WcmpCrate(path) => Ok(path),
+        ComponentAttr::Style(_) => Err(Error::new_spanned(
+            attribute,
+            "only `wcmp_crate = path` may precede the name of a flags type",
+        )),
+    }
+}
+
 pub fn find_rename(attributes: &[syn::Attribute]) -> Result<Option<syn::LitStr>> {
     let mut name = None;
     for attribute in attributes {

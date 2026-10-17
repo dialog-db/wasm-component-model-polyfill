@@ -36,6 +36,10 @@ wasm-encoder = { workspace = true }
 # target lets the polyfill share one component-translation path
 # instead of maintaining a parallel hand-rolled walker on the web.
 wasmtime-environ = { workspace = true, features = ["component-model", "compile"] }
+# `bindgen!`, which the crate re-exports: the host bindings it writes from
+# WIT. The macro runs on the build machine, so no browser binary contains
+# its WIT parser.
+wcmp-bindgen = { workspace = true }
 # The derive macros of the typed value traits and `flags!`, which the
 # crate re-exports, and the crate's own test attribute and fixtures.
 wcmp-macros = { workspace = true }

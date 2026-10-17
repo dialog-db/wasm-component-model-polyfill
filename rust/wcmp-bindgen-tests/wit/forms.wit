@@ -1,0 +1,9 @@
+package test:forms;
+
+interface shapes {
+  record point { x: u32, y: u32 }
+}
+
+world forms {
+  import shapes;
+}

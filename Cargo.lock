@@ -2325,6 +2325,7 @@ dependencies = [
  "wasmparser 0.258.0",
  "wasmtime-environ",
  "wast",
+ "wcmp-bindgen",
  "wcmp-macros",
  "wcmp-scenario",
  "wcmp-wasm-core",
@@ -2345,6 +2346,36 @@ dependencies = [
  "wasm-bindgen-test",
  "wcmp",
  "wcmp-macros",
+ "wcmp-wasm-core-wasmi",
+ "wcmp-wasm-core-wasmtime",
+ "wcmp-wasm-core-web",
+]
+
+[[package]]
+name = "wcmp-bindgen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+ "wit-parser 0.258.0",
+]
+
+[[package]]
+name = "wcmp-bindgen-tests"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "js-sys",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wcmp",
+ "wcmp-macros",
+ "wcmp-wasm-core",
  "wcmp-wasm-core-wasmi",
  "wcmp-wasm-core-wasmtime",
  "wcmp-wasm-core-web",
