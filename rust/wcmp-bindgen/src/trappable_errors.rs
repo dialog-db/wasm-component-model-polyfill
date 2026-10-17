@@ -32,7 +32,8 @@ impl Generator<'_> {
     /// Find the WIT type of each `trappable_error_type` entry, and write
     /// the alias the generated code names it by at the root, as
     /// `_TrappableError0`. An entry whose WIT path names no type fails
-    /// the compile, as in Wasmtime.
+    /// the compile, as in Wasmtime, and so does an entry for a type an
+    /// earlier entry maps.
     pub fn resolve_trappable_errors(&mut self) -> syn::Result<TokenStream> {
         let mut aliases = TokenStream::new();
         for (index, entry) in self.config.options.trappable_error_type.iter().enumerate() {
@@ -59,9 +60,19 @@ impl Generator<'_> {
                     ),
                 ));
             };
+            if self.trappable_errors.insert(ty, alias.clone()).is_some() {
+                // Wasmtime asserts that no earlier entry mapped the type.
+                return Err(syn::Error::new(
+                    entry.span,
+                    format!(
+                        "the `trappable_error_type` name `{}` names a WIT type \
+                         an earlier entry maps",
+                        entry.wit_path
+                    ),
+                ));
+            }
             let rust = &entry.rust_type;
             aliases.extend(quote!(type #alias = #rust;));
-            self.trappable_errors.insert(ty, alias);
         }
         Ok(aliases)
     }

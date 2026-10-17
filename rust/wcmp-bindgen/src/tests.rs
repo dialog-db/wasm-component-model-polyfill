@@ -89,6 +89,65 @@ fn it_refuses_a_trappable_error_type_that_names_no_wit_type() {
     );
 }
 
+#[test]
+fn it_refuses_a_second_trappable_error_type_for_one_wit_type() {
+    let message = refusal(quote!({
+        inline: "
+            package test:refusals;
+
+            interface log {
+                enum log-error { full }
+                write: func(message: string) -> result<_, log-error>;
+            }
+
+            world refusals {
+                import log;
+            }
+        ",
+        trappable_error_type: {
+            "test:refusals/log.log-error" => FirstError,
+            "test:refusals/log.log-error" => SecondError,
+        },
+    }));
+    assert!(
+        message.contains("an earlier entry maps")
+            && message.contains("test:refusals/log.log-error"),
+        "the refusal names the second entry: {message}"
+    );
+}
+
+#[test]
+fn it_passes_the_docs_of_a_flags_type_into_flags() {
+    let code = expand(
+        quote!({
+            inline: "
+                package test:docs;
+
+                interface files {
+                    /// The permissions of a file.
+                    flags perms { read, write }
+                }
+
+                world docs {
+                    import files;
+                }
+            ",
+        }),
+        Path::new("."),
+    )
+    .expect("the invocation expands")
+    .to_string();
+    let call = code
+        .find("flags !")
+        .map(|start| &code[start..])
+        .expect("the expansion calls `flags!`");
+    let body = &call[..call.find(';').expect("the call ends")];
+    assert!(
+        body.contains("The permissions of a file."),
+        "the docs are inside the call, where `flags!` puts them on the type: {body}"
+    );
+}
+
 /// A world with a resource, for the refusals of its destructor.
 const RESOURCE_WORLD: &str = "
     package test:refusals;

@@ -585,14 +585,13 @@ impl<'a> Generator<'a> {
         let mut with_store = vec![quote!(#c::HasData)];
         let mut host = Vec::new();
         let mut registrations = Vec::new();
-        for (key, path) in &self.imported_interfaces {
+        for (_, path) in &self.imported_interfaces {
             let segments = path
                 .iter()
                 .map(|segment| ident(segment))
                 .collect::<Vec<_>>();
             with_store.push(quote!(#(#segments)::*::HostWithStore<_T>));
             host.push(quote!(#(#segments)::*::Host));
-            let _ = key;
             registrations
                 .push(quote!(#(#segments)::*::add_to_linker::<_T, _D>(linker, host_getter)?;));
         }
@@ -923,12 +922,11 @@ impl<'a> Generator<'a> {
         let ty = &self.resolve.types[id];
         let docs = Self::rustdoc(&ty.docs);
         let rust_name = ident(&to_rust_upper_camel_case(name));
-        let c = &self.c;
         let definition = match &ty.kind {
             TypeDefKind::Record(record) => self.type_record(scope, id, &rust_name, record),
             TypeDefKind::Variant(variant) => self.type_variant(scope, id, &rust_name, variant),
             TypeDefKind::Enum(enum_) => self.type_enum(id, &rust_name, enum_),
-            TypeDefKind::Flags(flags) => self.type_flags(&rust_name, flags),
+            TypeDefKind::Flags(flags) => return self.type_flags(id, &rust_name, flags, &docs),
             TypeDefKind::Resource => return self.type_resource(scope, id, name, &docs),
             TypeDefKind::Handle(handle) => {
                 let handle = self.handle(scope, handle);
@@ -961,11 +959,21 @@ impl<'a> Generator<'a> {
             }
             TypeDefKind::Unknown => TokenStream::new(),
         };
-        let size = Literal::usize_unsuffixed(self.sizes.size(&Type::Id(id)).size_wasm32());
-        let align = Literal::usize_unsuffixed(self.sizes.align(&Type::Id(id)).align_wasm32());
+        let layout = self.layout_check(id, &rust_name);
         quote! {
             #docs
             #definition
+            #layout
+        }
+    }
+
+    /// The compile-time check that the Rust type `rust_name` of the WIT
+    /// type `id` has the WIT type's size and alignment.
+    fn layout_check(&self, id: TypeId, rust_name: &syn::Ident) -> TokenStream {
+        let c = &self.c;
+        let size = Literal::usize_unsuffixed(self.sizes.size(&Type::Id(id)).size_wasm32());
+        let align = Literal::usize_unsuffixed(self.sizes.align(&Type::Id(id)).align_wasm32());
+        quote! {
             const _: () = {
                 assert!(#size == <#rust_name as #c::ComponentType>::SIZE32);
                 assert!(#align == <#rust_name as #c::ComponentType>::ALIGN32 as usize);
@@ -1195,8 +1203,15 @@ impl<'a> Generator<'a> {
         }
     }
 
-    /// A WIT flags type, through the polyfill's `flags!`.
-    fn type_flags(&self, name: &syn::Ident, flags: &Flags) -> TokenStream {
+    /// A WIT flags type, through the polyfill's `flags!`, which takes the
+    /// type's docs: rustdoc reads no attribute on a macro call.
+    fn type_flags(
+        &self,
+        id: TypeId,
+        name: &syn::Ident,
+        flags: &Flags,
+        docs: &TokenStream,
+    ) -> TokenStream {
         let c = &self.c;
         let crate_path = self
             .config
@@ -1209,8 +1224,10 @@ impl<'a> Generator<'a> {
             let flag_name = format_ident!("{}", flag.name.to_shouty_snake_case());
             quote!(#[component(name = #wit)] const #flag_name;)
         });
+        let layout = self.layout_check(id, name);
         quote! {
-            #c::flags!(#crate_path #name { #(#flags)* });
+            #c::flags!(#docs #crate_path #name { #(#flags)* });
+            #layout
         }
     }
 
