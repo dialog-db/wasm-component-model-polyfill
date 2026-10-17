@@ -247,6 +247,18 @@ impl reaching_the_store::test::errors::store_host::HostWithStore<Reaching> for H
     }
 
     async fn read_async(accessor: &Accessor<Reaching, Self>, code: u32) -> Result<u32, ReadError> {
+        // Pending once, so the call and its conversion finish on a later
+        // poll than the one that started them.
+        let mut polled = false;
+        core::future::poll_fn(|context| {
+            if polled {
+                return core::task::Poll::Ready(());
+            }
+            polled = true;
+            context.waker().wake_by_ref();
+            core::task::Poll::Pending
+        })
+        .await;
         accessor
             .with(|mut access| access.get().reads += 1)
             .expect("the future reaches the store");
@@ -500,6 +512,13 @@ async fn it_traps_a_store_flag_method_and_an_async_method_when_convert_fails() {
             std::error::Error::source(&error).and_then(|source| source.downcast_ref::<ReadError>()),
             Some(&ReadError::Broken),
             "{name} returns the error `convert_fs_error` failed with, got {error:?}"
+        );
+        let after = run_reaching(&mut store, &instance, name, 0)
+            .await
+            .expect_err("the trap poisoned the store");
+        assert!(
+            matches!(after, Error::Task(TaskCause::CannotEnter)),
+            "{name}: got {after:?}"
         );
     }
 }
