@@ -650,11 +650,39 @@ impl<T: 'static> Scheduler<T> {
         self.host_tasks.push(task);
     }
 
+    /// Make the entry of a host task that is about to take its first
+    /// poll outside the store's host tasks, and answer its key and
+    /// the waker to poll it with, which is the task's own. `subtask`
+    /// is the subtask the task resolves when it is a call's. The task
+    /// joins the entry through
+    /// [`restore_host_task`](Self::restore_host_task) or
+    /// [`park_reserved_call`](Self::park_reserved_call) when the poll
+    /// leaves it pending, and the entry goes through
+    /// [`complete_host_task`](Self::complete_host_task) when it does
+    /// not.
+    pub fn reserve_host_task(&mut self, subtask: Option<SubtaskId>) -> (u64, Waker) {
+        self.host_tasks.reserve(subtask)
+    }
+
+    /// Park the host task of a synchronous lower in the entry
+    /// [`reserve_host_task`](Self::reserve_host_task) made for it
+    /// under `key`, as [`park_call`](Self::park_call) parks one.
+    pub fn park_reserved_call(&mut self, key: u64, task: HostTask<T>) {
+        let subtask = task.subtask();
+        self.host_tasks.restore(key, task);
+        if let Some(subtask) = subtask {
+            self.parked_calls.insert(subtask, key);
+        }
+    }
+
     /// Park the host task of a synchronous lower among the store's
     /// host tasks, where turns poll it as they poll every other. It
     /// counts as woken, as every task that joins does. A task that
     /// resolves no subtask is not a call, and joins as any other
-    /// host task does.
+    /// host task does. The store parks a call through
+    /// [`park_reserved_call`](Self::park_reserved_call), and only tests
+    /// park one this way.
+    #[cfg(test)]
     pub fn park_call(&mut self, task: HostTask<T>) {
         let subtask = task.subtask();
         let key = self.host_tasks.push(task);

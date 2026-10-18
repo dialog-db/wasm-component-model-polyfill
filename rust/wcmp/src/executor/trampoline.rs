@@ -767,9 +767,9 @@ fn invoke_trampoline<T: 'static>(
             // handed, exactly as the future reaches it from a later
             // poll; without the scope such a reach would find an
             // empty slot and fail. The waker is the running turn's,
-            // or one that does nothing when no turn is running, which
-            // is the waker the first poll of the host task takes as
-            // well.
+            // or one that does nothing when no turn is running. The
+            // closure only builds the future: its first poll comes
+            // later, with the host task's own waker.
             HostFuncKind::Concurrent(start, _) => {
                 let mut store = StoreContext::new(store_ctx.as_context_mut());
                 let accessor: Accessor<T> = Accessor::new(store.internal().id());

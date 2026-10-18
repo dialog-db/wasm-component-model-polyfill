@@ -32,13 +32,12 @@ use super::subtask_id::SubtaskId;
 /// they were woken, never in an order a hash would give.
 ///
 /// A task that joins the set counts as woken, so the turn after it
-/// joined polls it. That is what keeps the first poll a trampoline
-/// makes before it returns to the guest correct: that poll carries
-/// the waker of the running turn, or one that does nothing when no
-/// turn is running, rather than the task's own, and a wake sent to
-/// either would otherwise never mark the task. The poll the next
-/// turn makes carries the task's own waker, and every poll after it
-/// does too.
+/// joined polls it. A task that a trampoline polls once before it
+/// returns to the guest has its entry made before that poll, through
+/// [`reserve`](Self::reserve), and the first poll carries the task's
+/// own waker as every later one does. A future may keep the waker of
+/// its first poll and wake only that one, as `callback-future` does,
+/// and that wake still marks the task.
 ///
 /// A call its caller cancelled is marked as aborted and woken, and
 /// the turn that takes it next drops it without polling it. The mark
@@ -144,6 +143,25 @@ impl<T: 'static> HostTaskSet<T> {
     /// Give `task` to the set, and answer the key it is held under.
     /// It counts as woken, so the next turn polls it.
     pub fn push(&mut self, task: HostTask<T>) -> u64 {
+        let (key, _) = self.reserve(task.subtask());
+        self.restore(key, task);
+        key
+    }
+
+    /// Make the entry of a task that is about to take its first poll
+    /// outside the set, and answer the key it is held under and the
+    /// waker to poll it with. `subtask` is the subtask the task
+    /// resolves when it is a call's.
+    ///
+    /// The entry is the one a task out being polled has: it holds no
+    /// task, and it counts as a call when `subtask` names one. The
+    /// task joins it through [`restore`](Self::restore) when the
+    /// first poll leaves it pending, and the entry goes through
+    /// [`complete`](Self::complete) when it does not. Either way the
+    /// first poll and every later one carry the same waker, and a
+    /// wake the first poll's waker gets marks the task. The task
+    /// counts as woken, as one that [`push`](Self::push) gives does.
+    pub fn reserve(&mut self, subtask: Option<SubtaskId>) -> (u64, Waker) {
         let key = self.next_key;
         self.next_key += 1;
         let wake = Arc::new(TaskWake {
@@ -153,7 +171,6 @@ impl<T: 'static> HostTaskSet<T> {
         });
         wake.enqueue();
         let waker = Waker::from(wake.clone());
-        let subtask = task.subtask();
         if subtask.is_some() {
             self.calls.fetch_add(1, Ordering::AcqRel);
         }
@@ -162,12 +179,13 @@ impl<T: 'static> HostTaskSet<T> {
             Entry {
                 subtask,
                 aborted: false,
-                task: Some(task),
+                task: None,
                 wake,
-                waker,
+                waker: waker.clone(),
             },
         );
-        key
+        self.out += 1;
+        (key, waker)
     }
 
     /// Mark the host task of the call `subtask` records as aborted,
@@ -276,7 +294,8 @@ impl<T: 'static> HostTaskSet<T> {
     }
 
     /// Put back a task [`take_woken`](Self::take_woken) handed out
-    /// under `key`, which is still pending.
+    /// under `key`, which is still pending, or give the set the task
+    /// whose entry [`reserve`](Self::reserve) made.
     pub fn restore(&mut self, key: u64, task: HostTask<T>) {
         if let Some(entry) = self.tasks.get_mut(&key)
             && entry.task.is_none()
@@ -287,7 +306,8 @@ impl<T: 'static> HostTaskSet<T> {
     }
 
     /// Let go of the task [`take_woken`](Self::take_woken) handed out
-    /// under `key`, which has completed.
+    /// under `key`, which has completed, or of the entry
+    /// [`reserve`](Self::reserve) made.
     pub fn complete(&mut self, key: u64) {
         let Some(entry) = self.tasks.remove(&key) else {
             return;
@@ -505,6 +525,39 @@ mod tests {
             vec![first, second],
             "the key the nested take kept went back ahead of the later wake"
         );
+    }
+
+    #[wcmp_macros::test]
+    fn it_polls_a_reserved_task_with_the_waker_of_its_first_poll_from_then_on() {
+        let mut set = HostTaskSet::new();
+        let (key, first) = set.reserve(Some(SubtaskId::new(0, 0)));
+        assert_eq!(set.len(), 0, "the task is out for its first poll");
+        assert_eq!(
+            set.call_count().load(Ordering::Acquire),
+            1,
+            "the reserved entry counts as a call from the start"
+        );
+        set.restore(key, parked(0));
+        assert_eq!(set.len(), 1);
+
+        let taken = take_and_restore(&mut set);
+        assert_eq!(keys(&taken), vec![key], "the task counts as woken");
+        assert!(
+            taken[0].1.will_wake(&first),
+            "the next poll carries the waker of the first"
+        );
+
+        first.wake_by_ref();
+        assert_eq!(
+            keys(&take_and_restore(&mut set)),
+            vec![key],
+            "a wake of the first poll's waker marks the task"
+        );
+
+        let (other, _) = set.reserve(None);
+        set.complete(other);
+        assert_eq!(set.len(), 1, "a completed reservation leaves nothing");
+        assert_eq!(set.call_count().load(Ordering::Acquire), 1);
     }
 
     #[wcmp_macros::test]

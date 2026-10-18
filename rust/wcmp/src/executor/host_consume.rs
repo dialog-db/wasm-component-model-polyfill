@@ -187,7 +187,7 @@ enum Route {
 
 /// Serve the write a guest started against `reader`, the readable end
 /// the host serves. With `now`, the end is polled once, here, with the
-/// waker of the turn that is running: a poll that is ready completes
+/// task's own waker: a poll that is ready completes
 /// the write before this returns, and a pending one joins the store's
 /// host tasks. A failure of either is the built-in's. Without `now`
 /// the task joins the store's host tasks unpolled, and the next turn
@@ -198,7 +198,7 @@ pub fn serve_host_write<T: 'static>(
     reader: EndId,
     now: bool,
 ) -> Result<()> {
-    let mut task = HostTask::copy(
+    let task = HostTask::copy(
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
             // A poll that failed before it reached the store could not
             // forget the waker a pending poll kept; this forgets it.
@@ -212,14 +212,7 @@ pub fn serve_host_write<T: 'static>(
         store.internal().push_host_task(task);
         return Ok(());
     }
-    let waker = store.internal().active_waker();
-    match task.poll(store, &waker) {
-        Poll::Ready(outcome) => task.lower(store, outcome),
-        Poll::Pending => {
-            store.internal().push_host_task(task);
-            Ok(())
-        }
-    }
+    store.internal().start_host_copy(task)
 }
 
 /// The body of the host task of a write against a host end: one poll

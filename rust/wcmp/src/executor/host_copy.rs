@@ -59,12 +59,12 @@ const POINTER_ARGUMENT: AbiPosition = AbiPosition::Argument(1);
 
 /// Serve the read a guest just started against `writer`, the writable
 /// end the host serves. The end is polled once, here and now, with the
-/// waker of the turn that is running: a poll that is ready is
-/// delivered before this returns, and a pending one joins the store's
-/// host tasks. A failure of either is the built-in's.
+/// task's own waker: a poll that is ready is delivered before this
+/// returns, and a pending one joins the store's host tasks. A failure
+/// of either is the built-in's.
 #[tracing::instrument(level = "trace", name = "host read", skip_all)]
 pub fn serve_host_read<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result<()> {
-    let mut task = HostTask::copy(
+    let task = HostTask::copy(
         move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
             // A poll that failed before it reached the store could not
             // forget the waker a pending poll kept; this forgets it.
@@ -74,14 +74,7 @@ pub fn serve_host_read<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndI
         },
         WriterBody { writer },
     );
-    let waker = store.internal().active_waker();
-    match task.poll(store, &waker) {
-        Poll::Ready(outcome) => task.lower(store, outcome),
-        Poll::Pending => {
-            store.internal().push_host_task(task);
-            Ok(())
-        }
-    }
+    store.internal().start_host_copy(task)
 }
 
 /// The body of the host task of a read against a host end: one poll

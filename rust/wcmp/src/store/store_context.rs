@@ -9,7 +9,6 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::abi::boundary_call::BoundaryCall;
@@ -594,15 +593,15 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// wait on gets its entry. `lower` is the lowering the guest
     /// called through.
     ///
-    /// The body is polled once here, with the waker of the turn that
-    /// is running, or with a waker that does nothing when no turn is:
-    /// a host task that joined the store counts as woken, so the next
-    /// turn polls it again with the driver's waker and no wake is
-    /// lost. A body that resolves at once has its result lowered
-    /// here, and the guest sees the returned status with no subtask
-    /// behind it. A body that is still running joins the store's host
-    /// tasks, its subtask enters `caller` in the started state, and
-    /// the guest sees the started status carrying that index.
+    /// The body is polled once here, with the task's own waker, the
+    /// one every later poll of it carries, so a body that keeps the
+    /// waker of its first poll still wakes its task. A host task that
+    /// joined the store counts as woken as well, so the next turn
+    /// polls it again. A body that resolves at once has its result
+    /// lowered here, and the guest sees the returned status with no
+    /// subtask behind it. A body that is still running joins the
+    /// store's host tasks, its subtask enters `caller` in the started
+    /// state, and the guest sees the started status carrying that index.
     ///
     /// A body that fails is a call that never returned: its subtask
     /// resolves as a cancellation, the handles the guest lent for it
@@ -650,13 +649,14 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let subtask = task
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
-        let waker = self.active_waker();
-        let reserved = self.reserve_host_call(subtask)?;
+        let (key, waker) = self.reserve_host_call(subtask)?;
         // The body reaches the host data through the accessor this
         // poll hands it and through nothing else, for the length of
         // a closure it runs with it.
-        let outcome = task.poll(self, &waker);
-        drop(reserved);
+        let outcome = self.poll_reserved_host_task(key, &waker, &mut task);
+        if !matches!(outcome, Poll::Pending) || self.poisoned() {
+            self.scheduler_mut().complete_host_task(key);
+        }
 
         match outcome {
             // The call never returned, so the subtask's resolution
@@ -689,7 +689,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(CallStatus::returned())
             }
             Poll::Pending => {
-                let index = {
+                let started = (|| -> Result<_> {
                     let mut guard = self.lock_tables()?;
                     // The subtask starts before its entry is made,
                     // because the status word this call returns is
@@ -708,18 +708,32 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     if guard.tasks.current_subtask() == Some(subtask) {
                         guard.tasks.pop_scope();
                     }
-                    index
+                    Ok(index)
+                })();
+                // The task never joins the entry the reserve made for it
+                // when the tables cannot be locked, so the entry goes too,
+                // and the cap on live records no longer counts it.
+                let index = match started {
+                    Ok(index) => index,
+                    Err(error) => {
+                        self.scheduler_mut().complete_host_task(key);
+                        return Err(error);
+                    }
                 };
                 task.started_in(caller);
-                self.push_host_task(task);
+                self.scheduler_mut().restore_host_task(key, task);
                 Ok(CallStatus::started(index))
             }
         }
     }
 
     /// Admit the host task of the call `subtask` records against the
-    /// store's cap on its live records, and count it there for as long
-    /// as the reservation lives: its body's first poll.
+    /// store's cap on its live records, and make its entry among the
+    /// store's host tasks, where it counts from then on. Answers the
+    /// entry's key and the task's own waker, which its first poll
+    /// carries as every later poll does. The caller puts the task in
+    /// the entry when that poll leaves it pending, and lets go of the
+    /// entry when it does not.
     ///
     /// Wasmtime pushes the `HostTask` of a call into its store's table
     /// before it calls the host function
@@ -734,15 +748,83 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Wasmtime pushes a `HostTask` for a call of a synchronous host
     /// function too, so at a full table it refuses that call where the
     /// polyfill runs it.
-    fn reserve_host_call(&mut self, subtask: SubtaskId) -> Result<HostCallReservation> {
-        let count = self.scheduler().shared_host_call_count();
-        let mut guard = self.lock_tables()?;
-        if let Err(error) = guard.tasks.admit_records(1) {
-            guard.abandon_subtask(subtask);
-            return Err(error);
+    fn reserve_host_call(&mut self, subtask: SubtaskId) -> Result<(u64, Waker)> {
+        {
+            let mut guard = self.lock_tables()?;
+            if let Err(error) = guard.tasks.admit_records(1) {
+                guard.abandon_subtask(subtask);
+                return Err(error);
+            }
         }
-        count.fetch_add(1, Ordering::AcqRel);
-        Ok(HostCallReservation(count))
+        Ok(self.reserve_host_task(Some(subtask)))
+    }
+
+    /// Make the entry of a host task that is about to take its first
+    /// poll here, outside a turn's poll of the host tasks, and answer
+    /// its key and the task's own waker. `subtask` is the subtask the
+    /// task resolves when it is a call's.
+    ///
+    /// A future may keep the waker of its first poll and wake that
+    /// one alone, as `callback-future` does. A first poll with the
+    /// running turn's waker, or with one that does nothing when no
+    /// turn is running, would leave such a wake with no way back to
+    /// the task, and no turn would poll it again. With the task's own
+    /// waker from the first poll on, every poll of a host task has
+    /// one waker. A wake of it is passed on to the driver that polls
+    /// the store, so the running turn's waker is recorded as that
+    /// driver here, as a turn records it before it polls the host
+    /// tasks.
+    fn reserve_host_task(&mut self, subtask: Option<SubtaskId>) -> (u64, Waker) {
+        if self.turn_in_flight() {
+            self.scheduler().watch_host_tasks(&self.active_waker());
+        }
+        self.scheduler_mut().reserve_host_task(subtask)
+    }
+
+    /// The first poll of `task`, whose entry
+    /// [`reserve_host_task`](Self::reserve_host_task) made under
+    /// `key`, with `waker`, the task's own. A poll that unwinds lets
+    /// go of the entry before the panic carries on, so the store does
+    /// not keep an entry no task will fill.
+    fn poll_reserved_host_task(
+        &mut self,
+        key: u64,
+        waker: &Waker,
+        task: &mut HostTask<T>,
+    ) -> Poll<Result<Vec<Val>>> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            task.poll(&mut *self, waker)
+        }))
+        .unwrap_or_else(|panic| {
+            self.scheduler_mut().complete_host_task(key);
+            std::panic::resume_unwind(panic)
+        })
+    }
+
+    /// Start the host task of a copy against a host end: poll it once
+    /// here, with its own waker, and lower what it produced when that
+    /// poll resolved it, or leave it among the store's host tasks
+    /// when it is still pending.
+    fn start_host_copy(&mut self, mut task: HostTask<T>) -> Result<()> {
+        let (key, waker) = self.reserve_host_task(None);
+        let outcome = self.poll_reserved_host_task(key, &waker, &mut task);
+        match outcome {
+            // A poll that poisoned the store let go of every host
+            // task it held, and this one goes the same way.
+            Poll::Pending if !self.scheduler().host_task_retired(key) => {
+                self.scheduler_mut().restore_host_task(key, task);
+                Ok(())
+            }
+            Poll::Pending => {
+                self.scheduler_mut().complete_host_task(key);
+                drop(task);
+                Ok(())
+            }
+            Poll::Ready(outcome) => {
+                self.scheduler_mut().complete_host_task(key);
+                task.lower(self, outcome)
+            }
+        }
     }
 
     /// The first part of a synchronous lower of a host `async`
@@ -771,10 +853,11 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let subtask = task
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
-        let waker = self.active_waker();
-        let reserved = self.reserve_host_call(subtask)?;
-        let outcome = task.poll(self, &waker);
-        drop(reserved);
+        let (key, waker) = self.reserve_host_call(subtask)?;
+        let outcome = self.poll_reserved_host_task(key, &waker, &mut task);
+        if !matches!(outcome, Poll::Pending) || self.poisoned() {
+            self.scheduler_mut().complete_host_task(key);
+        }
         match outcome {
             // The failure is a trap of the guest task that made the
             // call, which poisons the store.
@@ -794,7 +877,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(None)
             }
             Poll::Pending => {
-                self.scheduler_mut().park_call(task);
+                self.scheduler_mut().park_reserved_call(key, task);
                 Ok(Some(subtask))
             }
         }
@@ -3298,16 +3381,6 @@ fn poll_lent<T: 'static, F: Future>(
     future.poll(context)
 }
 
-/// The record a host call holds against its store's cap while its body
-/// first runs, given back when the poll ends, however it ends.
-struct HostCallReservation(Arc<AtomicUsize>);
-
-impl Drop for HostCallReservation {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -4095,9 +4168,10 @@ mod tests {
         let counted = Arc::new(CountingWaker::default());
         let driver_waker = Waker::from(counted.clone());
 
-        // No turn is running, so the first poll uses a waker that
-        // does nothing. The task joins the store all the same, and
-        // counts as woken for the turn that follows.
+        // No turn is running, so no driver's waker is recorded yet,
+        // and the wake the first poll sends through the task's own
+        // waker reaches no driver. The task joins the store all the
+        // same, and counts as woken for the turn that follows.
         store
             .internal()
             .context()
@@ -4115,7 +4189,7 @@ mod tests {
         assert_eq!(
             counted.count(),
             0,
-            "a host task started outside a turn is polled with a waker that does nothing"
+            "a host task started outside a turn has no driver to pass its wake on to"
         );
 
         {

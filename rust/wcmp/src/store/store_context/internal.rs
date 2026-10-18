@@ -263,6 +263,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.push_host_task(task);
     }
 
+    /// Start the host task of a copy against a host end, polling it
+    /// once with its own waker before it is queued.
+    pub fn start_host_copy(self, task: HostTask<T>) -> Result<()> {
+        self.context.start_host_copy(task)
+    }
+
     /// Create the task record for a call of an export.
     pub fn create_export_task(
         self,
