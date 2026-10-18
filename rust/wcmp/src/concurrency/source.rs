@@ -162,6 +162,7 @@ fn lift_items<D: 'static, T: Lift>(
             ));
         }
     };
+    let _segment = crate::boundary::BoundarySegment::enter();
     let tables = store.internal().tables_handle();
     let (options, instance) = BoundaryInstance::resolve(&write.options, &write.abi_state, &tables)?;
     let mut cx = BoundaryContext::new(

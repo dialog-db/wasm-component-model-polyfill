@@ -167,6 +167,7 @@ fn reader_read<T: 'static>(
 /// progress on its reader, as much as the read can take, and complete
 /// the read. An end that is over is let go of afterwards.
 fn deliver<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result<()> {
+    let _segment = crate::boundary::BoundarySegment::enter();
     let read = {
         let guard = store.internal().lock_tables()?;
         let reader = guard

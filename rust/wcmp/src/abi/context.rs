@@ -459,9 +459,13 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             options,
             strategy,
             accesses,
+            between_guests,
             ..
         } = self;
         *accesses += 1;
+        if !*between_guests {
+            crate::boundary::count_bytes(length);
+        }
         strategy.load(store, options, offset, length)
     }
 
@@ -473,9 +477,13 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
             options,
             strategy,
             accesses,
+            between_guests,
             ..
         } = self;
         *accesses += 1;
+        if !*between_guests {
+            crate::boundary::count_bytes(bytes.len());
+        }
         strategy.store(store, options, offset, bytes)
     }
 

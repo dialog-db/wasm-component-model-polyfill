@@ -258,6 +258,7 @@
 mod baseline;
 
 mod abi;
+mod boundary;
 mod component;
 mod concurrency;
 mod engine;
@@ -280,6 +281,8 @@ mod value;
 #[cfg(wcmp_wast_runner)]
 mod wast_runner;
 
+#[cfg(feature = "boundary-counters")]
+pub use crate::boundary::BoundaryCounters;
 pub use crate::component::{
     Component, ComponentExport, ComponentImport, ExternType, ExternalName, FunctionParameter,
     FunctionType, InstanceItem, InstanceType, ModuleType,

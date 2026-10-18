@@ -438,6 +438,7 @@ impl Builtin {
             }
         };
         if let Some(host) = host_copy {
+            let _segment = crate::boundary::BoundarySegment::enter();
             match self.kind {
                 EndKind::StreamReadable | EndKind::FutureReadable => serve_host_read(store, host),
                 EndKind::StreamWritable | EndKind::FutureWritable => {

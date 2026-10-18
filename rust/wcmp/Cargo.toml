@@ -17,6 +17,10 @@ exclude = ["/tests/*", "!/tests/support/"]
 default = []
 # Integration tests that drive a real browser via WebDriver.
 web-integration-tests = []
+# The boundary counters, `wcmp::BoundaryCounters`: the calls, the bytes, and
+# the time of the polyfill at the boundary between a guest and the host.
+# Off by default: without it, the polyfill counts nothing and reads no clock.
+boundary-counters = []
 
 [dependencies]
 anyhow = { workspace = true }

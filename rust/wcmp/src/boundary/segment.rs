@@ -1,0 +1,59 @@
+// Copyright 2026 The Dialog DB Project
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+#[cfg(feature = "boundary-counters")]
+use super::clock::now_ms;
+#[cfg(feature = "boundary-counters")]
+use super::state::STATE;
+
+/// A stretch of the polyfill's own work at the boundary, whose time
+/// the boundary counters add up while the guard lives.
+///
+/// Segments nest: one that starts while another runs adds nothing of
+/// its own, so a stretch is counted once. One that starts inside a
+/// [`HostWindow`](super::HostWindow), where the host has called back
+/// into the polyfill, runs the clock until it ends.
+pub struct BoundarySegment {
+    /// Whether this segment started the clock, and so stops it.
+    #[cfg(feature = "boundary-counters")]
+    started: bool,
+}
+
+impl BoundarySegment {
+    /// Start a segment, unless one runs.
+    #[inline]
+    pub fn enter() -> Self {
+        #[cfg(feature = "boundary-counters")]
+        {
+            let started = STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                if state.running_since.is_some() {
+                    return false;
+                }
+                state.running_since = Some(now_ms());
+                true
+            });
+            BoundarySegment { started }
+        }
+        #[cfg(not(feature = "boundary-counters"))]
+        BoundarySegment {}
+    }
+}
+
+#[cfg(feature = "boundary-counters")]
+impl Drop for BoundarySegment {
+    fn drop(&mut self) {
+        if !self.started {
+            return;
+        }
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if let Some(since) = state.running_since.take() {
+                state.counters.boundary_ms += now_ms() - since;
+            }
+        });
+    }
+}

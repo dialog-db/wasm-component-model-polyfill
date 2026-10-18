@@ -104,6 +104,7 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::signature::Signature;
 use crate::abi::{check_spilled_address, lift, lower};
+use crate::boundary::{BoundarySegment, HostWindow};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
@@ -254,6 +255,8 @@ pub fn build_resource_drop_trampoline<T: 'static>(
             // is labelled as the destructor's, with the trap under it.
             match &runtime.destructor {
                 ResourceDestructor::Host(body) => {
+                    crate::boundary::count_call();
+                    let _host = HostWindow::enter();
                     body(StoreContext::new(store_ctx.as_context_mut()), rep)
                         .map_err(anyhow::Error::from)?
                 }
@@ -631,6 +634,9 @@ fn invoke_trampoline<T: 'static>(
     // The core results, which every path but the block below writes
     // here: the placeholders are overwritten with values of the
     // types the lowering produces.
+    // The polyfill's own work for the call, from here until it returns,
+    // is boundary time, except where the host runs.
+    let _segment = BoundarySegment::enter();
     let mut results = vec![RuntimeVal::I32(0); result_count];
     // The canon options of the lowering and the instance they name,
     // read out of the instance's runtime state under one lock of it.
@@ -647,6 +653,7 @@ fn invoke_trampoline<T: 'static>(
     // call happens, so a refused call lifts no argument and pushes
     // no subtask.
     trap_if_cannot_leave(&instance, &mut store_ctx)?;
+    crate::boundary::count_call();
 
     // A call from the guest into the host is a subtask: it goes on
     // the stack of current scopes and stays there while the host side
@@ -730,8 +737,10 @@ fn invoke_trampoline<T: 'static>(
                 // and the host tasks from inside the guest call, with
                 // nothing captured.
                 let call = HostCall::new(StoreContext::new(store_ctx.as_context_mut()));
-                let host_results =
-                    tracing::trace_span!("host function").in_scope(|| body(call, lifted))?;
+                let host_results = tracing::trace_span!("host function").in_scope(|| {
+                    let _host = HostWindow::enter();
+                    body(call, lifted)
+                })?;
                 // A body that reached the store and trapped there, in
                 // a destructor it released, poisoned the store, and
                 // the guest that called it is guest code a poisoned
@@ -768,6 +777,7 @@ fn invoke_trampoline<T: 'static>(
                 let started = {
                     let _poll = PollScope::enter(&mut store, &waker);
                     let _span = tracing::trace_span!("host function start").entered();
+                    let _host = HostWindow::enter();
                     start(&accessor, lifted)
                 };
                 HostOutcome::Future(started)
@@ -1005,6 +1015,7 @@ fn start_host_call<T: 'static>(
     // has returned by then, so there is no frame left to read the
     // options, the instance, or the return area back from.
     let lowering = move |store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| {
+        let _segment = BoundarySegment::enter();
         outcome?;
         let produced = take_produced(&produced)?;
         let Some(result_ty) = &signature.ty().result else {
@@ -1123,6 +1134,7 @@ fn block_on_host_call<T: 'static>(
     Ok(BlockStep::wait(
         Readiness::Subtask { subtask },
         move |store: &mut StoreContext<'_, T>, waited| {
+            let _segment = BoundarySegment::enter();
             store
                 .internal()
                 .finish_blocking_host_task(subtask, waited)

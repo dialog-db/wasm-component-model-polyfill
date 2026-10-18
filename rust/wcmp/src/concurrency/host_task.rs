@@ -165,6 +165,7 @@ impl<T: 'static> HostTask<T> {
         let accessor = Accessor::new(store.internal().id());
         let mut context = Context::from_waker(waker);
         let _poll = PollScope::enter(store, waker);
+        let _host = crate::boundary::HostWindow::enter();
         self.body.poll(&accessor, &mut context)
     }
 
