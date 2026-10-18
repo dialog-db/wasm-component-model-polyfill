@@ -45,3 +45,11 @@ design should say so.
 
 ## Review notes
 
+
+- 2026-10-18 (owner, recorded by the implementer): Deferred. A way for a
+  layer to reach the definition it shadows would be an API asymmetry with
+  Wasmtime, whose component `Linker` has neither shape. A host that wants
+  this capability on both runtimes has to work around the limitation on
+  Wasmtime anyway, as the `wasi:webgpu` port does by making
+  `HasWasiWebGpuCtx` public, so an extension here saves such a host
+  nothing. The limitation is ergonomic, not a missing capability.
