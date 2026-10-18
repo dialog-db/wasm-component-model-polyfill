@@ -3063,9 +3063,13 @@
 
         # Bound here so the `workspace-deps-dev` package below can name the
         # same derivation the archive builds against.
+        # The debug archives turn the boundary counters on, so that their
+        # tests run and every other test runs through the counting; the
+        # release archives leave them off, as a consumer's build does.
         testsNativeDebug = withTestInputs (buildTestArchive {
           name = "native-debug";
           profile = "dev";
+          args = "--features wcmp/boundary-counters";
         });
 
         menu = makeMenu {
@@ -3175,6 +3179,7 @@
             name = "web-debug";
             target = "wasm32-unknown-unknown";
             profile = "dev";
+            args = "--features wcmp/boundary-counters";
           });
 
           tests-web-release = withTestInputs (buildTestArchive {
