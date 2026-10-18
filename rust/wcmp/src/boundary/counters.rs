@@ -17,7 +17,7 @@ use super::state::STATE;
 /// with a host end; a move between two guests is not counted. The
 /// boundary time is the time the polyfill spends lifting, lowering, and
 /// dispatching those crossings, without the time inside host functions
-/// and host futures.
+/// and host futures, which is the host time.
 ///
 /// The counters are per thread, not per store: a page or a worker that
 /// runs one store reads that store's counts. They exist only with the
@@ -31,6 +31,10 @@ pub struct BoundaryCounters {
     pub bytes: u64,
     /// The time the polyfill spent at the boundary, in milliseconds.
     pub boundary_ms: f64,
+    /// The time inside host functions, host futures, and host destructors
+    /// that guests' crossings reached, in milliseconds, without the time
+    /// of the polyfill's own work they called back into.
+    pub host_ms: f64,
 }
 
 #[cfg(feature = "boundary-counters")]

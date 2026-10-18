@@ -15,11 +15,15 @@ use super::state::STATE;
 /// Segments nest: one that starts while another runs adds nothing of
 /// its own, so a stretch is counted once. One that starts inside a
 /// [`HostWindow`](super::HostWindow), where the host has called back
-/// into the polyfill, runs the clock until it ends.
+/// into the polyfill, runs the clock until it ends, and stops the host
+/// clock meanwhile.
 pub struct BoundarySegment {
     /// Whether this segment started the clock, and so stops it.
     #[cfg(feature = "boundary-counters")]
     started: bool,
+    /// Whether this segment stopped the host clock, and so starts it again.
+    #[cfg(feature = "boundary-counters")]
+    paused_host: bool,
 }
 
 impl BoundarySegment {
@@ -28,15 +32,26 @@ impl BoundarySegment {
     pub fn enter() -> Self {
         #[cfg(feature = "boundary-counters")]
         {
-            let started = STATE.with(|state| {
+            let (started, paused_host) = STATE.with(|state| {
                 let mut state = state.borrow_mut();
                 if state.running_since.is_some() {
-                    return false;
+                    return (false, false);
                 }
-                state.running_since = Some(now_ms());
-                true
+                let now = now_ms();
+                state.running_since = Some(now);
+                let paused_host = match state.host_since.take() {
+                    Some(since) => {
+                        state.counters.host_ms += now - since;
+                        true
+                    }
+                    None => false,
+                };
+                (true, paused_host)
             });
-            BoundarySegment { started }
+            BoundarySegment {
+                started,
+                paused_host,
+            }
         }
         #[cfg(not(feature = "boundary-counters"))]
         BoundarySegment {}
@@ -51,8 +66,12 @@ impl Drop for BoundarySegment {
         }
         STATE.with(|state| {
             let mut state = state.borrow_mut();
+            let now = now_ms();
             if let Some(since) = state.running_since.take() {
-                state.counters.boundary_ms += now_ms() - since;
+                state.counters.boundary_ms += now - since;
+            }
+            if self.paused_host {
+                state.host_since = Some(now);
             }
         });
     }

@@ -11,11 +11,15 @@ use super::state::STATE;
 
 /// A stretch of host code: a host function, a poll of a host future, or
 /// a host destructor. The boundary clock stops while the guard lives,
-/// and runs again when it drops, if it ran when the window opened.
+/// and runs again when it drops, if it ran when the window opened. The
+/// host clock runs while the guard lives, unless it already runs.
 pub struct HostWindow {
     /// Whether the window stopped the clock, and so starts it again.
     #[cfg(feature = "boundary-counters")]
     paused: bool,
+    /// Whether the window started the host clock, and so stops it.
+    #[cfg(feature = "boundary-counters")]
+    timing_host: bool,
 }
 
 impl HostWindow {
@@ -24,17 +28,26 @@ impl HostWindow {
     pub fn enter() -> Self {
         #[cfg(feature = "boundary-counters")]
         {
-            let paused = STATE.with(|state| {
+            let (paused, timing_host) = STATE.with(|state| {
                 let mut state = state.borrow_mut();
-                match state.running_since.take() {
+                let now = now_ms();
+                let paused = match state.running_since.take() {
                     Some(since) => {
-                        state.counters.boundary_ms += now_ms() - since;
+                        state.counters.boundary_ms += now - since;
                         true
                     }
                     None => false,
+                };
+                let timing_host = state.host_since.is_none();
+                if timing_host {
+                    state.host_since = Some(now);
                 }
+                (paused, timing_host)
             });
-            HostWindow { paused }
+            HostWindow {
+                paused,
+                timing_host,
+            }
         }
         #[cfg(not(feature = "boundary-counters"))]
         HostWindow {}
@@ -44,8 +57,17 @@ impl HostWindow {
 #[cfg(feature = "boundary-counters")]
 impl Drop for HostWindow {
     fn drop(&mut self) {
-        if self.paused {
-            STATE.with(|state| state.borrow_mut().running_since = Some(now_ms()));
-        }
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            let now = now_ms();
+            if self.timing_host
+                && let Some(since) = state.host_since.take()
+            {
+                state.counters.host_ms += now - since;
+            }
+            if self.paused {
+                state.running_since = Some(now);
+            }
+        });
     }
 }

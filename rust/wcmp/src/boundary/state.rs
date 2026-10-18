@@ -19,6 +19,9 @@ pub struct State {
     pub counters: BoundaryCounters,
     /// When the boundary segment that runs now started.
     pub running_since: Option<f64>,
+    /// When the host code that runs now started, if host code runs and no
+    /// boundary segment inside it does.
+    pub host_since: Option<f64>,
 }
 
 #[cfg(feature = "boundary-counters")]

@@ -7,7 +7,8 @@
 //! The boundary counters: how many calls cross from a guest into the
 //! host, how many bytes the polyfill copies across the boundary in
 //! either direction, and how long the polyfill spends lifting,
-//! lowering, and dispatching, without the time inside the host.
+//! lowering, and dispatching, without the time inside the host, and how
+//! long the host functions take.
 //!
 //! They count only with the `boundary-counters` feature, which is off by
 //! default. Without it, every function here does nothing, and each guard

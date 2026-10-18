@@ -95,7 +95,15 @@ async fn it_counts_the_calls_the_bytes_and_the_time_of_a_known_sequence() {
         .func_wrap(
             "sum",
             |_: HostCall<'_, ()>, (bytes,): (Vec<u8>,)| -> Result<(u32,)> {
-                Ok((bytes.iter().map(|byte| u32::from(*byte)).sum(),))
+                // Enough work that the host time is more than nothing on
+                // a coarse clock.
+                let mut sum = 0u32;
+                for _ in 0..2_000 {
+                    sum = bytes.iter().fold(std::hint::black_box(sum), |sum, byte| {
+                        sum.wrapping_add(u32::from(*byte))
+                    });
+                }
+                Ok((sum,))
             },
         )
         .expect("sum registers");
@@ -134,6 +142,10 @@ async fn it_counts_the_calls_the_bytes_and_the_time_of_a_known_sequence() {
     assert!(
         counted.boundary_ms > 0.0,
         "the polyfill spent time at the boundary: {counted:?}"
+    );
+    assert!(
+        counted.host_ms > 0.0,
+        "the host functions spent time: {counted:?}"
     );
     assert_eq!(
         BoundaryCounters::read(),
