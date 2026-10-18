@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::abi::boundary_call::BoundaryCall;
 use crate::abi::signature::Signature;
+use crate::boundary::{BoundaryScope, ImportName};
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EntryStatus, EventSlot, HostTask, InFlight, InstanceId,
     Item, ItemKind, LowerKind, Outcome, ParkedThread, PendingBlock, Plan, PollScope, Readiness,
@@ -430,6 +431,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// The body of [`turn`](Self::turn), which poisons the store when
     /// this fails. Workspace-internal.
     fn run_driver_turn(&mut self, waker: &Waker) -> Result<Outcome> {
+        // What the turn counts at the boundary is this store's.
+        let _counted =
+            BoundaryScope::enter(self.store_data().boundary_sink(), &ImportName::default());
         let _turn = TurnGuard::enter(self.tables(), waker);
         self.scheduler().watch_host_tasks(waker);
         loop {
@@ -482,6 +486,8 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// same reason and which a driver must not be entered from.
     /// Workspace-internal.
     fn run_in_turn<R>(&mut self, waker: &Waker, body: impl FnOnce(&mut Self) -> R) -> Result<R> {
+        let _counted =
+            BoundaryScope::enter(self.store_data().boundary_sink(), &ImportName::default());
         let _turn = TurnGuard::enter(self.tables(), waker);
         Ok(body(self))
     }

@@ -9,6 +9,7 @@
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 
+use crate::boundary::{BoundaryScope, ImportName};
 use crate::error::{Error, Result};
 use crate::executor::release_subtask;
 use crate::internal::{AccessorInternal, ErrorInternal};
@@ -76,6 +77,10 @@ pub struct HostTask<T: 'static> {
     /// Whether the task is the host's own work, which touches no
     /// guest.
     host_only: bool,
+    /// The host import whose call the task serves, which the boundary
+    /// counters count its polls and its lowering under. No import for a
+    /// copy.
+    import: ImportName,
 }
 
 impl<T: 'static> HostTask<T> {
@@ -92,6 +97,7 @@ impl<T: 'static> HostTask<T> {
             subtask: Some(subtask),
             caller_table: None,
             host_only: false,
+            import: ImportName::default(),
         }
     }
 
@@ -118,6 +124,7 @@ impl<T: 'static> HostTask<T> {
             subtask: None,
             caller_table: None,
             host_only: false,
+            import: ImportName::default(),
         }
     }
 
@@ -127,6 +134,13 @@ impl<T: 'static> HostTask<T> {
     /// in a store a trap poisoned, where no guest work item runs.
     pub fn host_only(mut self) -> Self {
         self.host_only = true;
+        self
+    }
+
+    /// Count the task's polls and its lowering under `import`, the host
+    /// import whose call it serves.
+    pub fn counted_as(mut self, import: ImportName) -> Self {
+        self.import = import;
         self
     }
 
@@ -162,6 +176,7 @@ impl<T: 'static> HostTask<T> {
         store: &mut StoreContext<'_, T>,
         waker: &Waker,
     ) -> Poll<Result<Vec<Val>>> {
+        let _counted = BoundaryScope::enter(store.internal().boundary_sink(), &self.import);
         let accessor = Accessor::new(store.internal().id());
         let mut context = Context::from_waker(waker);
         let _poll = PollScope::enter(store, waker);
@@ -192,6 +207,7 @@ impl<T: 'static> HostTask<T> {
     /// when the first poll resolved the body: the guest is still on
     /// the stack, so a failure fails its call.
     pub fn lower(self, store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>) -> Result<()> {
+        let _counted = BoundaryScope::enter(store.internal().boundary_sink(), &self.import);
         (self.lowering)(store, outcome)
     }
 
@@ -247,6 +263,7 @@ impl<T: 'static> HostTask<T> {
             subtask,
             caller_table,
             host_only,
+            import,
             ..
         } = self;
         let Some(subtask) = subtask else {
@@ -271,7 +288,11 @@ impl<T: 'static> HostTask<T> {
             ItemKind::HostResultLowering,
             move |store: &mut StoreContext<'_, T>| {
                 let crossing = match outcome {
-                    Ok(values) => lowering(store, Ok(values)),
+                    Ok(values) => {
+                        let _counted =
+                            BoundaryScope::enter(store.internal().boundary_sink(), &import);
+                        lowering(store, Ok(values))
+                    }
                     Err(error) => Err(error),
                 };
                 let Err(error) = crossing else {

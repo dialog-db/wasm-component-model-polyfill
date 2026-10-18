@@ -41,7 +41,7 @@ impl BoundarySegment {
                 state.running_since = Some(now);
                 let paused_host = match state.host_since.take() {
                     Some(since) => {
-                        state.counters.host_ms += now - since;
+                        state.add_host_ms(now - since);
                         true
                     }
                     None => false,
@@ -68,7 +68,7 @@ impl Drop for BoundarySegment {
             let mut state = state.borrow_mut();
             let now = now_ms();
             if let Some(since) = state.running_since.take() {
-                state.counters.boundary_ms += now - since;
+                state.add_boundary_ms(now - since);
             }
             if self.paused_host {
                 state.host_since = Some(now);

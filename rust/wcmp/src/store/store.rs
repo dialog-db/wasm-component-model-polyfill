@@ -341,6 +341,38 @@ impl<T: 'static> Store<T> {
         self.store_data_mut().set_hostcall_fuel(fuel);
     }
 
+    /// What the boundary counters counted for this store since they were
+    /// last taken, with a breakdown by host import. See
+    /// [`StoreBoundaryCounters`] for what counts where.
+    ///
+    /// The method exists only with the `boundary-counters` feature.
+    /// Wasmtime has no counterpart.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
+    ///
+    /// [`StoreBoundaryCounters`]: crate::StoreBoundaryCounters
+    #[cfg(feature = "boundary-counters")]
+    pub fn boundary_counters(&self) -> crate::StoreBoundaryCounters {
+        self.store_data().boundary_sink().read()
+    }
+
+    /// What the boundary counters counted for this store since they were
+    /// last taken, as [`boundary_counters`](Store::boundary_counters)
+    /// answers it, and reset them to zero. A host that takes them once
+    /// per frame gets the counts of each frame.
+    ///
+    /// The method exists only with the `boundary-counters` feature.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
+    #[cfg(feature = "boundary-counters")]
+    pub fn take_boundary_counters(&mut self) -> crate::StoreBoundaryCounters {
+        self.store_data().boundary_sink().take()
+    }
+
     /// Borrow the store as a [`StoreContext`], which is what a host
     /// hands [`StreamReader::new`] and [`FutureReader::new`] to create
     /// a stream or a future in this store. The name is Wasmtime's.

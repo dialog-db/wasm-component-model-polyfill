@@ -19,9 +19,24 @@ use super::state::STATE;
 /// dispatching those crossings, without the time inside host functions
 /// and host futures, which is the host time.
 ///
-/// The counters are per thread, not per store: a page or a worker that
-/// runs one store reads that store's counts. They exist only with the
+/// These counters are the thread's: they add up the work of every store
+/// the thread runs. [`Store::boundary_counters`] gives one store's own,
+/// with a breakdown by host import. They exist only with the
 /// `boundary-counters` feature.
+///
+/// The times come from a clock in milliseconds: a monotonic clock
+/// natively, and `performance.now()` in a page or a worker, whose
+/// resolution the browser coarsens. The High Resolution Time
+/// specification sets it at 100 microseconds or coarser, and at
+/// 5 microseconds or coarser in a cross-origin-isolated context. Chrome
+/// gives exactly those two since Chrome 91. Firefox and Safari were
+/// reported in 2020 to give 1 millisecond, and Firefox 20 microseconds
+/// when cross-origin isolated. A boundary crossing often takes less
+/// than one tick, so a count of a few calls can read as no time, or as
+/// a whole tick. Add the times over many calls, as over a frame, before
+/// reading them as a cost per call.
+///
+/// [`Store::boundary_counters`]: crate::Store::boundary_counters
 #[cfg(feature = "boundary-counters")]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BoundaryCounters {
@@ -55,14 +70,14 @@ impl BoundaryCounters {
 #[inline]
 pub fn count_call() {
     #[cfg(feature = "boundary-counters")]
-    STATE.with(|state| state.borrow_mut().counters.calls += 1);
+    STATE.with(|state| state.borrow_mut().add_calls(1));
 }
 
 /// Count `bytes` bytes copied across the boundary.
 #[inline]
 pub fn count_bytes(bytes: usize) {
     #[cfg(feature = "boundary-counters")]
-    STATE.with(|state| state.borrow_mut().counters.bytes += bytes as u64);
+    STATE.with(|state| state.borrow_mut().add_bytes(bytes as u64));
     #[cfg(not(feature = "boundary-counters"))]
     let _ = bytes;
 }

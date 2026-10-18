@@ -11,6 +11,7 @@ use core::task::Waker;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::boundary::BoundarySink;
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
 use crate::executor::ResourceDestructor;
@@ -76,6 +77,9 @@ pub struct StoreData<T: 'static> {
     hostcall_fuel: usize,
     /// How many host functions of the polyfill run in the store now.
     host_frames: usize,
+    /// The store's boundary counters, which hold nothing without the
+    /// `boundary-counters` feature.
+    boundary: BoundarySink,
 }
 
 /// The copy budget a crossing starts with unless the host sets
@@ -110,6 +114,7 @@ impl<T: 'static> StoreData<T> {
             poisoned: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
             host_frames: 0,
+            boundary: BoundarySink::default(),
         }
     }
 
@@ -121,6 +126,12 @@ impl<T: 'static> StoreData<T> {
     /// The host data the embedder gave the store, mutably.
     pub fn host_mut(&mut self) -> &mut T {
         &mut self.data
+    }
+
+    /// The store's boundary counters, which each scope that counts for
+    /// the store adds to. Workspace-internal.
+    pub fn boundary_sink(&self) -> &BoundarySink {
+        &self.boundary
     }
 
     /// The copy budget each crossing of the store starts with, in

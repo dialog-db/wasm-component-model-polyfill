@@ -104,7 +104,7 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::signature::Signature;
 use crate::abi::{check_spilled_address, lift, lower};
-use crate::boundary::{BoundarySegment, HostWindow};
+use crate::boundary::{BoundaryScope, BoundarySegment, HostWindow, ImportName};
 use crate::component::FunctionType;
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, TaskCause};
 use crate::executor::ir::{CanonOptions, LoweringSpec};
@@ -449,12 +449,14 @@ fn invalid_handle(index: u32) -> Error {
 /// import described by `spec`, dispatching to `host_func` — the
 /// registration's kind, which says whether the call runs a closure to
 /// completion or starts a host task — and drawing memory/realloc from
-/// `abi_state` at call time.
+/// `abi_state` at call time. The boundary counters count the calls
+/// under `import`.
 pub fn build_trampoline<T: 'static>(
     store: &mut StoreContext<'_, T>,
     spec: &LoweringSpec,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
     host_func: HostFuncKind<T>,
+    import: ImportName,
 ) -> BlockingBuiltin<T> {
     let func_type = derive_runtime_func_type(spec.signature.ty(), spec.kind);
     let result_count = func_type.results().len();
@@ -474,6 +476,7 @@ pub fn build_trampoline<T: 'static>(
         move |store: &mut StoreContext<'_, T>, args: &[RuntimeVal]| {
             invoke_trampoline(
                 store.internal().runtime_mut().as_context_mut(),
+                &import,
                 &signature,
                 &options,
                 kind,
@@ -622,6 +625,7 @@ enum HostOutcome<T: 'static> {
 #[tracing::instrument(level = "trace", name = "lowered import call", skip_all)]
 fn invoke_trampoline<T: 'static>(
     mut store_ctx: crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
+    import: &ImportName,
     signature: &Arc<Signature>,
     declared: &Arc<CanonOptions>,
     kind: LowerKind,
@@ -634,6 +638,10 @@ fn invoke_trampoline<T: 'static>(
     // The core results, which every path but the block below writes
     // here: the placeholders are overwritten with values of the
     // types the lowering produces.
+    // What the call counts at the boundary is the import's, and the
+    // scope opens before the segment so that the segment's time is
+    // counted while the scope is the innermost one.
+    let _counted = BoundaryScope::enter(store_ctx.data().boundary_sink(), import);
     // The polyfill's own work for the call, from here until it returns,
     // is boundary time, except where the host runs.
     let _segment = BoundarySegment::enter();
@@ -824,6 +832,7 @@ fn invoke_trampoline<T: 'static>(
             LowerKind::Async => {
                 start_host_call(
                     &mut store_ctx,
+                    import,
                     signature,
                     declared,
                     abi_state,
@@ -838,6 +847,7 @@ fn invoke_trampoline<T: 'static>(
             }
             LowerKind::Sync => block_on_host_call(
                 &mut store_ctx,
+                import,
                 signature,
                 declared,
                 abi_state,
@@ -997,6 +1007,7 @@ fn write_host_result<T: 'static>(
 #[allow(clippy::too_many_arguments)]
 fn start_host_call<T: 'static>(
     store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
+    import: &ImportName,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1059,7 +1070,7 @@ fn start_host_call<T: 'static>(
         )
     };
 
-    let task = HostTask::from_future(subtask, lowering, future);
+    let task = HostTask::from_future(subtask, lowering, future).counted_as(import.clone());
     let mut store = StoreContext::new(store_ctx.as_context_mut());
     let status = store
         .internal()
@@ -1090,6 +1101,7 @@ fn start_host_call<T: 'static>(
 #[allow(clippy::too_many_arguments)]
 fn block_on_host_call<T: 'static>(
     store_ctx: &mut crate::runtime_layer::StoreContextMut<'_, StoreData<T>>,
+    import: &ImportName,
     signature: &Arc<Signature>,
     declared: &CanonOptions,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
@@ -1112,7 +1124,7 @@ fn block_on_host_call<T: 'static>(
     let lowering =
         move |_store: &mut StoreContext<'_, T>, outcome: Result<Vec<Val>>| outcome.map(|_| ());
 
-    let task = HostTask::from_future(subtask, lowering, future);
+    let task = HostTask::from_future(subtask, lowering, future).counted_as(import.clone());
     let parked = StoreContext::new(store_ctx.as_context_mut())
         .internal()
         .begin_blocking_host_task(task)?;
@@ -1131,9 +1143,11 @@ fn block_on_host_call<T: 'static>(
     };
 
     let (signature, tables) = (Arc::clone(signature), Arc::clone(tables));
+    let import = import.clone();
     Ok(BlockStep::wait(
         Readiness::Subtask { subtask },
         move |store: &mut StoreContext<'_, T>, waited| {
+            let _counted = BoundaryScope::enter(store.internal().boundary_sink(), &import);
             let _segment = BoundarySegment::enter();
             store
                 .internal()

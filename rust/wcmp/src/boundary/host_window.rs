@@ -33,7 +33,7 @@ impl HostWindow {
                 let now = now_ms();
                 let paused = match state.running_since.take() {
                     Some(since) => {
-                        state.counters.boundary_ms += now - since;
+                        state.add_boundary_ms(now - since);
                         true
                     }
                     None => false,
@@ -63,7 +63,7 @@ impl Drop for HostWindow {
             if self.timing_host
                 && let Some(since) = state.host_since.take()
             {
-                state.counters.host_ms += now - since;
+                state.add_host_ms(now - since);
             }
             if self.paused {
                 state.running_since = Some(now);

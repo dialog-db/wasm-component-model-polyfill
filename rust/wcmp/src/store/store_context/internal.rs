@@ -25,6 +25,7 @@ use core::task::Waker;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::abi::signature::Signature;
+use crate::boundary::BoundarySink;
 use crate::concurrency::{
     Accessor, CallStatus, EntryFinish, EventSlot, HostTask, InstanceId, Item, LowerKind, Outcome,
     Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId, WaitableSetId,
@@ -225,6 +226,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// The instance a nested turn must not block, when one is set.
     pub fn must_not_block_instance(self) -> Option<InstanceId> {
         self.context.must_not_block_instance()
+    }
+
+    /// The store's boundary counters.
+    pub fn boundary_sink(self) -> &'b BoundarySink {
+        let context = self.context;
+        context.store_data().boundary_sink()
     }
 
     /// The waker of the turn that is running, or a no-op waker.

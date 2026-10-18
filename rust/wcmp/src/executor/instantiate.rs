@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
 
+use crate::boundary::ImportName;
 use crate::component::{Component, ExternType};
 use crate::concurrency::{BlockingBuiltin, InstanceId};
 use crate::error::{Error, InstantiationError, LinkError, Result};
@@ -688,7 +689,15 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::LowerImport(lowering) => {
             let host_func = lookup_host_func(linker, component, resolution, lowering)?;
             let blocks = lowering_blocks(lowering, &host_func);
-            let builtin = build_trampoline(store, lowering, abi_state.clone(), host_func);
+            let import = ImportName::new(|| {
+                let mut name = component.imports[lowering.import_index].name.to_string();
+                for item in &lowering.path {
+                    name.push('#');
+                    name.push_str(item);
+                }
+                name
+            });
+            let builtin = build_trampoline(store, lowering, abi_state.clone(), host_func, import);
             return Ok(if blocks {
                 Trampoline::Blocking(builtin)
             } else {
