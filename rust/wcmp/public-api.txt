@@ -602,7 +602,8 @@ pub fn wcmp::Access<'a, T, D>::store(&mut self) -> &mut wcmp::StoreContext<'a, T
 pub struct wcmp::Accessor<T: 'static, D: wcmp::HasData + ?core::marker::Sized>
 impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> wcmp::Accessor<T, D>
 pub fn wcmp::Accessor<T, D>::getter(&self) -> fn(&mut T) -> <D as wcmp::HasData>::Data
-pub fn wcmp::Accessor<T, D>::with<R>(&self, impl core::ops::function::FnOnce(wcmp::Access<'_, T, D>) -> R) -> wcmp::Result<R>
+pub fn wcmp::Accessor<T, D>::try_with<R>(&self, impl core::ops::function::FnOnce(wcmp::Access<'_, T, D>) -> R) -> wcmp::Result<R>
+pub fn wcmp::Accessor<T, D>::with<R>(&self, impl core::ops::function::FnOnce(wcmp::Access<'_, T, D>) -> R) -> R
 pub fn wcmp::Accessor<T, D>::with_getter<D2: wcmp::HasData + ?core::marker::Sized>(&self, fn(&mut T) -> <D2 as wcmp::HasData>::Data) -> wcmp::Accessor<T, D2>
 impl<T: 'static, D: wcmp::HasData + ?core::marker::Sized> core::clone::Clone for wcmp::Accessor<T, D>
 pub fn wcmp::Accessor<T, D>::clone(&self) -> Self

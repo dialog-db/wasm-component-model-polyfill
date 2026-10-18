@@ -528,7 +528,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                 let flag = flag.clone();
                 let counted = counted.clone();
                 async move {
-                    let before = accessor.with(|mut access| {
+                    let before = accessor.try_with(|mut access| {
                         let store = access.store();
                         store.internal().scheduler().items_run()
                     })?;
@@ -540,7 +540,7 @@ async fn it_returns_a_blocked_synchronous_lower_once_a_nested_turn_ran_a_sibling
                         }
                     })
                     .await;
-                    let after = accessor.with(|mut access| {
+                    let after = accessor.try_with(|mut access| {
                         let store = access.store();
                         store.internal().scheduler().items_run()
                     })?;

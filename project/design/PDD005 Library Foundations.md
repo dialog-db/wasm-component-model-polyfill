@@ -88,7 +88,10 @@ downcast that source to its own type.
 
 A polyfill entry point never panics on input that a user can produce. An input
 the polyfill does not support yet returns a structured error that names the
-unsupported feature.
+unsupported feature. The one exception is `Accessor::with`, which panics on a
+reach that fails, as Wasmtime's does, so that a port of code written for
+Wasmtime keeps its meaning. `Accessor::try_with` returns that failure as a
+structured error.
 
 ## Shape Compatibility With Later Work
 

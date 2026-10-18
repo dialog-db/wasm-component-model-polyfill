@@ -90,7 +90,7 @@ impl<T: 'static> HostTaskBody<T> for WriterBody {
         context: &mut Context<'_>,
     ) -> Poll<Result<Vec<Val>>> {
         let writer = self.writer;
-        match accessor.with(|mut access| {
+        match accessor.try_with(|mut access| {
             let store = access.store();
             poll_writer(store, writer, context)
         }) {

@@ -423,7 +423,7 @@ async fn instantiate_with(bytes: &[u8], provider: bool) -> (Store<()>, Instance)
                     .with(|mut access| {
                         let store = access.store();
                         StreamReader::new(store, producer)
-                    })?
+                    })
                     .map(|reader| (reader,))
             }
         })

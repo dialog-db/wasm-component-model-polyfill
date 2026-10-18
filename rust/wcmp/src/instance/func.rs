@@ -449,7 +449,7 @@ impl Func {
         // it hands back is what the task leaves behind, which
         // outlives this future.
         let delivery =
-            accessor.with(|mut access| self.start_concurrent(access.store(), values))??;
+            accessor.try_with(|mut access| self.start_concurrent(access.store(), values))??;
 
         core::future::poll_fn(move |context| {
             let waker = context.waker();
@@ -998,7 +998,7 @@ fn trap<T: 'static>(store: &mut StoreContext<'_, T>, error: Error) -> Result<()>
 /// is not lending the store is not one this reads for.
 fn poisoned<T: 'static, D: HasData + ?Sized>(accessor: &Accessor<T, D>) -> bool {
     matches!(
-        accessor.with(|mut access| access.store().internal().enter_guest()),
+        accessor.try_with(|mut access| access.store().internal().enter_guest()),
         Ok(Err(_))
     )
 }

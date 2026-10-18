@@ -329,26 +329,24 @@ async fn serve<S: Storage + 'static>(
                 }
                 other => return Err(format!("`handle` answered {other:?}")),
             };
-            let (status, headers, body) = accessor
-                .with(|mut access| {
-                    let store = access.store();
-                    // The host takes the response over: its handle leaves
-                    // the store's host table, and the host keeps the
-                    // response by its representation.
-                    let rep = response
-                        .try_into_resource_dynamic(store)
-                        .map_err(|error| error.to_string())?
-                        .rep();
-                    let response = store
-                        .data_mut()
-                        .http()
-                        .take_response(rep)
-                        .ok_or("`handle` answered a response the host does not hold")?;
-                    let body = http_types::read_body(store, response.body)
-                        .map_err(|error| error.to_string())?;
-                    Ok::<_, String>((response.status, response.headers, body))
-                })
-                .map_err(|error| error.to_string())??;
+            let (status, headers, body) = accessor.with(|mut access| {
+                let store = access.store();
+                // The host takes the response over: its handle leaves
+                // the store's host table, and the host keeps the
+                // response by its representation.
+                let rep = response
+                    .try_into_resource_dynamic(store)
+                    .map_err(|error| error.to_string())?
+                    .rep();
+                let response = store
+                    .data_mut()
+                    .http()
+                    .take_response(rep)
+                    .ok_or("`handle` answered a response the host does not hold")?;
+                let body = http_types::read_body(store, response.body)
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>((response.status, response.headers, body))
+            })?;
             let body = body.await;
             Ok::<_, String>(HttpResponse {
                 status,

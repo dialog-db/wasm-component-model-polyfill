@@ -228,7 +228,7 @@ impl<T: 'static> HostTaskBody<T> for ReaderBody {
         context: &mut Context<'_>,
     ) -> Poll<Result<Vec<Val>>> {
         let reader = self.reader;
-        match accessor.with(|mut access| {
+        match accessor.try_with(|mut access| {
             let store = access.store();
             poll_reader(store, reader, context)
         }) {

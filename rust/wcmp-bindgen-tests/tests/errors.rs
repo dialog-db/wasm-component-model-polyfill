@@ -259,9 +259,7 @@ impl reaching_the_store::test::errors::store_host::HostWithStore<Reaching> for H
             core::task::Poll::Pending
         })
         .await;
-        accessor
-            .with(|mut access| access.get().reads += 1)
-            .expect("the future reaches the store");
+        accessor.with(|mut access| access.get().reads += 1);
         read(code)
     }
 }

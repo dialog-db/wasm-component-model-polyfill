@@ -881,7 +881,7 @@ async fn it_resumes_a_thread_blocked_on_a_host_task_that_runs_guest_work_without
                 let seen = seen.clone();
                 async move {
                     let tripled = helper.call_concurrent(&accessor, &[Val::U32(x)]).await?;
-                    let observed = accessor.with(|mut access| {
+                    let observed = accessor.try_with(|mut access| {
                         let store = access.store();
                         let provider = store.internal().provider().is_some();
                         let parked = store.internal().scheduler().parked_threads();

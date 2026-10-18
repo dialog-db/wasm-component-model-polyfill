@@ -84,9 +84,7 @@ impl host::Host for HostData {
 impl host::HostWithStore<HostData> for HasSelf<HostData> {
     async fn answer(accessor: &Accessor<HostData, Self>, x: u32) -> u32 {
         PendingOnce::default().await;
-        accessor
-            .with(|mut access| access.get().core.answer(x))
-            .expect("the future reaches the store")
+        accessor.with(|mut access| access.get().core.answer(x))
     }
 
     fn lost(mut host: Access<'_, HostData, Self>) -> wcmp::Result<FutureReader<u32>> {

@@ -24,8 +24,6 @@
 //! - The invocation of Wasmtime's macro sets `exports: { default: async }`,
 //!   because every call into a component is an `async fn` in the
 //!   polyfill.
-//! - `Accessor::with` returns a `Result` in the polyfill, so the glue
-//!   takes it out with `expect`.
 //! - `FutureReader::new` takes the `Access` itself in Wasmtime, which is
 //!   a store context through `AsContextMut`, and `Access::store` in the
 //!   polyfill.
@@ -111,7 +109,7 @@ fn it_states_the_line_count_of_each_glue_module() {
     println!("polyfill glue: {polyfill} lines; Wasmtime glue: {wasmtime} lines");
     assert_eq!(
         (polyfill, wasmtime),
-        (220, 219),
+        (218, 219),
         "the glue modules have the line counts this test states"
     );
 }

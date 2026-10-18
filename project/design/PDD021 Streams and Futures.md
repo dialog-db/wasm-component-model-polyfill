@@ -555,11 +555,12 @@ store, so its end leaks the way an unclosed reader does. This departs from
 Wasmtime. Wasmtime's guard also closes through `Accessor::with`, and that call
 panics when no poll of the store is running or when another call is already
 inside the store. So a Wasmtime guard dropped there panics, and a failed close
-trips a debug assertion. The polyfill's accessor returns both cases as errors.
-Its guard lets the end leak rather than panic in a drop, because a panic in a
-drop aborts the process when it runs while a thread unwinds. Dropping the store
-drops every shared record, every end, and every producer and consumer without
-polling them, which extends the store-drop rule of [PDD018].
+trips a debug assertion. The polyfill's guard closes through `try_with`, which
+returns both cases as errors. Its guard lets the end leak rather than panic in a
+drop, because a panic in a drop aborts the process when it runs while a thread
+unwinds. Dropping the store drops every shared record, every end, and every
+producer and consumer without polling them, which extends the store-drop rule of
+[PDD018].
 
 ### The Untyped Values
 

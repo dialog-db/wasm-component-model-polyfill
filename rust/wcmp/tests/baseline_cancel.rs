@@ -1952,7 +1952,7 @@ impl Drop for Never {
     fn drop(&mut self) {
         if self
             .accessor
-            .with(|mut access| *access.data_mut() += 1)
+            .try_with(|mut access| *access.data_mut() += 1)
             .is_ok()
         {
             self.drops.reached.fetch_add(1, Ordering::SeqCst);

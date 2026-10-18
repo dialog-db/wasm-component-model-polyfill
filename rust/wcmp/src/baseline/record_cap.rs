@@ -265,7 +265,7 @@ async fn calling_the_host(seen: &Seen, pend: bool) -> (Store<()>, Instance) {
                 let seen = seen.clone();
                 async move {
                     let count = || {
-                        accessor.with(|mut access| {
+                        accessor.try_with(|mut access| {
                             let store = access.store();
                             store
                                 .internal()

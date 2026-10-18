@@ -840,7 +840,7 @@ async fn it_reaches_the_host_data_from_a_typed_registrations_closure() {
             .root()
             .func_wrap_concurrent("answer", |accessor: &Accessor<u32>, (x,): (u32,)| {
                 let base = accessor.with(|access| *access.data());
-                async move { Ok((x + base?,)) }
+                async move { Ok((x + base,)) }
             })
             .expect("the registration");
     })
@@ -875,7 +875,7 @@ async fn it_reaches_the_host_data_from_an_untyped_registrations_closure() {
                     };
                     let x = *x;
                     let base = accessor.with(|access| *access.data());
-                    async move { Ok(vec![Val::U32(x + base?)]) }
+                    async move { Ok(vec![Val::U32(x + base)]) }
                 },
             )
             .expect("the registration");
@@ -910,13 +910,13 @@ async fn it_refuses_a_reach_nested_inside_the_closures_own_reach() {
             .func_wrap_concurrent("answer", |accessor: &Accessor<String>, (x,): (u32,)| {
                 let doubled = accessor.with(|mut access| {
                     let nested = accessor
-                        .with(|_store| ())
+                        .try_with(|_store| ())
                         .expect_err("a reach nested inside a reach is refused")
                         .to_string();
                     access.data_mut().push_str(&nested);
                     x * 2
                 });
-                async move { doubled.map(|doubled| (doubled,)) }
+                async move { Ok((doubled,)) }
             })
             .expect("the registration");
     })

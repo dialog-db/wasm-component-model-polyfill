@@ -27,6 +27,8 @@ use super::poll_scope::PollScope;
 /// store puts its context in the slot and takes it out again before
 /// the poll returns. [`Accessor::with`] takes the store out of that
 /// slot, runs a closure against it, and puts it back.
+/// [`Accessor::try_with`] does the same, and answers a reach that fails
+/// with an error rather than a panic.
 ///
 /// Everything the store offers reaches a body this way: the host
 /// data and the resource table a synchronous host function reaches
@@ -41,7 +43,9 @@ use super::poll_scope::PollScope;
 /// the closure is given outlives nothing, so a value taken from the
 /// host data must be cloned out of it.
 ///
-/// These reaches fail rather than lend the store:
+/// These reaches fail rather than lend the store, with a panic in
+/// [`Accessor::with`] and with the cause named below in
+/// [`Accessor::try_with`]:
 ///
 /// - A reach made outside any poll of the store, and a reach made
 ///   with the token of another store, fail with the
@@ -58,8 +62,13 @@ use super::poll_scope::PollScope;
 ///   the recursive-driver cause: the outer reach holds the store,
 ///   and the slot it left behind still names it.
 ///
-/// Wasmtime's `with` panics in the first and the last case. The
-/// polyfill's returns the error, so its `with` returns a `Result`.
+/// Wasmtime's `with` panics in the first and the last case, and
+/// returns the closure's value, as the polyfill's `with` does. So a
+/// host's `accessor.with(|access| ..)?` means the same on both
+/// runtimes: the `?` is the closure's own. `try_with` is the polyfill's
+/// own extension, for a host that would rather handle a failed reach
+/// than panic. Wasmtime has no counterpart, and code written for
+/// Wasmtime never needs it.
 ///
 /// A nested `run_concurrent` entered from inside a reach fails with
 /// the recursive-driver cause as well: the store is inside a turn
@@ -84,7 +93,30 @@ pub struct Accessor<T: 'static, D: HasData + ?Sized = HasSelf<T>> {
 }
 
 impl<T: 'static, D: HasData + ?Sized> Accessor<T, D> {
-    /// Run `body` against the store this token names.
+    /// Run `body` against the store this token names, and answer what
+    /// it returns, as Wasmtime's `with` does.
+    ///
+    /// The store is reachable only for the length of the call, as
+    /// [`try_with`](Self::try_with) states.
+    ///
+    /// # Panics
+    ///
+    /// When the reach fails, which [`try_with`](Self::try_with) answers
+    /// with an error instead: a reach from inside another reach's
+    /// closure, a reach made where no poll of this store is running, and
+    /// a reach with a token whose host data type is not the store's.
+    /// The message is the error's. In the browser a panic aborts the
+    /// page.
+    #[track_caller]
+    pub fn with<R>(&self, body: impl FnOnce(Access<'_, T, D>) -> R) -> R {
+        match self.try_with(body) {
+            Ok(value) => value,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// Run `body` against the store this token names, and answer what
+    /// it returns, or the error a reach that fails meets.
     ///
     /// The store is reachable only for the length of the call.
     /// `body` takes the store by a borrow it cannot hold on to, so
@@ -97,7 +129,10 @@ impl<T: 'static, D: HasData + ?Sized> Accessor<T, D> {
     /// this token used again from inside `body`. A reach made where
     /// no poll of this store is running fails with the
     /// store-not-in-poll cause.
-    pub fn with<R>(&self, body: impl FnOnce(Access<'_, T, D>) -> R) -> Result<R> {
+    ///
+    /// The polyfill's own extension: Wasmtime's accessor has only
+    /// [`with`](Self::with).
+    pub fn try_with<R>(&self, body: impl FnOnce(Access<'_, T, D>) -> R) -> Result<R> {
         let get_data = self.get_data;
         PollScope::reach(self.store, |store, waker| {
             store.internal().run_in_turn(waker, |store| {
@@ -190,7 +225,7 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|mut access| {
+                    .try_with(|mut access| {
                         access.data_mut().push_str(" reached");
                         // The borrow the closure is given outlives
                         // nothing, so what the host keeps is a clone.
@@ -213,6 +248,83 @@ mod tests {
     }
 
     #[wcmp_macros::test]
+    async fn it_returns_the_closures_value_from_with_as_wasmtime_does() {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let mut store = Store::new(&engine, 20_u32).expect("store");
+
+        let seen = store
+            .run_concurrent(async |accessor| {
+                accessor.with(|mut access| {
+                    *access.data_mut() += 1;
+                    *access.data()
+                })
+            })
+            .await
+            .expect("run the closure");
+
+        assert_eq!(seen, 21, "`with` handed back the closure's value itself");
+    }
+
+    #[wcmp_macros::test]
+    async fn it_passes_the_closures_own_error_to_the_question_mark_after_with() {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+
+        // Upstream `wasi-webgpu-wasmtime`'s `map-async` has this shape:
+        // the closure's own `Result`, and a `?` after `with`. With
+        // `with` returning the closure's value, the `?` is the
+        // closure's, as it is on Wasmtime, and its error is not
+        // dropped.
+        fn map_async(accessor: &Accessor<()>) -> core::result::Result<(), String> {
+            accessor.with(|_access| -> core::result::Result<(), String> {
+                Err("the buffer is already mapped".to_owned())
+            })?;
+            Ok(())
+        }
+
+        let seen = store
+            .run_concurrent(async |accessor| map_async(accessor))
+            .await
+            .expect("run the closure");
+
+        assert_eq!(
+            seen,
+            Err("the buffer is already mapped".to_owned()),
+            "the closure's error reached the caller through the `?`"
+        );
+    }
+
+    // The browser target aborts on a panic instead of unwinding, so
+    // there is nothing to catch there and the test is native only. The
+    // causes themselves are tested through `try_with` on both targets.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[wcmp_macros::test]
+    async fn it_panics_with_the_cause_when_with_reaches_outside_a_poll() {
+        let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+        let mut store = Store::new(&engine, ()).expect("store");
+        let escaped = store
+            .run_concurrent(async |accessor| accessor.clone())
+            .await
+            .expect("run the closure");
+
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let unwound = std::panic::catch_unwind(|| escaped.with(|_access| ()));
+        std::panic::set_hook(hook);
+
+        let payload = unwound.expect_err("the reach outside a poll panics");
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            message,
+            outside_a_poll(),
+            "the panic carries the cause `try_with` answers with"
+        );
+    }
+
+    #[wcmp_macros::test]
     async fn it_refuses_an_accessor_used_inside_another_accessors_closure() {
         let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
         let mut store = Store::new(&engine, ()).expect("store");
@@ -220,9 +332,9 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|_access| {
+                    .try_with(|_access| {
                         accessor
-                            .with(|_access| ())
+                            .try_with(|_access| ())
                             .expect_err("the inner reach is refused")
                             .to_string()
                     })
@@ -253,7 +365,7 @@ mod tests {
 
         assert_eq!(
             escaped
-                .with(|_access| ())
+                .try_with(|_access| ())
                 .expect_err("the reach is refused")
                 .to_string(),
             outside_a_poll(),
@@ -275,7 +387,7 @@ mod tests {
         let seen = second
             .run_concurrent(async move |_accessor| {
                 elsewhere
-                    .with(|_access| ())
+                    .try_with(|_access| ())
                     .expect_err("the reach is refused")
                     .to_string()
             })
@@ -304,7 +416,7 @@ mod tests {
         let seen = store
             .run_concurrent(async move |_accessor| {
                 mistyped
-                    .with(|access| *access.data())
+                    .try_with(|access| *access.data())
                     .expect_err("the reach is refused")
                     .to_string()
             })
@@ -337,7 +449,7 @@ mod tests {
             std::panic::set_hook(Box::new(|_| {}));
             let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut entry = Box::pin(store.run_concurrent(async |accessor| {
-                    accessor.with(|_access| panic!("the embedder's closure panicked"))
+                    accessor.try_with(|_access| panic!("the embedder's closure panicked"))
                 }));
                 poll_once(&mut entry, Waker::noop())
             }));
@@ -379,12 +491,12 @@ mod tests {
                     let hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        accessor.with(|_access| panic!("the embedder's closure panicked"))
+                        accessor.try_with(|_access| panic!("the embedder's closure panicked"))
                     }));
                     std::panic::set_hook(hook);
                     assert!(unwound.is_err(), "the closure's panic unwound the reach");
                 }
-                accessor.with(|_access| "reached again")
+                accessor.try_with(|_access| "reached again")
             })
             .await
             .expect("run the closure");
@@ -404,7 +516,7 @@ mod tests {
         let seen = store
             .run_concurrent(async |accessor| {
                 accessor
-                    .with(|mut access| {
+                    .try_with(|mut access| {
                         let store = access.store();
                         let mut reborrowed = store.internal().reborrow();
                         let mut nested =

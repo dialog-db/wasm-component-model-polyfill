@@ -233,11 +233,13 @@ impl<T> FutureReader<T> {
     /// Fails with the store-not-in-poll cause when no poll of the
     /// accessor's store is running, and with the recursive-driver
     /// cause from inside another reach of the same store, as
-    /// [`Accessor::with`] states.
+    /// [`Accessor::try_with`] states.
+    ///
+    /// [`Accessor::try_with`]: crate::Accessor::try_with
     pub fn close_with(&mut self, accessor: impl AsAccessor) -> Result<()> {
         accessor
             .as_accessor()
-            .with(|mut access| self.close(access.store()))?
+            .try_with(|mut access| self.close(access.store()))?
     }
 
     /// Pair this reader with `accessor`, into a guard that closes the

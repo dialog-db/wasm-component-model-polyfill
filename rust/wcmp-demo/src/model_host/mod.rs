@@ -56,7 +56,6 @@ pub fn define<T: ModelHost>(linker: &mut Linker<T>, component: &Component) -> Re
                 let function = function.clone();
                 let model = accessor.with(|access| access.data().model());
                 async move {
-                    let model = model?;
                     let answer = call(&model, &function, &args)
                         .await
                         .map_err(|message| Error::Internal { message })?;

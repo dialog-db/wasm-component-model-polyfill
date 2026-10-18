@@ -441,7 +441,7 @@ impl Generator<'_> {
             };
             let convert = self.convert_call(scope, trappable.error, view)?;
             let converted = if func.kind.is_async() {
-                quote!(host.with(|mut access| #convert)?#passed_on)
+                quote!(host.try_with(|mut access| #convert)?#passed_on)
             } else {
                 quote!(#convert #passed_on)
             };

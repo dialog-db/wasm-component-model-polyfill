@@ -3511,7 +3511,7 @@ mod tests {
                 if polls == 2 {
                     let counted = ran.clone();
                     accessor
-                        .with(|mut access| {
+                        .try_with(|mut access| {
                             let store = access.store();
                             store.scheduler_mut().push_high_priority(Item::new(
                                 ItemKind::TaskStart,
@@ -3557,7 +3557,7 @@ mod tests {
                 if polls == 2 {
                     let counted = lowered.clone();
                     accessor
-                        .with(|mut access| {
+                        .try_with(|mut access| {
                             let store = access.store();
                             let subtask = store
                                 .lock_tables()
@@ -3693,7 +3693,7 @@ mod tests {
                 if polls == 2 {
                     let counted = ran.clone();
                     accessor
-                        .with(|mut access| {
+                        .try_with(|mut access| {
                             let store = access.store();
                             store.scheduler_mut().push_high_priority(Item::new(
                                 ItemKind::TaskStart,
@@ -4514,7 +4514,7 @@ mod tests {
                     if !reached {
                         reached = true;
                         accessor
-                            .with(|mut access| {
+                            .try_with(|mut access| {
                                 let store = access.store();
                                 let recorded = queued.clone();
                                 start_callback_task(store, instance, move |_task| {

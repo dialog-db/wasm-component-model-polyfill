@@ -82,9 +82,7 @@ async fn it_calls_an_async_store_export_through_an_accessor_of_another_projectio
             let text: String = "owned".to_owned();
             let echoed = world.test_exports_shapes().call_echo(&calls, text).await;
             let added = world.call_add(calls.clone(), 2, 3).await;
-            calls
-                .with(|mut access| *access.get() += 1)
-                .expect("reach the projected view");
+            calls.with(|mut access| *access.get() += 1);
             (echoed, added)
         })
         .await

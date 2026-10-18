@@ -126,18 +126,15 @@ impl<T: 'static> host::HostWithStore<T> for HasView {
         // A host crate reaches its view through an accessor of the same
         // store with the projection it was given.
         let again = accessor.with_getter::<HasView>(accessor.getter());
-        again
-            .with(|mut access| {
-                access.get().ctx.touches.push(x);
-            })
-            .expect("the reach after the await");
+        again.with(|mut access| {
+            access.get().ctx.touches.push(x);
+        });
         x * 2
     }
 
     async fn relay(accessor: &Accessor<T, Self>, x: u32) -> u32 {
         let doubler = accessor
             .with(|mut access| access.get().ctx.doubler.clone())
-            .expect("reach the view")
             .expect("the doubler is set");
         let (doubled,) = doubler
             .func_double()
@@ -146,7 +143,6 @@ impl<T: 'static> host::HostWithStore<T> for HasView {
             .expect("the doubler's export runs");
         let mut reader = accessor
             .with(|mut access| FutureReader::new(access.store(), async { Ok::<u32, Error>(1) }))
-            .expect("reach the store")
             .expect("a future");
         reader
             .close_with(accessor)

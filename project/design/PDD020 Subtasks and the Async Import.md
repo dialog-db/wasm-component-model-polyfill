@@ -425,14 +425,22 @@ empty. This is Wasmtime's design: its accessor holds a store token, and `with`
 reads the store from thread-local storage set around each poll.
 
 ```text
-fn with(accessor, body) -> Result<R>:
-    store = slot.take()                       // empty outside a poll, and inside `with`
+fn try_with(accessor, body) -> Result<R>:
+    store = slot.take()                       // empty outside a poll, and inside a reach
     fail_if(store is none, StoreNotInPoll)
     fail_if(store.id != accessor.store_id, StoreNotInPoll)
     result = body(Access::new(store, accessor.getter))
     slot.put(store)
     return Ok(result)
+
+fn with(accessor, body) -> R:
+    return try_with(accessor, body) or panic with the error
 ```
+
+`with` has Wasmtime's shape: it returns the closure's value, and it panics where
+a reach fails. So a host's `accessor.with(..)?` means the same on both runtimes:
+the `?` is the closure's own. `try_with` is the polyfill's own. It returns the
+failure as an error, and the polyfill's own code uses it.
 
 The accessor also carries a projection, as Wasmtime's does. A projection is a
 function pointer from the host data to one part of it. Its type is
@@ -451,16 +459,17 @@ and a reference to an `AsAccessor` implement it. It names the host data as
 takes an `impl AsAccessor`, as in Wasmtime, so that an accessor with any
 projection reaches it.
 
-Every rule of [PDD018] stays. A body reaches the store only inside `with`. A
-value taken from the host data must be cloned out. `with` inside `with` finds
-the slot empty and fails with the recursive-driver cause, as today. A `with`
-outside any poll, or with an accessor of another store, fails with the
-store-not-in-poll cause, where Wasmtime panics. The visible change is the
-lifetime leaving the public type, so `Store::run_concurrent` hands its closure
-`&Accessor<T>`, and a host task's future holds the same reference across its
-awaits. One slot suffices because a poll holds the store by `&mut`, so at most
-one store is inside a poll on a thread. In the browser the slot is one static
-cell, because the page has one thread, and the declaration is the same.
+Every rule of [PDD018] stays. A body reaches the store only inside `with` or
+`try_with`. A value taken from the host data must be cloned out. A reach inside
+a reach finds the slot empty and fails with the recursive-driver cause, as
+today. A reach outside any poll, or with an accessor of another store, fails
+with the store-not-in-poll cause. `try_with` returns these causes, and `with`
+panics with them, as Wasmtime panics. The visible change is the lifetime leaving
+the public type, so `Store::run_concurrent` hands its closure `&Accessor<T>`,
+and a host task's future holds the same reference across its awaits. One slot
+suffices because a poll holds the store by `&mut`, so at most one store is
+inside a poll on a thread. In the browser the slot is one static cell, because
+the page has one thread, and the declaration is the same.
 
 Everything `HostCall` offers a synchronous host function reaches a host `async`
 function through `with` on the store context, such as the host data.
@@ -597,8 +606,8 @@ destructor as a synchronous call. Each clears the flag on exit.
   carries Wasmtime's message for that mismatch.
 - `SchedulerCause` gains one cause, store not in poll: an accessor was used
   while no poll of its store was running, or with an accessor of another store.
-  Wasmtime panics there. The polyfill returns the error, because `with` already
-  returns a result.
+  Wasmtime panics there. `with` panics as well, and `try_with` returns the
+  error.
 - The nested turn's failures are the existing causes under the revised rules:
   deadlock on idle, stack switch needed on a pending host task, cannot block
   when a task that must not block is in progress, with or without a provider,
@@ -851,11 +860,13 @@ call is queued behind a first, that a dropped future cancels nothing, and that
 an idle store leaves the entry pending.
 
 The accessor is a token. Repository tests prove that `with` reaches the host
-data during a poll, that `with` inside `with` fails with the recursive-driver
-cause, that `with` outside a poll and with another store's accessor fail with
-the store-not-in-poll cause, and that a host task's future holds the accessor
-across an await. In the browser a host `async` function awaits a JavaScript
-promise and returns its value to the guest.
+data during a poll and returns the closure's value, that a `?` after `with`
+passes on the closure's own error, that `try_with` inside a reach fails with the
+recursive-driver cause, that `try_with` outside a poll and with another store's
+accessor fail with the store-not-in-poll cause, that `with` outside a poll
+panics with that cause, and that a host task's future holds the accessor across
+an await. In the browser a host `async` function awaits a JavaScript promise and
+returns its value to the guest.
 
 The corpus lines are removed. The expected-failure list loses every line the
 owned files and directives above account for, and no other line. The progress

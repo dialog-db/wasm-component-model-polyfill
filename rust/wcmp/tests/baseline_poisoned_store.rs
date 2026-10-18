@@ -563,9 +563,7 @@ async fn it_refuses_every_guest_entry_of_a_poisoned_store() {
     let value = fixture
         .store
         .run_concurrent(async |accessor| {
-            accessor
-                .with(|access| access.data().0.load(Ordering::Relaxed) + 41)
-                .expect("the closure reaches the host data")
+            accessor.with(|access| access.data().0.load(Ordering::Relaxed) + 41)
         })
         .await
         .expect("a closure that does only host work runs in a poisoned store");
@@ -691,7 +689,7 @@ impl Drop for Pend {
     fn drop(&mut self) {
         let reach = self
             .accessor
-            .with(|_access| ())
+            .try_with(|_access| ())
             .map_err(|error| error.to_string());
         if let Ok(mut slot) = self.seen.reach.lock() {
             *slot = Some(reach);

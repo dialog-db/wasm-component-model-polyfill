@@ -422,7 +422,9 @@ The projection captures nothing, and each registration keeps a copy of it.
 
 `Accessor<T, D = HasSelf<T>>` is the token of [PDD020] with a projection added:
 
-- `with` runs a closure that receives an `Access<'_, T, D>`.
+- `with` runs a closure that receives an `Access<'_, T, D>`, and returns the
+  closure's value.
+- `try_with` runs the closure as `with` does, and returns `Result<R>`.
 - `getter` gives the projection.
 - `with_getter::<D2>` gives an accessor of the same store with another
   projection.
@@ -438,9 +440,14 @@ take an `impl AsAccessor`, as in Wasmtime. A host method that holds an
 
 Two parts of the polyfill's accessor differ from Wasmtime's:
 
-- `with` returns `Result<R>`. A reach from inside another reach, or outside a
-  poll of the store, fails with an error of [PDD020]. Wasmtime panics. The
-  polyfill returns structured errors at its public boundary ([PDD005]).
+- `try_with` is the polyfill's own. A reach from inside another reach, or
+  outside a poll of the store, fails with an error of [PDD020]. `with` panics
+  there, as Wasmtime's does, so a host's `accessor.with(..)?` means the same on
+  both runtimes: the `?` is the closure's own. The polyfill's own code, and a
+  host that would rather handle the failure than panic, use `try_with`. This is
+  the one place the public API panics where [PDD005] asks for a structured
+  error: code written for Wasmtime would otherwise compile with another meaning
+  and drop the closure's error.
 - `Accessor` is `Clone`. The polyfill's host futures are `'static`, so a future
   owns its own copy of the token.
 
@@ -632,7 +639,6 @@ Wasmtime:
   synchronously.
 - `call_*` takes `S: AsContextMut` in Wasmtime and `&mut Store<T>` in the
   polyfill. A call that passes `&mut store` is the same in both.
-- A `?` at each `Accessor::with`.
 - `Access::store` in place of `AsContextMut` on an `Access`.
 - The Wasmtime glue module passes `LinkOptions` when its WIT has gated items.
 
@@ -784,14 +790,16 @@ committed snapshot.
 ## Revisions to Earlier Designs
 
 [PDD020] is revised in place. `Accessor` carries a projection, `with` gives an
-`Access`, the calls that take an accessor take an `impl AsAccessor`, and the
-polyfill has `HasData` and `HasSelf`.
+`Access` and returns the closure's value, `try_with` returns the `Result`, the
+calls that take an accessor take an `impl AsAccessor`, and the polyfill has
+`HasData` and `HasSelf`.
 
 [PDD021] is revised in place. `close_with` and `guard` take an
-`impl AsAccessor`.
+`impl AsAccessor`, and a guard closes through `try_with`.
 
 [PDD008] and [PDD005] are revised in place. A host reports its own error with
-`Error::Host`, and the host can downcast its source.
+`Error::Host`, and the host can downcast its source. `Accessor::with` is the one
+entry point that panics on a failure a user can cause, as Wasmtime's does.
 
 [PDD003] is revised in place. It lists the host data projection as "Implement".
 

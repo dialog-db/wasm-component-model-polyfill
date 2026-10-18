@@ -59,7 +59,7 @@ pub fn define<T: HttpHost>(linker: &mut Linker<T>, component: &Component) -> Res
                         let handle = accessor.with(|mut access| {
                             let store = access.store();
                             http_types::response_handle(store, rep)
-                        })??;
+                        })?;
                         Val::Result(Ok(Some(Box::new(Val::Resource(handle)))))
                     }
                     Err(reason) => Val::Result(Err(Some(Box::new(internal_error(&reason))))),
@@ -85,35 +85,31 @@ async fn send<T: HttpHost>(accessor: &Accessor<T>, args: Vec<Val>) -> Result<u32
             let store = access.store();
             handle.try_into_resource_dynamic(store)
         })
-        .and_then(|request| request)
         .map_err(|error| error.to_string())?
         .rep();
-    let (request, body) = accessor
-        .with(|mut access| {
-            let store = access.store();
-            let request =
-                store.data_mut().http().take_request(rep).ok_or_else(|| {
-                    "`send` was given a request the host does not hold".to_string()
-                })?;
-            let Request {
-                method,
-                path_with_query,
-                headers,
-                body,
-                ..
-            } = request;
-            let body = http_types::read_body(store, body).map_err(|error| error.to_string())?;
-            Ok::<_, String>(((method, path_with_query, headers), body))
-        })
-        .map_err(|error| error.to_string())??;
+    let (request, body) = accessor.with(|mut access| {
+        let store = access.store();
+        let request = store
+            .data_mut()
+            .http()
+            .take_request(rep)
+            .ok_or_else(|| "`send` was given a request the host does not hold".to_string())?;
+        let Request {
+            method,
+            path_with_query,
+            headers,
+            body,
+            ..
+        } = request;
+        let body = http_types::read_body(store, body).map_err(|error| error.to_string())?;
+        Ok::<_, String>(((method, path_with_query, headers), body))
+    })?;
     let body = body.await;
     let (method, path, headers) = request;
     let response = fetch(&method, path.as_deref().unwrap_or("/"), &headers, body)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    accessor
-        .with(|mut access| access.data_mut().http().insert_response(response))
-        .map_err(|error| error.to_string())
+    Ok(accessor.with(|mut access| access.data_mut().http().insert_response(response)))
 }
 
 /// Fetch `path` with `method`, `headers`, and `body`, and read the whole

@@ -260,18 +260,16 @@ async fn it_hands_the_reach_of_an_accessor_the_view_its_projection_gives() {
     let (rep, nested) = store
         .run_concurrent(async |accessor| {
             let projected: Accessor<Host, HasView> = accessor.with_getter::<HasView>(view);
-            projected
-                .with(|mut access| {
-                    let rep = touch(access.get(), 3).expect("the view keeps the value");
-                    // The outer reach holds the store, so the token used
-                    // again from inside it is refused, whatever its
-                    // projection.
-                    let nested = projected
-                        .with(|_access| ())
-                        .expect_err("the inner reach is refused");
-                    (rep, nested.to_string())
-                })
-                .expect("the outer reach succeeds")
+            projected.with(|mut access| {
+                let rep = touch(access.get(), 3).expect("the view keeps the value");
+                // The outer reach holds the store, so the token used
+                // again from inside it is refused, whatever its
+                // projection.
+                let nested = projected
+                    .try_with(|_access| ())
+                    .expect_err("the inner reach is refused");
+                (rep, nested.to_string())
+            })
         })
         .await
         .expect("run the closure");
@@ -311,7 +309,7 @@ async fn it_reaches_the_view_of_another_projection_from_a_host_future_after_an_a
                 let projected = accessor.with_getter::<HasView>(view);
                 async move {
                     PendingOnce::default().await;
-                    let rep = projected.with(|mut access| touch(access.get(), x))??;
+                    let rep = projected.with(|mut access| touch(access.get(), x))?;
                     Ok((rep,))
                 }
             })

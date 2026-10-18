@@ -607,7 +607,7 @@ mod tests {
 
         let handle = store
             .run_concurrent(async |accessor: &crate::Accessor<()>| {
-                accessor.with(|mut access| {
+                accessor.try_with(|mut access| {
                     let context = access.store();
                     context.internal().mint_own(type_id, 9)
                 })

@@ -32,8 +32,9 @@ use super::stream_reader::StreamReader;
 /// `Accessor::with` too, which panics when no poll of the store is
 /// running and when another reach of the store is, so a Wasmtime
 /// guard dropped there panics, and one whose close fails trips a
-/// debug assertion. The polyfill's accessor reports both cases as
-/// errors instead, and the guard lets the end leak rather than turn
+/// debug assertion. The polyfill's guard closes through
+/// `Accessor::try_with`, which reports both cases as errors, and the
+/// guard lets the end leak rather than turn
 /// an error into a panic in a drop, which aborts the process when the
 /// drop runs while a thread unwinds.
 pub struct GuardedStreamReader<T, A: AsAccessor> {

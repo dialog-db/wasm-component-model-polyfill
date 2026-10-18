@@ -874,7 +874,7 @@ async fn instantiate_with_a_refusal(binary: &[u8]) -> (Store<()>, Instance, Log)
                     return Ok(());
                 }
                 let accessor: Accessor<()> = Accessor::new(call.store().internal().id());
-                accessor.with(|access| *access.data())?;
+                accessor.try_with(|access| *access.data())?;
                 Ok(())
             },
         )
