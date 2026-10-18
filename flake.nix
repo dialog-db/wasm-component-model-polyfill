@@ -2588,6 +2588,32 @@
                   exit "$status"
                 '';
               };
+            }
+            // pkgs.lib.optionalAttrs isLinux {
+              # The web archive in WebKitGTK, the engine Safari is built
+              # on, rather than headless Chrome: see `nix/webkit-tests.sh`.
+              # It takes about two minutes once the archive is built.
+              # `tests all` and CI leave it out while tests that fail only
+              # in WebKitGTK remain.
+              webkit = {
+                description = "Unit and integration tests in WebKitGTK's MiniBrowser on a headless Weston, one browser per test binary, with parallelism following available memory unless NEXTEST_TEST_THREADS says otherwise (arguments after the leaf reach `cargo nextest list`, as in `-E 'test(<name>)'`; Linux only)";
+                subcommands = {
+                  debug = {
+                    description = "Unit and integration tests in WebKitGTK (wasm32-unknown-unknown, debug)";
+                    command = ''
+                      archive=$(nix build --no-link --print-out-paths .#tests-web-debug)
+                    ''
+                    + testWorkspace "tests-web-debug-webkit"
+                    + ''
+                      export WCMP_WESTON=${pkgs.weston}/bin/weston
+                      export WCMP_WEBKIT_DRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
+                      export WCMP_WEBKIT_CAPABILITIES=${webkitDriverConfig}
+                      ${webkitTests}/bin/wcmp-webkit-tests \
+                        "$archive/tests-web-debug.tar.zst" "$workspace" "$@"
+                    '';
+                  };
+                };
+              };
             };
           };
 
@@ -2928,6 +2954,19 @@
             export WASM_BINDGEN_TEST_WEBDRIVER_JSON=${webkitDriverConfig}
             wcmp-smoke-web-check "$page" "$native" "$runtime/report.txt"
           '';
+        };
+        # `tests webkit debug`: see `nix/webkit-tests.sh`.
+        webkitTests = pkgs.writeShellApplication {
+          name = "wcmp-webkit-tests";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.findutils
+            pkgs.gawk
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.jq
+          ];
+          text = builtins.readFile ./nix/webkit-tests.sh;
         };
         webkitDriverConfig = (pkgs.formats.json { }).generate "webkit-webdriver.json" {
           browserName = "MiniBrowser";
