@@ -1074,16 +1074,17 @@
 
         # Markdown helpers: one Prettier configuration drives the `markdown`
         # menu command (`format` / `lint` subcommands) and the check below.
-        # Scoped to the top-level README, CLAUDE.md, the design corpus, the
-        # research notes, the board README, the benchmark README, and the
-        # Zena README; the board file itself is machine-managed and stays out
-        # of the gate.
+        # Scoped to the top-level README and its notes, CLAUDE.md, the design
+        # corpus, the research notes, the board README, the benchmark README,
+        # and the Zena README; the board file itself is machine-managed and
+        # stays out of the gate.
         markdown = katsuobushi.lib.markdown {
           inherit pkgs;
           workspaceRoot = ./.;
           include = [
             "CLAUDE.md"
             "README.md"
+            "notes/**/*.md"
             "project/design/**/*.md"
             "project/research/**/*.md"
             "project/kanban/README.md"
