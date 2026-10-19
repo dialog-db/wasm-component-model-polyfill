@@ -127,8 +127,11 @@ pub mod __private {
 
 /// Expands to one test for each script of the suite, run with the engine
 /// that `$engine`, a function of no arguments that returns an
-/// [`Engine`](wcmp_wasm_core::Engine), makes, and held to `$expected`, a
-/// `&str` constant that holds the backend's list of expected failures.
+/// [`Engine`](wcmp_wasm_core::Engine), makes, and held to `$expected`, an
+/// expression of type `&str` that holds the backend's list of expected
+/// failures. Each test evaluates it, so a backend whose engine is chosen
+/// when the tests run, as the browser's is, can give each engine its own
+/// list.
 ///
 /// Three more tests come with them. One checks the list itself: every
 /// entry cites what explains its failure and names a script of the suite.
@@ -138,7 +141,7 @@ pub mod __private {
 /// See the crate's documentation.
 #[macro_export]
 macro_rules! fidelity_tests {
-    ($engine:path, $expected:path $(,)?) => {
+    ($engine:path, $expected:expr $(,)?) => {
         $crate::__script_tests!($engine, $expected);
 
         #[$crate::__private::test]

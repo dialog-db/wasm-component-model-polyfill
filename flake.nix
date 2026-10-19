@@ -2493,6 +2493,13 @@
                     filter = "binary_id(wcmp-wasm-core-web::fidelity)";
                     browser = true;
                   };
+                }
+                // pkgs.lib.optionalAttrs isLinux {
+                  webkit = webkitLane {
+                    description = "The fidelity suite on the browser backend in WebKitGTK, whose engine is JavaScriptCore (wasm32-unknown-unknown, debug; Linux only)";
+                    lane = "tests-web-debug-webkit-fidelity";
+                    arguments = "--profile fidelity -E 'binary_id(wcmp-wasm-core-web::fidelity)'";
+                  };
                 };
               };
               regenerate = {
@@ -2598,19 +2605,14 @@
               webkit = {
                 description = "Unit and integration tests in WebKitGTK's MiniBrowser on a headless Weston, one browser per test binary, with parallelism following available memory unless NEXTEST_TEST_THREADS says otherwise (arguments after the leaf reach `cargo nextest list`, as in `-E 'test(<name>)'`; Linux only)";
                 subcommands = {
-                  debug = {
+                  debug = webkitLane {
                     description = "Unit and integration tests in WebKitGTK (wasm32-unknown-unknown, debug)";
-                    command = ''
-                      archive=$(nix build --no-link --print-out-paths .#tests-web-debug)
-                    ''
-                    + testWorkspace "tests-web-debug-webkit"
-                    + ''
-                      export WCMP_WESTON=${pkgs.weston}/bin/weston
-                      export WCMP_WEBKIT_DRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
-                      export WCMP_WEBKIT_CAPABILITIES=${webkitDriverConfig}
-                      ${webkitTests}/bin/wcmp-webkit-tests \
-                        "$archive/tests-web-debug.tar.zst" "$workspace" "$@"
-                    '';
+                    lane = "tests-web-debug-webkit";
+                  };
+                  no-provider = webkitLane {
+                    description = "The conformance corpus alone in WebKitGTK, with the suspend provider turned off through `EngineConfig` (wasm32-unknown-unknown, debug)";
+                    lane = "tests-web-debug-webkit-no-provider";
+                    arguments = "--profile no-provider";
                   };
                 };
               };
@@ -2968,6 +2970,29 @@
           ];
           text = builtins.readFile ./nix/webkit-tests.sh;
         };
+        # A WebKitGTK lane: the web debug archive in MiniBrowser, through
+        # `nix/webkit-tests.sh`, with the nextest arguments `arguments`
+        # before the caller's, in a workspace of its own named `lane`.
+        webkitLane =
+          {
+            description,
+            lane,
+            arguments ? "",
+          }:
+          {
+            inherit description;
+            command = ''
+              archive=$(nix build --no-link --print-out-paths .#tests-web-debug)
+            ''
+            + testWorkspace lane
+            + ''
+              export WCMP_WESTON=${pkgs.weston}/bin/weston
+              export WCMP_WEBKIT_DRIVER=${pkgs.webkitgtk_6_0}/bin/WebKitWebDriver
+              export WCMP_WEBKIT_CAPABILITIES=${webkitDriverConfig}
+              ${webkitTests}/bin/wcmp-webkit-tests \
+                "$archive/tests-web-debug.tar.zst" "$workspace" ${arguments} "$@"
+            '';
+          };
         webkitDriverConfig = (pkgs.formats.json { }).generate "webkit-webdriver.json" {
           browserName = "MiniBrowser";
           "webkitgtk:browserOptions" = {

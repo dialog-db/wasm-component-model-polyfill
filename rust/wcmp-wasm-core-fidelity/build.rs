@@ -124,7 +124,7 @@ fn generate(scripts: &[(String, PathBuf)]) -> String {
     source.push_str("];\n\n");
     source.push_str("/// One test for each script of the suite. See `fidelity_tests!`.\n");
     source.push_str("#[doc(hidden)]\n#[macro_export]\nmacro_rules! __script_tests {\n");
-    source.push_str("    ($engine:path, $expected:path) => {\n");
+    source.push_str("    ($engine:path, $expected:expr) => {\n");
     for (path, _) in scripts {
         let name = test_name(path);
         writeln!(

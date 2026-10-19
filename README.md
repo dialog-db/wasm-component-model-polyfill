@@ -677,8 +677,9 @@ command, never through bare `cargo`. Outside the shell, prefix a command with
 | `build debug` / `release`    | Build the polyfill crate for both targets.                                                     |
 | `tests native debug`         | Unit and integration tests on the host.                                                        |
 | `tests web debug`            | The same tests in headless Chrome.                                                             |
+| `tests webkit debug`         | The same tests in WebKitGTK's MiniBrowser on a headless Weston (Linux).                        |
 | `tests conformance`          | The conformance progress summary for both targets.                                             |
-| `tests fidelity <backend>`   | The WebAssembly spec tests on one backend of the runtime layer: `wasmi`, `wasmtime`, or `web`. |
+| `tests fidelity <backend>`   | The WebAssembly spec tests on a backend: `wasmi`, `wasmtime`, `web`, or `webkit` (WebKitGTK).  |
 | `tests smoke native` / `web` | The end-to-end smoke test as a binary or as a served page.                                     |
 | `tests all`                  | Every test archive, debug and release, native and web.                                         |
 | `tests native wasmi`         | The polyfill's tests on the Wasmi backend, from the native debug build.                        |
