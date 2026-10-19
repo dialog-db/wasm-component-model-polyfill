@@ -7,7 +7,7 @@
 //! The backend contract of the runtime layer, on the browser backend.
 //!
 //! Every test of the contract runs here. The trap fixture runs with the
-//! allowances below.
+//! allowances below, which differ by the engine of the page.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -15,15 +15,19 @@ use wcmp_wasm_core::Engine;
 use wcmp_wasm_core_contract::AmbiguousTrap;
 use wcmp_wasm_core_web::Web;
 
+#[path = "support/page_engine.rs"]
+mod page_engine;
+
+use page_engine::PageEngine;
+
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 fn engine() -> Engine {
     Engine::with_backend(Web::new())
 }
 
-/// The traps of the fixture that the browser's engine words with a message
-/// of more than one kind, which the backend reports as `Other` with that
-/// message.
+/// The traps of the fixture that V8 words with a message of more than one
+/// kind, which the backend reports as `Other` with that message.
 ///
 /// V8 words a truncation of a NaN, which Wasmtime calls
 /// `BadConversionToInteger`, and a truncation of a float outside the range
@@ -39,7 +43,7 @@ fn engine() -> Engine {
 /// `WasmTrapResume` of the same file. Chrome does not declare stack
 /// switching yet, so the fixture of that trap does not run, and the
 /// allowance waits for the day it does.
-const AMBIGUOUS: &[AmbiguousTrap] = &[
+const AMBIGUOUS_IN_V8: &[AmbiguousTrap] = &[
     AmbiguousTrap {
         export: "bad_conversion_to_integer",
         message: "float unrepresentable in integer range",
@@ -50,9 +54,61 @@ const AMBIGUOUS: &[AmbiguousTrap] = &[
     },
 ];
 
+/// The traps of the fixture that JavaScriptCore words with a message of
+/// more than one kind, which the backend reports as `Other` with that
+/// message. The messages are those of
+/// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/wasm/WasmExceptionType.h>.
+///
+/// - An indirect call to a null entry, which Wasmtime calls
+///   `IndirectCallToNull`, and to a function of another signature, which
+///   it calls `BadSignature`: each tier of JavaScriptCore checks a null
+///   entry as a signature that does not match (`WasmIPIntSlowPaths.cpp`
+///   lines 1203-1204, `WasmBBQJIT.cpp` lines 4954-4957, and
+///   `WasmOMGIRGenerator.cpp` lines 6825-6840, in
+///   `Source/JavaScriptCore/wasm/` at the same commit), so both take the
+///   message `BadSignature`, and no message tells them apart.
+/// - A truncation of a NaN, which Wasmtime calls `BadConversionToInteger`,
+///   and of a float outside the range of the integer, which it calls
+///   `IntegerOverflow`, which JavaScriptCore words as one,
+///   `OutOfBoundsTrunc`.
+/// - A wait on a memory that is not shared, which Wasmtime calls
+///   `AtomicWaitNonSharedMemory`, and an access out of the bounds of a
+///   memory: `memoryAtomicWait32` in `WasmOperationsInlines.h` answers -1
+///   for a memory that is not shared and for a thread that may not wait
+///   (lines 765-768), and each tier throws `OutOfBoundsMemoryAccess`
+///   where that answer is negative: the interpreter in
+///   `Source/JavaScriptCore/llint/InPlaceInterpreter64.asm` (line 10122 at
+///   the commit of WebKitGTK 2.54.1, 628d6ce1850e), and the baseline
+///   compiler in `WasmBBQJIT.cpp` (line 1334). The backend reads the
+///   message as `MemoryOutOfBounds` only in a store whose modules never
+///   wait, and the fixture's module waits.
+const AMBIGUOUS_IN_JAVASCRIPTCORE: &[AmbiguousTrap] = &[
+    AmbiguousTrap {
+        export: "indirect_call_to_null",
+        message: "call_indirect to a signature that does not match",
+    },
+    AmbiguousTrap {
+        export: "bad_signature",
+        message: "call_indirect to a signature that does not match",
+    },
+    AmbiguousTrap {
+        export: "bad_conversion_to_integer",
+        message: "Out of bounds Trunc operation",
+    },
+    AmbiguousTrap {
+        export: "atomic_wait_non_shared_memory",
+        message: "Out of bounds memory access",
+    },
+];
+
 #[wcmp_macros::test]
 async fn it_raises_each_core_trap_the_capabilities_permit() {
-    wcmp_wasm_core_contract::it_raises_each_core_trap_allowing(&engine(), AMBIGUOUS).await;
+    let ambiguous = match PageEngine::of_page() {
+        PageEngine::V8 => AMBIGUOUS_IN_V8,
+        PageEngine::JavaScriptCore => AMBIGUOUS_IN_JAVASCRIPTCORE,
+        PageEngine::SpiderMonkey => &[],
+    };
+    wcmp_wasm_core_contract::it_raises_each_core_trap_allowing(&engine(), ambiguous).await;
 }
 
 wcmp_wasm_core_contract::contract_tests!(

@@ -2167,7 +2167,8 @@ async fn it_reads_an_uncaught_exception_and_a_refused_wait_in_the_start_function
     }
 
     // No memory of the store is shared, so the wait the engine refused
-    // was on a memory that is not shared.
+    // was on a memory that is not shared. What the backend reads from the
+    // engine's message differs by engine: see `refused_wait`.
     let waits = Module::compile(
         &engine,
         wasm!(
@@ -2187,8 +2188,34 @@ async fn it_reads_an_uncaught_exception_and_a_refused_wait_in_the_start_function
     .await
     .expect("the module compiles");
     match Instance::instantiate(&mut store, &waits, &[]).await {
-        Err(Error::Trap(TrapKind::AtomicWaitNonSharedMemory)) => {}
+        Err(Error::Trap(trap)) if refused_wait(&trap) => {}
         other => panic!("the start function's wait is refused: {other:?}"),
+    }
+}
+
+/// Whether `trap` is what the backend reads for a wait on a memory that is
+/// not shared, in a store whose memories none are shared, in the engine of
+/// the page.
+///
+/// V8 refuses the wait with a message of its own, which the backend reads
+/// as `AtomicWaitNonSharedMemory` where no memory is shared.
+/// JavaScriptCore refuses it with the message of an access out of the
+/// bounds of a memory: `memoryAtomicWait32` answers -1 for a memory that is
+/// not shared and for a thread that may not wait, and the baseline compiler
+/// throws `OutOfBoundsMemoryAccess` for that answer, at
+/// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/wasm/WasmOperationsInlines.h#L756-L771>
+/// and
+/// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/wasm/WasmBBQJIT.cpp#L1334>.
+/// In a store whose module waits the message names both, so the backend
+/// reports `Other` with it rather than a kind that could be wrong.
+fn refused_wait(trap: &TrapKind) -> bool {
+    match PageEngine::of_page() {
+        PageEngine::JavaScriptCore => {
+            matches!(trap, TrapKind::Other(message) if message == "Out of bounds memory access")
+        }
+        PageEngine::V8 | PageEngine::SpiderMonkey => {
+            matches!(trap, TrapKind::AtomicWaitNonSharedMemory)
+        }
     }
 }
 
@@ -2240,7 +2267,7 @@ async fn it_reads_a_trap_in_the_first_stretch_and_a_refused_wait_after_a_resumpt
         panic!("the call suspends in `wait`");
     };
     match handle.resume(&mut store, &[], &mut []).await {
-        Err(Error::Trap(TrapKind::AtomicWaitNonSharedMemory)) => {}
+        Err(Error::Trap(trap)) if refused_wait(&trap) => {}
         other => panic!("the resumed stack's wait is refused: {other:?}"),
     }
 }

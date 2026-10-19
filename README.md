@@ -589,6 +589,14 @@ the cost against the `u32` floor of the same shape. Two
 - V8 checks the element segment before the array in `array.init_elem`, where the
   specification checks the array first. Two fidelity failures (same file, cited
   to V8's `runtime-wasm.cc`).
+- JavaScriptCore, the engine of Safari and WebKitGTK, words several pairs of
+  traps with one message each: an indirect call to a null entry and to a
+  function of another signature, the two truncation traps, the bounds of a
+  segment and of an array in the array instructions that read a segment, and, in
+  a module that waits, a refused atomic wait and an access out of the bounds of
+  a memory. The browser backend reads each as `TrapKind::Other` with the
+  message, never as a wrong kind (`rust/wcmp-wasm-core-web/src/traps.rs`, cited
+  to WebKit's source).
 - A Wasmi built optimized with debug assertions overflows the native stack on a
   long run (wasmi-labs/wasmi#2039). The Wasmi crate docs give the profile
   setting that avoids it.

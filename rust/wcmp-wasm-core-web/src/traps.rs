@@ -216,6 +216,11 @@ const SPIDERMONKEY: &[(&str, Names)] = &[
 /// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/runtime/ExceptionHelpers.cpp>,
 /// and
 /// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/wasm/WasmOperationsInlines.h>.
+/// WebKitGTK 2.54, which the WebKitGTK lanes run, has two messages more,
+/// for `array.fill` and `array.copy` on a null reference, at
+/// <https://github.com/WebKit/WebKit/blob/628d6ce1850e17225185a5807a9d0aa375bae2be/Source/JavaScriptCore/wasm/WasmExceptionType.h#L64-L65>.
+/// A trap of an instantiation has words of its own: see
+/// [`javascriptcore_instantiation`].
 const JAVASCRIPTCORE: &[(&str, Names)] = &[
     (
         "Unreachable code should not be executed",
@@ -274,6 +279,14 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
         Names::One(|| TrapKind::NullReference),
     ),
     (
+        "array.fill to a null reference",
+        Names::One(|| TrapKind::NullReference),
+    ),
+    (
+        "array.copy to a null reference",
+        Names::One(|| TrapKind::NullReference),
+    ),
+    (
         "array.init_elem to a null reference",
         Names::One(|| TrapKind::NullReference),
     ),
@@ -309,6 +322,59 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
         "Out of bounds array.copy",
         Names::One(|| TrapKind::ArrayOutOfBounds),
     ),
+    // The four messages of an array made or filled from a segment name
+    // more than one kind: the operations of
+    // `Source/JavaScriptCore/wasm/WasmOperationsInlines.h` answer one
+    // failure for each range they check, as `arrayInitData` does at lines
+    // 433-460 at the commit above, and each tier throws one message for
+    // it, as `WasmBBQJIT.cpp` does at lines 1664, 1671, 1805, and 1844.
+    //
+    // A range out of the bounds of the element segment, which Wasmtime
+    // calls `TableOutOfBounds`, and of the array, which it calls
+    // `ArrayOutOfBounds`.
+    ("Out of bounds array.init_elem", Names::Several),
+    // A range out of the bounds of the data segment, which Wasmtime calls
+    // `MemoryOutOfBounds`, and of the array, which it calls
+    // `ArrayOutOfBounds`.
+    ("Out of bounds array.init_data", Names::Several),
+    // A range out of the bounds of the element segment, which Wasmtime
+    // calls `TableOutOfBounds`, and an array too large to allocate, which
+    // it calls `AllocationTooLarge`.
+    (
+        "Out of bounds or failed to allocate in array.new_elem",
+        Names::Several,
+    ),
+    // A range out of the bounds of the data segment, which Wasmtime calls
+    // `MemoryOutOfBounds`, and an array too large to allocate.
+    (
+        "Out of bounds or failed to allocate in array.new_data",
+        Names::Several,
+    ),
+    // The two messages of a segment's range below are declared in the
+    // header, but nothing in JavaScriptCore throws them at the commit
+    // above, as for a null table entry. They stay because their words name
+    // one kind alone.
+    //
+    // A range of a data segment out of its bounds, which the specification
+    // and Wasmtime call an access out of the bounds of a memory, as V8's
+    // `data segment out of bounds` above.
+    (
+        "Offset + array length would exceed the size of a data segment",
+        Names::One(|| TrapKind::MemoryOutOfBounds),
+    ),
+    // A range of an element segment out of its bounds, which the
+    // specification and Wasmtime call an access out of the bounds of a
+    // table.
+    (
+        "Offset + array length would exceed the length of an element segment",
+        Names::One(|| TrapKind::TableOutOfBounds),
+    ),
+    // An active element segment out of the bounds of its table, which an
+    // instantiation raises.
+    (
+        "Element is trying to set an out of bounds table index",
+        Names::One(|| TrapKind::TableOutOfBounds),
+    ),
     (
         "Failed to allocate new array",
         Names::One(|| TrapKind::AllocationTooLarge),
@@ -334,11 +400,13 @@ const JAVASCRIPTCORE: &[(&str, Names)] = &[
 /// [`TrapKind::Other`] with the engine's message, never a wrong kind.
 ///
 /// JavaScriptCore can add the source of a call to a message, as in
-/// `Division by zero (evaluating 'f()')`. The table knows the message
-/// without it. V8 puts the name of the call of the JavaScript API before
-/// the message of a trap that an instantiation raised: see
-/// [`instantiation`].
+/// `Division by zero (evaluating 'f()')`. The source names the backend's
+/// own call into the guest, not the guest, so the table knows the message
+/// without it and [`TrapKind::Other`] carries the message without it. V8
+/// puts the name of the call of the JavaScript API before the message of
+/// a trap that an instantiation raised: see [`instantiation`].
 pub fn kind(message: &str, atomics: Atomics) -> TrapKind {
+    let message = without_source(message);
     let other = || TrapKind::Other(message.to_string());
     match names(message) {
         Some(Names::One(kind)) => kind(),
@@ -348,12 +416,20 @@ pub fn kind(message: &str, atomics: Atomics) -> TrapKind {
     }
 }
 
-/// What the tables tell about the message `message`, where one knows it.
-fn names(message: &str) -> Option<Names> {
-    let message = message
+/// The message `message` without the source of a call that
+/// JavaScriptCore adds to it, as in `Division by zero (evaluating 'f()')`.
+fn without_source(message: &str) -> &str {
+    message
         .find(" (evaluating '")
         .filter(|_| message.ends_with("')"))
-        .map_or(message, |end| &message[..end]);
+        .map_or(message, |end| &message[..end])
+}
+
+/// What the tables tell about the message `message`, where one knows it.
+fn names(message: &str) -> Option<Names> {
+    if javascriptcore_instantiation(message) {
+        return Some(Names::One(|| TrapKind::MemoryOutOfBounds));
+    }
     let message = match instantiation(message) {
         Instantiation::Trap(message) => message,
         Instantiation::DataSegment => return Some(Names::One(|| TrapKind::MemoryOutOfBounds)),
@@ -406,6 +482,25 @@ fn instantiation(message: &str) -> Instantiation<'_> {
     } else {
         Instantiation::Trap(trap)
     }
+}
+
+/// Whether `message` is JavaScriptCore's for a data segment out of the
+/// bounds of its memory, which an instantiation raises and which the
+/// specification and Wasmtime call an access out of the bounds of a
+/// memory.
+///
+/// JavaScriptCore words it with the sizes and the offset, as in `Invalid
+/// data segment initialization: segment of 1 bytes memory of 65536 bytes,
+/// at offset 65536, segment writes outside of memory`, and ends it with
+/// `segment is too big` or `segment writes outside of memory`. Source:
+/// `dataSegmentFail` in `Source/JavaScriptCore/wasm/js/WebAssemblyModuleRecord.cpp`,
+/// at
+/// <https://github.com/WebKit/WebKit/blob/1f316fb5ae9cef5d4ea3fb52168ad10100e04729/Source/JavaScriptCore/wasm/js/WebAssemblyModuleRecord.cpp#L847-L851>
+/// and its calls at lines 961 and 965.
+fn javascriptcore_instantiation(message: &str) -> bool {
+    message.starts_with("Invalid data segment initialization: segment of ")
+        && (message.ends_with(", segment is too big")
+            || message.ends_with(", segment writes outside of memory"))
 }
 
 #[cfg(test)]
@@ -610,6 +705,8 @@ mod tests {
                 ("throw_ref on a null reference", Kind("NullReference")),
                 ("i31.get_<sx> to a null reference", Kind("NullReference")),
                 ("access to a null reference", Kind("NullReference")),
+                ("array.fill to a null reference", Kind("NullReference")),
+                ("array.copy to a null reference", Kind("NullReference")),
                 ("array.init_elem to a null reference", Kind("NullReference")),
                 ("array.init_data to a null reference", Kind("NullReference")),
                 ("ref.as_non_null to a null reference", Kind("NullReference")),
@@ -620,6 +717,28 @@ mod tests {
                 ("Out of bounds array.set", Kind("ArrayOutOfBounds")),
                 ("Out of bounds array.fill", Kind("ArrayOutOfBounds")),
                 ("Out of bounds array.copy", Kind("ArrayOutOfBounds")),
+                ("Out of bounds array.init_elem", Several),
+                ("Out of bounds array.init_data", Several),
+                (
+                    "Out of bounds or failed to allocate in array.new_elem",
+                    Several,
+                ),
+                (
+                    "Out of bounds or failed to allocate in array.new_data",
+                    Several,
+                ),
+                (
+                    "Offset + array length would exceed the size of a data segment",
+                    Kind("MemoryOutOfBounds"),
+                ),
+                (
+                    "Offset + array length would exceed the length of an element segment",
+                    Kind("TableOutOfBounds"),
+                ),
+                (
+                    "Element is trying to set an out of bounds table index",
+                    Kind("TableOutOfBounds"),
+                ),
                 ("Failed to allocate new array", Kind("AllocationTooLarge")),
                 (
                     "ref.cast failed to cast reference to target heap type",
@@ -636,6 +755,43 @@ mod tests {
             kind("Division by zero (evaluating 'f()')", Atomics::default()),
             TrapKind::IntegerDivisionByZero
         ));
+    }
+
+    #[wcmp_macros::test]
+    fn it_leaves_the_source_off_a_message_of_more_than_one_kind() {
+        let read = kind(
+            "call_indirect to a signature that does not match \
+             (evaluating 'Reflect.apply(arg0, arg1, arg2)')",
+            Atomics::default(),
+        );
+        assert!(
+            matches!(&read, TrapKind::Other(text)
+                if text == "call_indirect to a signature that does not match"),
+            "{read:?}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    fn it_reads_a_data_segment_out_of_bounds_in_an_instantiation_of_javascriptcore() {
+        for message in [
+            "Invalid data segment initialization: segment of 1 bytes memory of 65536 bytes, \
+             at offset 65536, segment writes outside of memory",
+            "Invalid data segment initialization: segment of 70000 bytes memory of 65536 \
+             bytes, at offset 0, segment is too big",
+        ] {
+            assert!(
+                matches!(
+                    kind(message, Atomics::default()),
+                    TrapKind::MemoryOutOfBounds
+                ),
+                "{message:?}"
+            );
+        }
+        let unknown = "Invalid data segment initialization: segment of 1 bytes";
+        assert!(
+            matches!(kind(unknown, Atomics::default()), TrapKind::Other(ref text) if text == unknown),
+            "{unknown:?}"
+        );
     }
 
     #[wcmp_macros::test]
