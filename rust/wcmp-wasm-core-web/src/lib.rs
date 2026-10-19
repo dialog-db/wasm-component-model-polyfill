@@ -26,14 +26,14 @@
 //! # Compilation and instantiation
 //!
 //! The asynchronous compile is `WebAssembly.compile`, and every
-//! instantiation is `WebAssembly.instantiate`. The browser refuses a
-//! synchronous compile or instantiation of a module above its limit, 8 MB in
-//! Chromium, on the main thread, and these two load such a module. The
-//! synchronous compile, `new WebAssembly.Module`, is for small modules that a
-//! backend or a host generates. Above the limit it fails with
-//! [`Error::Compile`](wcmp_wasm_core::Error::Compile) and the browser's
-//! message. Each compile makes a module of its own. The backend keeps no
-//! cache of modules by their bytes.
+//! instantiation is `WebAssembly.instantiate`. Chromium refuses a
+//! synchronous compile or instantiation of a module above its limit, 8 MB,
+//! on the main thread, and these two load such a module. JavaScriptCore sets
+//! no such limit. The synchronous compile, `new WebAssembly.Module`, is for
+//! small modules that a backend or a host generates. Above Chromium's limit
+//! it fails with [`Error::Compile`](wcmp_wasm_core::Error::Compile) and the
+//! browser's message. Each compile makes a module of its own. The backend
+//! keeps no cache of modules by their bytes.
 //!
 //! A module the browser refuses because it needs a capability the backend
 //! does not declare is
@@ -166,7 +166,10 @@
 //! `Cross-Origin-Embedder-Policy` headers. Whether such a page can make a
 //! shared memory is the browser's rule. Where the browser refuses,
 //! `Memory::new` of a shared type, and the instantiation of a module that
-//! declares a shared memory, fail with the browser's error.
+//! declares a shared memory, fail with the browser's error. WebKitGTK 2.54
+//! makes a shared memory on such a page, and its buffer is a
+//! `SharedArrayBuffer`, but it leaves the global `SharedArrayBuffer`
+//! undefined, so a host there cannot test a buffer with `instanceof`.
 //!
 //! Every memory method checks its range against the size of the memory,
 //! which the accessor reads, and a range outside the memory is

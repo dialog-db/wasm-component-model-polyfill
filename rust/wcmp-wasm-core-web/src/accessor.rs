@@ -659,10 +659,19 @@ mod tests {
             .ok()
             .and_then(|stack| stack.as_string())
             .expect("the trap has a stack");
+        // V8 starts each frame with `at `. JavaScriptCore writes each as
+        // `<name>@<where>`.
+        let v8 = stack.lines().any(|line| line.trim().starts_with("at "));
         let frames = stack
             .lines()
             .map(str::trim)
-            .filter(|line| line.starts_with("at "))
+            .filter(|line| {
+                if v8 {
+                    line.starts_with("at ")
+                } else {
+                    line.contains('@')
+                }
+            })
             .collect::<Vec<_>>();
         let caller = frames
             .iter()
@@ -673,6 +682,11 @@ mod tests {
         // from bytes, or with the URL of the polyfill's own module. A frame
         // of JavaScript names a script, a line, and a column.
         let module_of = |frame: &str| {
+            if !v8 {
+                let (_, place) = frame.rsplit_once('@')?;
+                let end = place.find("wasm-function[")?;
+                return Some(place[..end].to_string());
+            }
             let end = frame.find(":wasm-function[")?;
             let start = frame[..end].rfind(['(', ' ']).map_or(0, |index| index + 1);
             Some(frame[start..end].to_string())
@@ -691,12 +705,23 @@ mod tests {
             accessor, polyfill,
             "the load runs in the accessor:\n{stack}"
         );
-        assert!(
-            modules
-                .iter()
-                .any(|module| module != accessor && module != polyfill),
-            "the trampoline of the dispatcher lies between the two:\n{stack}"
-        );
+        if v8 {
+            assert!(
+                modules
+                    .iter()
+                    .any(|module| module != accessor && module != polyfill),
+                "the trampoline of the dispatcher lies between the two:\n{stack}"
+            );
+        } else {
+            // JavaScriptCore names no module made from bytes, as in
+            // `3@wasm-function[3]`, so the accessor's frames and the
+            // trampoline's look alike: a frame outside the polyfill lies
+            // between the load and the caller.
+            assert!(
+                caller >= 2 && modules[1..caller].iter().all(|module| module != polyfill),
+                "the trampoline of the dispatcher lies between the two:\n{stack}"
+            );
+        }
     }
 
     #[wcmp_macros::test]

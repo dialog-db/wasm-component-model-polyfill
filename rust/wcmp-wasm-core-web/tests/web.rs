@@ -22,9 +22,7 @@ use core::task::{Context, Poll, Waker};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use js_sys::{
-    Array, Function, Object, Promise, Proxy, Reflect, SharedArrayBuffer, Uint8Array, WebAssembly,
-};
+use js_sys::{Array, Function, Object, Promise, Proxy, Reflect, Uint8Array, WebAssembly};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wcmp_macros::wasm;
@@ -47,7 +45,8 @@ fn engine() -> Engine {
     Engine::with_backend(Web::new())
 }
 
-/// The browser's limit for a synchronous compile on the main thread.
+/// Chromium's limit for a synchronous compile on the main thread.
+/// JavaScriptCore has none.
 const SYNCHRONOUS_LIMIT: usize = 8 * 1024 * 1024;
 
 /// The module `bytes`, instantiated in a new store of `engine`.
@@ -329,12 +328,15 @@ async fn it_compiles_and_instantiates_a_module_above_the_synchronous_limit() {
         .expect("the call succeeds");
     assert_eq!(result[0].i32(), Some((9 * 1024 * 1024 - 1) % 251));
 
-    let synchronous = Module::new(&engine, &bytes);
-    match synchronous {
-        Err(Error::Compile { message }) => {
+    // Chromium refuses a synchronous compile above its limit on the main
+    // thread. JavaScriptCore sets no limit, so the module loads that way
+    // too.
+    match (PageEngine::of_page(), Module::new(&engine, &bytes)) {
+        (PageEngine::V8, Err(Error::Compile { message })) => {
             assert!(!message.is_empty(), "the error carries the browser's words");
         }
-        other => panic!("the synchronous compile fails with a compile error: {other:?}"),
+        (PageEngine::JavaScriptCore, Ok(_)) => {}
+        (page, other) => panic!("the synchronous compile in {page:?} gives {other:?}"),
     }
 }
 
@@ -1569,7 +1571,14 @@ async fn it_lends_a_copy_of_a_shared_memory() {
         made.borrow().as_ref().expect("the backend made the memory"),
         "buffer",
     );
-    assert!(buffer.is_instance_of::<SharedArrayBuffer>());
+    // The buffer is a `SharedArrayBuffer` by its brand. WebKitGTK 2.54
+    // leaves the global `SharedArrayBuffer` undefined even on a page that
+    // is cross-origin isolated, as the lane's pages are, so `instanceof`
+    // cannot tell there.
+    assert_eq!(
+        String::from(buffer.unchecked_ref::<Object>().to_string()),
+        "[object SharedArrayBuffer]"
+    );
 
     memory
         .write(&mut store, 100, &PATTERN)
