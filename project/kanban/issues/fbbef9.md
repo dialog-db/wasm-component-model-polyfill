@@ -47,12 +47,40 @@ the memory64 lines as unsupported where the capability is absent, rather
 than a WebKit list.
 
 ## Acceptance criteria
-- [ ] Each test above passes in `tests webkit debug`, and still covers
+- [x] Each test above passes in `tests webkit debug`, and still covers
       memory64 where the backend declares it (Chrome, native).
-- [ ] The tests that need memory64 say so where the backend lacks it,
+- [x] The tests that need memory64 say so where the backend lacks it,
       rather than passing silently.
-- [ ] `lint` passes, `tests all` is green, and `tests webkit debug` shows
+- [x] `lint` passes, `tests all` is green, and `tests webkit debug` shows
       none of these tests failing.
 
 ## Review notes
 
+- 2026-10-19 (implementer): the thread-start fixture keeps its values in
+  a global rather than a 64-bit memory, so its five tests run without
+  memory64. Each test that needs memory64 checks the refusal where the
+  backend lacks it (`Unsupported(memory64)` at `Component::new`, or
+  `Unsupported(Memory64)` from the runtime layer), through a new
+  `declares` of the shared test backend. The conformance corpus gains
+  `expected-failures.no-memory64.txt`, applied on any backend that does
+  not declare memory64 (one line: `wasmtime/memory64.wast:24`).
+  `it_declares_what_chromium_implements` became
+  `it_declares_what_the_engine_of_the_page_implements`, which holds each
+  engine to its own set and cites WebKitGTK 2.54.1's
+  `WasmMemory64Enabled` default. A test helper (`tests/support/page_engine.rs`)
+  tells the page's engine from its user agent. `tests webkit debug`: all
+  eleven pass (1854 tests in 72 binaries; only 1429ec's two still failed
+  in that run).
+
+- 2026-10-19 (implementer): gates on the tip (kanban `de056af7`): `lint`
+  passes, and `tests all -j 6` passes every lane, the WebKitGTK lanes
+  among them (`webkit debug` 1854 tests in 103 s, `webkit no-provider`
+  169 in 20 s, `fidelity webkit` 265 in 27 s).
+
+- 2026-10-19 (peer review, round 1): ACCEPT, three non-blocking findings,
+  answered: the memory64 delta refuses a line the web delta names too
+  (test `it_rejects_a_memory64_line_the_web_delta_already_names`); the
+  JavaScriptCore branch of the capability test says it pins WebKitGTK
+  2.54.1's set, since Safari 26 has no JSPI; a long doc line rewrapped.
+
+- 2026-10-19 (peer review, round 2): ACCEPT; the round-1 answers hold.
