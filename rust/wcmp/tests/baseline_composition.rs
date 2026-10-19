@@ -12,8 +12,9 @@
 
 #![cfg(test)]
 
-use wcmp::{Component, Engine, Linker, Store, Val};
+use wcmp::{Component, Engine, Error, Linker, Store, Val};
 use wcmp_macros::component;
+use wcmp_wasm_core::Capability;
 
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -506,6 +507,20 @@ async fn it_copies_strings_between_a_32_bit_and_a_64_bit_component() {
           (export "roundtrip" (func $c32 "roundtrip")))
         "#
     );
+    // Where the backend lacks memory64, as JavaScriptCore does by
+    // default, the polyfill refuses the component with the feature's
+    // name.
+    if !crate::test_backend::declares(Capability::Memory64) {
+        let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+        let err = Component::new(&engine, COMPONENT)
+            .await
+            .expect_err("a backend without memory64 refuses a 64-bit memory");
+        assert!(
+            matches!(&err, Error::Unsupported { feature } if feature == "memory64"),
+            "{err:?}"
+        );
+        return;
+    }
     let (mut store, instance) = instantiate(COMPONENT).await;
     let roundtrip = instance
         .get_func("roundtrip")

@@ -394,23 +394,26 @@ faithfully. The names come from one fixed list
 capability the backend does not declare fails at `Component::new` with
 `Error::Unsupported` and the name of the capability.
 
-| Capability            | Browser, as a probe finds it     | Wasmi | Wasmtime                         |
-| --------------------- | -------------------------------- | ----- | -------------------------------- |
-| `multi_memory`        | Yes in Chromium                  | Yes   | Yes                              |
-| `memory64`            | Yes in Chromium. No in WebKitGTK | Yes   | Yes                              |
-| `tail_call`           | Yes in Chromium                  | Yes   | Yes                              |
-| `exceptions`          | Yes in Chromium                  | No    | Yes                              |
-| `function_references` | Yes in Chromium                  | No    | Yes                              |
-| `gc`                  | Yes in Chromium                  | No    | Yes                              |
-| `relaxed_simd`        | Yes in Chromium                  | Yes   | Yes                              |
-| `threads`             | Yes in Chromium                  | No    | Yes                              |
-| `stack_switching`     | No browser ships it              | No    | Where Wasmtime's compiler has it |
-| `host_suspension`     | Where the browser has JSPI       | Yes   | No                               |
+| Capability            | Chromium       | WebKitGTK 2.54 | Wasmi | Wasmtime                         |
+| --------------------- | -------------- | -------------- | ----- | -------------------------------- |
+| `multi_memory`        | Yes            | Yes            | Yes   | Yes                              |
+| `memory64`            | Yes            | No (off)       | Yes   | Yes                              |
+| `tail_call`           | Yes            | Yes            | Yes   | Yes                              |
+| `exceptions`          | Yes            | Yes            | No    | Yes                              |
+| `function_references` | Yes            | Yes            | No    | Yes                              |
+| `gc`                  | Yes            | Yes            | No    | Yes                              |
+| `relaxed_simd`        | Yes            | Yes            | Yes   | Yes                              |
+| `threads`             | Yes            | Yes            | No    | Yes                              |
+| `stack_switching`     | No             | No             | No    | Where Wasmtime's compiler has it |
+| `host_suspension`     | Yes, with JSPI | Yes, with JSPI | Yes   | No                               |
 
 Sources: each backend's `src/backend.rs` and crate docs (`src/lib.rs`). The
-Chromium column is the test `it_declares_what_chromium_implements` in
-`rust/wcmp-wasm-core-web/tests/web.rs`. The `stack_switching` row for browsers
-is from `rust/wcmp/src/concurrency/stack_switching_provider.rs`.
+Chromium and WebKitGTK columns are what the browser backend's probes find, as
+the test `it_declares_what_the_engine_of_the_page_implements` in
+`rust/wcmp-wasm-core-web/tests/web.rs` holds them, in the Chrome of the web
+lanes and in the WebKitGTK 2.54.1 of the WebKitGTK lanes. WebKitGTK 2.54 ships
+memory64 turned off. No browser ships `stack_switching`
+(`rust/wcmp/src/concurrency/stack_switching_provider.rs`).
 
 The browser backend decides each Wasm row at run time. When `Web::new` runs, it
 gives one small module per feature to `WebAssembly.validate`, and it declares

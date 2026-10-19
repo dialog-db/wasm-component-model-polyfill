@@ -456,6 +456,20 @@ async fn it_starts_a_thread_whose_start_function_takes_an_i64_in_a_64_bit_memory
     // An address past four gigabytes, which only an `i64` carries.
     const CONTEXT: i64 = 0x1_0000_0010;
 
+    // Where the backend lacks memory64, as JavaScriptCore does by
+    // default, the polyfill refuses the component with the feature's
+    // name.
+    if !crate::runtime_layer::test_backend_declares(crate::runtime_layer::Capability::Memory64) {
+        let err = Component::new(&threading_engine(), I64_START)
+            .await
+            .expect_err("a backend without memory64 refuses a 64-bit memory");
+        assert!(
+            matches!(&err, Error::Unsupported { feature } if feature == "memory64"),
+            "{err:?}"
+        );
+        return;
+    }
+
     let (mut store, instance) = instantiate(I64_START).await;
     let reader = func(&instance, "context");
     let abi_state = reader.abi_state().clone();

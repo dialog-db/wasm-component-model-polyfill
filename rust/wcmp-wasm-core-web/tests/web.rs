@@ -36,6 +36,11 @@ use wcmp_wasm_core::{
 };
 use wcmp_wasm_core_web::Web;
 
+#[path = "support/page_engine.rs"]
+mod page_engine;
+
+use page_engine::PageEngine;
+
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 fn engine() -> Engine {
@@ -124,23 +129,56 @@ fn with_webassembly_property<R>(name: &str, value: &JsValue, body: impl FnOnce()
 }
 
 #[wcmp_macros::test]
-fn it_declares_what_chromium_implements() {
+fn it_declares_what_the_engine_of_the_page_implements() {
     let capabilities = engine().capabilities();
-
-    for capability in [
-        Capability::MultiMemory,
-        Capability::Memory64,
-        Capability::TailCall,
-        Capability::Exceptions,
-        Capability::FunctionReferences,
-        Capability::Gc,
-        Capability::RelaxedSimd,
-        Capability::Threads,
-        Capability::HostSuspension,
-    ] {
-        assert!(capabilities.contains(capability), "declares {capability}");
+    let declared = || capabilities.iter().collect::<Vec<_>>();
+    let implemented: &[Capability] = match PageEngine::of_page() {
+        PageEngine::V8 => &[
+            Capability::MultiMemory,
+            Capability::Memory64,
+            Capability::TailCall,
+            Capability::Exceptions,
+            Capability::FunctionReferences,
+            Capability::Gc,
+            Capability::RelaxedSimd,
+            Capability::Threads,
+            Capability::HostSuspension,
+        ],
+        // The set of the WebKitGTK of the lanes, 2.54.1. Safari differs:
+        // Safari 26 has no JSPI, so it declares no host suspension.
+        //
+        // WebKitGTK 2.54 ships memory64 turned off: its preference
+        // `WasmMemory64Enabled` defaults to false, at
+        // <https://github.com/WebKit/WebKit/blob/628d6ce1850e17225185a5807a9d0aa375bae2be/Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml#L9725-L9736>.
+        PageEngine::JavaScriptCore => {
+            assert!(
+                !capabilities.contains(Capability::Memory64),
+                "WebKitGTK ships memory64 turned off, and the backend declares it: {:?}",
+                declared()
+            );
+            &[
+                Capability::MultiMemory,
+                Capability::TailCall,
+                Capability::Exceptions,
+                Capability::FunctionReferences,
+                Capability::Gc,
+                Capability::RelaxedSimd,
+                Capability::Threads,
+                Capability::HostSuspension,
+            ]
+        }
+        PageEngine::SpiderMonkey => {
+            panic!("no lane runs Firefox, so no test pins what it implements")
+        }
+    };
+    for capability in implemented {
+        assert!(
+            capabilities.contains(*capability),
+            "declares {capability}: {:?}",
+            declared()
+        );
     }
-    assert!(Web::new().has_jspi(), "Chromium has JSPI");
+    assert!(Web::new().has_jspi(), "the engine has JSPI");
 }
 
 #[wcmp_macros::test]
@@ -1776,8 +1814,19 @@ async fn it_keeps_a_store_reading_while_a_later_store_takes_the_slots_another_fr
 #[wcmp_macros::test]
 async fn it_refuses_a_bulk_copy_past_4_gib_where_multi_memory_is_off() {
     let engine = engine_without_multi_memory();
-    assert!(engine.capabilities().contains(Capability::Memory64));
     let mut store = Store::new(&engine, ()).expect("the engine makes a store");
+    // Where the engine lacks memory64, as JavaScriptCore does by default,
+    // the backend refuses a 64-bit memory with the capability.
+    if !engine.capabilities().contains(Capability::Memory64) {
+        assert!(
+            matches!(
+                Memory::new(&mut store, MemoryType::new64(65_537, None)),
+                Err(Error::Unsupported(Capability::Memory64))
+            ),
+            "the backend refuses a 64-bit memory without memory64"
+        );
+        return;
+    }
     // One page past 4 GiB. The browser reserves the pages and commits
     // only those the test touches.
     let wide = Memory::new(&mut store, MemoryType::new64(65_537, None))

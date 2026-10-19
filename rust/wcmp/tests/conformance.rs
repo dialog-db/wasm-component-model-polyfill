@@ -17,13 +17,16 @@
 //! so the list stays current.
 //!
 //! The shared list records the best case: the failures under a
-//! suspend provider. Three overlays go on top of it. The web overlay,
+//! suspend provider. Four overlays go on top of it. The web overlay,
 //! `expected-failures.web.txt`, holds what only the browser does
 //! differently and applies on `wasm32-unknown-unknown`. The Wasmi
 //! overlay, `expected-failures.wasmi.txt`, holds what only the Wasmi
 //! backend does differently and applies natively when
 //! `WCMP_TEST_BACKEND` names Wasmi, as the `tests native wasmi` lane
-//! does. The
+//! does. The memory64 overlay, `expected-failures.no-memory64.txt`,
+//! holds what fails where the backend lacks memory64, as the browser's
+//! does in JavaScriptCore, and applies on any backend that does not
+//! declare it. The
 //! no-provider overlay, `expected-failures.no-provider.txt`, holds
 //! what fails beyond the shared list in a nested turn, and applies
 //! whenever the store runs no guest thread through a provider, on
@@ -76,6 +79,7 @@ use wcmp::{
     FunctionType, Instance, Linker, Module, PrimitiveType, Resource, ResourceType, SchedulerCause,
     Store, StoreContext, SuspendProviderKind, Val, ValField, ValueType, set_max_table_capacity,
 };
+use wcmp_wasm_core::Capability;
 
 use report::{Expectation, Failure, FileReport, Summary, parse_expectations, parse_overlay};
 
@@ -95,6 +99,14 @@ const EXPECTED_FAILURES_WEB: &str = include_str!("corpus/expected-failures.web.t
 /// differences of that backend against Wasmtime, such as a component
 /// that needs a capability Wasmi does not declare.
 const EXPECTED_FAILURES_WASMI: &str = include_str!("corpus/expected-failures.wasmi.txt");
+
+/// The memory64 delta, applied on top of the shared list on a backend
+/// that does not declare memory64: the directives whose component the
+/// polyfill refuses there with `Unsupported` and `memory64`. The list is
+/// written by hand, since every backend `tests regenerate` runs on
+/// declares memory64.
+const EXPECTED_FAILURES_NO_MEMORY64: &str =
+    include_str!("corpus/expected-failures.no-memory64.txt");
 
 /// The overlay of directives that fail only without a suspend
 /// provider, applied on top of the shared list whenever the store runs
@@ -122,6 +134,8 @@ struct Lists {
     web: Vec<Expectation>,
     /// What only the Wasmi backend does differently.
     wasmi: Vec<Expectation>,
+    /// What fails beyond `shared` on a backend without memory64.
+    no_memory64: Vec<Expectation>,
     /// What fails beyond `shared` without a provider.
     no_provider: Vec<Expectation>,
     /// The directives of `shared` or `web` that pass without a
@@ -139,6 +153,7 @@ impl Lists {
             EXPECTED_FAILURES_NO_PROVIDER,
         )
         .and_then(|lists| lists.with_wasmi(EXPECTED_FAILURES_WASMI))
+        .and_then(|lists| lists.with_no_memory64(EXPECTED_FAILURES_NO_MEMORY64))
         .and_then(|lists| lists.with_passes(EXPECTED_PASSES_NO_PROVIDER))
         .unwrap_or_else(|err| panic!("{err}"))
     }
@@ -160,6 +175,33 @@ impl Lists {
             ));
         }
         self.wasmi = wasmi;
+        Ok(self)
+    }
+
+    /// Add the memory64 delta. No line may name a directive the shared
+    /// list or the web delta names: the delta lists only what fails beyond
+    /// them on a backend without memory64.
+    fn with_no_memory64(mut self, text: &str) -> Result<Self, String> {
+        let no_memory64 = parse_expectations(text)
+            .map_err(|err| format!("expected-failures.no-memory64.txt: {err}"))?;
+        for delta in &no_memory64 {
+            for (lines, name) in [
+                (&self.shared, "expected-failures.txt"),
+                (&self.web, "expected-failures.web.txt"),
+            ] {
+                if lines
+                    .iter()
+                    .any(|line| line.file == delta.file && line.line == delta.line)
+                {
+                    return Err(format!(
+                        "expected-failures.no-memory64.txt: `{}:{}` is in {name} too: the \
+                         delta lists only what fails beyond it",
+                        delta.file, delta.line
+                    ));
+                }
+            }
+        }
+        self.no_memory64 = no_memory64;
         Ok(self)
     }
 
@@ -225,6 +267,7 @@ impl Lists {
             shared,
             web,
             wasmi: Vec::new(),
+            no_memory64: Vec::new(),
             no_provider,
             passes_without_provider: Vec::new(),
         })
@@ -234,22 +277,35 @@ impl Lists {
     /// run judges a file by, for an engine whose provider query answered
     /// `provider`.
     fn applying(&self, provider: SuspendProviderKind) -> Vec<Expectation> {
-        self.applying_on(crate::test_backend::name(), provider)
+        self.applying_on(
+            crate::test_backend::name(),
+            crate::test_backend::declares(Capability::Memory64),
+            provider,
+        )
     }
 
-    /// The expectations a run on the backend named `backend` judges a
-    /// file by, for an engine whose provider query answered `provider`:
-    /// the shared list, the web delta in a browser, the Wasmi delta on
-    /// Wasmi, and, when the store runs no guest thread through a
-    /// provider, the overlay in place of the shared directives that pass
-    /// without one.
-    fn applying_on(&self, backend: &str, provider: SuspendProviderKind) -> Vec<Expectation> {
+    /// The expectations a run on the backend named `backend`, which
+    /// declares memory64 where `memory64` holds, judges a file by, for an
+    /// engine whose provider query answered `provider`: the shared list,
+    /// the web delta in a browser, the Wasmi delta on Wasmi, the memory64
+    /// delta without memory64, and, when the store runs no guest thread
+    /// through a provider, the overlay in place of the shared directives
+    /// that pass without one.
+    fn applying_on(
+        &self,
+        backend: &str,
+        memory64: bool,
+        provider: SuspendProviderKind,
+    ) -> Vec<Expectation> {
         let mut all = self.shared.clone();
         if cfg!(target_arch = "wasm32") {
             all.extend(self.web.iter().cloned());
         }
         if backend == "wasmi" {
             all.extend(self.wasmi.iter().cloned());
+        }
+        if !memory64 {
+            all.extend(self.no_memory64.iter().cloned());
         }
         if !runs_threads_through(provider) {
             all.retain(|expectation| {
@@ -1809,12 +1865,48 @@ mod tests {
             .and_then(|lists| lists.with_wasmi("cm/x.wast:4 substrate unsupported feature: gc\n"))
             .expect("parses");
         let provider = SuspendProviderKind::HostSuspension;
-        assert_eq!(lines(&lists.applying_on("wasmi", provider)), [1, 4]);
-        assert_eq!(lines(&lists.applying_on("wasmtime", provider)), [1]);
+        assert_eq!(lines(&lists.applying_on("wasmi", true, provider)), [1, 4]);
+        assert_eq!(lines(&lists.applying_on("wasmtime", true, provider)), [1]);
         assert_eq!(
-            lines(&lists.applying_on("wasmi", SuspendProviderKind::None)),
+            lines(&lists.applying_on("wasmi", true, SuspendProviderKind::None)),
             [1, 3, 4]
         );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_applies_the_memory64_delta_where_the_backend_lacks_memory64() {
+        let lists = Lists::parse(SHARED, "", &overlay(3))
+            .and_then(|lists| {
+                lists.with_no_memory64(
+                    "cm/x.wast:5 substrate component rejected: unsupported component feature: \
+                     memory64\n",
+                )
+            })
+            .expect("parses");
+        let provider = SuspendProviderKind::HostSuspension;
+        assert_eq!(lines(&lists.applying_on("web", false, provider)), [1, 5]);
+        assert_eq!(lines(&lists.applying_on("web", true, provider)), [1]);
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_a_memory64_line_the_shared_list_already_names() {
+        let err = Lists::parse(SHARED, "", "")
+            .and_then(|lists| lists.with_no_memory64(SHARED))
+            .err()
+            .expect("rejected");
+        assert!(
+            err.starts_with("expected-failures.no-memory64.txt:"),
+            "{err}"
+        );
+    }
+
+    #[wcmp_macros::test]
+    async fn it_rejects_a_memory64_line_the_web_delta_already_names() {
+        let err = Lists::parse(SHARED, WEB, "")
+            .and_then(|lists| lists.with_no_memory64(WEB))
+            .err()
+            .expect("rejected");
+        assert!(err.contains("expected-failures.web.txt"), "{err}");
     }
 
     #[wcmp_macros::test]

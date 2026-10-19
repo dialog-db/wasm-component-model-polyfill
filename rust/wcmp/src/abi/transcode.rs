@@ -594,7 +594,7 @@ mod tests {
     use crate::abi::runtime_state::AbiRuntimeState;
     use crate::abi::strategy::{memory_accesses, memory_copies};
     use crate::engine::Engine;
-    use crate::runtime_layer::{AsContextMut, Memory, MemoryType};
+    use crate::runtime_layer::{AsContextMut, Capability, Memory, MemoryType, RuntimeError};
     use crate::store::{Store, StoreInternalExt};
 
     /// The pages of each memory of a test's copy: room for a string
@@ -1272,6 +1272,24 @@ mod tests {
 
     #[wcmp_macros::test]
     fn it_transcodes_with_64_bit_pointers_and_lengths() {
+        // Where the backend lacks memory64, as JavaScriptCore does by
+        // default, the runtime layer refuses a 64-bit memory with the
+        // capability.
+        if !crate::runtime_layer::test_backend_declares(Capability::Memory64) {
+            let engine =
+                Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
+            let mut store: Store<()> = Store::new(&engine, ()).expect("store");
+            let err = Memory::new(
+                store.internal().inner_mut().as_context_mut(),
+                MemoryType::new64(u64::from(PAGES), None),
+            )
+            .expect_err("a backend without memory64 refuses a 64-bit memory");
+            assert!(
+                matches!(err, RuntimeError::Unsupported(Capability::Memory64)),
+                "{err:?}"
+            );
+            return;
+        }
         let text = split_utf16();
         let bytes = utf16_le(&text);
         let units = bytes.len() / 2;

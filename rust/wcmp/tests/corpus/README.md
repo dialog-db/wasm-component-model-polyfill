@@ -181,6 +181,16 @@ Wasmi does not declare, such as exception handling or GC, fails at
 `tests regenerate` rewrites the delta from a third progress run, on
 Wasmi, from the failures the regenerated shared list does not name.
 
+`expected-failures.no-memory64.txt` is the memory64 delta: the harness
+applies it on top of the shared list on any backend that does not declare
+`memory64`. The browser's backend is one such backend in WebKitGTK 2.54,
+whose JavaScriptCore ships memory64 turned off, as the `tests webkit debug`
+lane finds it. A component with a 64-bit memory fails there at
+`Component::new` with `Unsupported` and `memory64`. No line may name a
+directive the shared list names. Every backend `tests regenerate` runs on
+declares memory64, so the delta is written by hand from the failures the
+WebKitGTK lane prints; it holds one line today.
+
 Two files of Wasmtime's suite carry `;;! hogs_memory = true`, and both
 take several GiB of memory on Wasmi. `wasmtime/memory64.wast` declares a
 64-bit memory of 65538 pages. `wasmtime/big-strings.wast` grows the

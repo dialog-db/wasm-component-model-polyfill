@@ -1,0 +1,11 @@
+# Directives that fail only on a backend that does not declare memory64,
+# applied on top of `expected-failures.txt` there: the browser's backend in
+# WebKitGTK 2.54, whose JavaScriptCore ships memory64 turned off (the
+# preference `WasmMemory64Enabled` defaults to false in
+# `Source/WTF/Scripts/Preferences/UnifiedWebPreferences.yaml` at the tag
+# `webkitgtk-2.54.1`). Same line shape: `<path>:<line> <category>
+# <reason>`. The polyfill refuses a component with a 64-bit memory there with
+# `Unsupported` and `memory64`. Every backend `tests regenerate` runs on
+# declares memory64, so the list is written by hand, from the WebKitGTK lane.
+
+wasmtime/memory64.wast:24 substrate component rejected: unsupported component feature: memory64

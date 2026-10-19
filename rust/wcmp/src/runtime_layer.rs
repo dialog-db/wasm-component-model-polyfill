@@ -69,6 +69,13 @@ pub fn test_wasmtime_backend() -> impl Backend {
     test_backends::Kind::Wasmtime.backend()
 }
 
+/// Whether the backend of the crate's tests declares `capability`, for
+/// a test that checks the polyfill's refusal where it does not.
+#[cfg(test)]
+pub fn test_backend_declares(capability: Capability) -> bool {
+    test_backends::declares(capability)
+}
+
 /// The backend of the crate's tests where it declares `capability`,
 /// and natively Wasmtime where it does not, for a test of a feature
 /// that needs the capability.

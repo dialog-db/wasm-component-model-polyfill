@@ -137,6 +137,16 @@ pub fn backend_declaring(capability: Capability) -> TestBackend {
     }
 }
 
+/// Whether the backend of this run declares `capability`. A test of a
+/// feature that needs a capability some backend lacks checks the
+/// refusal the polyfill gives there, rather than passing silently: the
+/// browser's backend lacks `memory64` in JavaScriptCore, which ships it
+/// turned off.
+pub fn declares(capability: wcmp_wasm_core::Capability) -> bool {
+    use wcmp_wasm_core::backend::Backend as _;
+    backend().capabilities().contains(capability)
+}
+
 /// The name of the backend of this run: `wasmtime` or `wasmi`.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn name() -> &'static str {

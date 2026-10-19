@@ -294,20 +294,21 @@ mod tests {
 
     /// A table of four entries: a function of each start type, one of
     /// another type, and an empty entry. Each start function stores
-    /// the context it was given in the module's 64-bit memory, where
-    /// `stored` reads it back.
+    /// the context it was given in a global, where `stored` reads it
+    /// back. A global rather than a 64-bit memory holds it, so the
+    /// fixture runs where the backend lacks `memory64`.
     const STARTS: &[u8] = wcmp_macros::wasm!(
         r#"
         (module
-          (memory i64 1)
+          (global $stored (mut i64) (i64.const 0))
           (table (export "table") 4 funcref)
           (func $takes-i32 (param i32)
-            (i64.store (i64.const 0) (i64.extend_i32_u (local.get 0))))
+            (global.set $stored (i64.extend_i32_u (local.get 0))))
           (func $takes-i64 (param i64)
-            (i64.store (i64.const 0) (local.get 0)))
+            (global.set $stored (local.get 0)))
           (func $returns (param i32) (result i32) (local.get 0))
           (elem (table 0) (i32.const 0) func $takes-i32 $takes-i64 $returns)
-          (func (export "stored") (result i64) (i64.load (i64.const 0))))
+          (func (export "stored") (result i64) (global.get $stored)))
         "#
     );
 
