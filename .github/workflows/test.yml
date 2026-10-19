@@ -98,6 +98,9 @@ jobs:
               web debug
               web no-provider
               fidelity web
+              webkit debug
+              webkit no-provider
+              fidelity webkit
           - name: 'web release'
             lanes: |
               web release

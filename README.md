@@ -681,7 +681,7 @@ command, never through bare `cargo`. Outside the shell, prefix a command with
 | `tests conformance`          | The conformance progress summary for both targets.                                             |
 | `tests fidelity <backend>`   | The WebAssembly spec tests on a backend: `wasmi`, `wasmtime`, `web`, or `webkit` (WebKitGTK).  |
 | `tests smoke native` / `web` | The end-to-end smoke test as a binary or as a served page.                                     |
-| `tests all`                  | Every test archive, debug and release, native and web.                                         |
+| `tests all`                  | Every test archive, debug and release, native and web, and on Linux the WebKitGTK lanes.       |
 | `tests native wasmi`         | The polyfill's tests on the Wasmi backend, from the native debug build.                        |
 | `tests zena` / `regenerate`  | The Zena scenarios on every subject, held to `rust/wcmp/tests/zena/record.txt`, or rewrite it. |
 | `bench native` / `web`       | The benchmark suite on one target.                                                             |

@@ -43,8 +43,13 @@
 #
 # A binary in flight holds a runner, about a gigabyte and a half while
 # it generates the bindings, and a browser, so the script runs one
-# binary per 3 GB of available memory, capped at the core count, unless
-# `NEXTEST_TEST_THREADS` says otherwise. A binary that fails has its
+# binary per 3 GB of available memory, capped at the core count, and at
+# the number `-j`, `--test-threads`, or `NEXTEST_TEST_THREADS` gives where
+# one does. Those options, and `--no-fail-fast`, are `cargo nextest run`'s,
+# which `tests all` hands every lane; the script takes them itself rather
+# than handing them to `cargo nextest list`, which refuses them. A value
+# that is not a number, such as `num-cpus`, leaves the cap as it is. Every
+# binary runs whatever fails. A binary that fails has its
 # failures printed, and its whole output is kept under the cache
 # directory's `wcmp-tests/webkit-logs`, which outlives the workspace the
 # lane removes on exit. The script fails when a binary does, after every
@@ -64,6 +69,33 @@ set -euo pipefail
 archive=$1
 workspace=$2
 shift 2
+
+asked=${NEXTEST_TEST_THREADS:-}
+listing=()
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    -j | --test-threads)
+      if [ "$#" -lt 2 ]; then
+        echo "tests webkit: $1 needs a number of binaries at a time" >&2
+        exit 2
+      fi
+      asked=$2
+      shift 2
+      ;;
+    -j* | --test-threads=*)
+      asked=${1#-j}
+      asked=${asked#--test-threads=}
+      shift
+      ;;
+    --no-fail-fast)
+      shift
+      ;;
+    *)
+      listing+=("$1")
+      shift
+      ;;
+  esac
+done
 
 base=/run/user/$(id -u)
 if [ ! -d "$base" ] || [ ! -w "$base" ]; then
@@ -99,14 +131,14 @@ export GECKODRIVER=$WCMP_WEBKIT_DRIVER
 export WASM_BINDGEN_TEST_WEBDRIVER_JSON=$WCMP_WEBKIT_CAPABILITIES
 export WASM_BINDGEN_TEST_TIMEOUT=${WCMP_WEBKIT_TIMEOUT:-900}
 
-threads=${NEXTEST_TEST_THREADS:-}
-if [ -z "$threads" ]; then
-  available_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo)
-  threads=$((available_kb / 1024 / 1024 / 3))
-  cores=$(nproc)
-  [ "$threads" -gt "$cores" ] && threads=$cores
-  [ "$threads" -lt 1 ] && threads=1
+available_kb=$(awk '/MemAvailable/ { print $2 }' /proc/meminfo)
+threads=$((available_kb / 1024 / 1024 / 3))
+cores=$(nproc)
+[ "$threads" -gt "$cores" ] && threads=$cores
+if [[ $asked =~ ^[0-9]+$ ]] && [ "$asked" -lt "$threads" ]; then
+  threads=$asked
 fi
+[ "$threads" -lt 1 ] && threads=1
 
 cargo nextest list \
   --workspace-remap ./ \
@@ -114,7 +146,7 @@ cargo nextest list \
   --extract-to "$workspace/archive" \
   --extract-overwrite \
   --message-format json \
-  "$@" >"$workspace/list.json"
+  "${listing[@]}" >"$workspace/list.json"
 
 # One line per binary with a test to run: the binary's identity, its
 # path, the directory nextest would run it in, and each test to skip.

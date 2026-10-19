@@ -2565,12 +2565,14 @@
               # so it adds no build. The Zena lane is the one run that holds
               # the browser's line and both native lines of the record
               # together. The fidelity lane runs the specification test
-              # suite on each backend of the runtime layer. Each lane reports
-              # its wall-clock time, build included.
+              # suite on each backend of the runtime layer. On Linux the
+              # WebKitGTK lanes replay the web debug archive in
+              # JavaScriptCore as well, which adds no build. Each lane
+              # reports its wall-clock time, build included.
               # Arguments after the leaf reach every nextest lane, and not
               # the Zena lane, which takes none.
               all = {
-                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the fidelity suite on each backend of the runtime layer, the Zena scenarios on every subject, and the demo lane (grab a coffee)";
+                description = "Every lane, each timed: both targets in debug and release, the conformance corpus on both targets with the suspend provider off, so the corpus runs in all four states, the polyfill's tests and the corpus on the Wasmi backend, the fidelity suite on each backend of the runtime layer, on Linux the WebKitGTK lanes, the Zena scenarios on every subject, and the demo lane (grab a coffee)";
                 command = ''
                   status=0
                   lane() {
@@ -2590,6 +2592,14 @@
                     "fidelity wasmtime" "fidelity web"; do
                     lane "$suite" "$@"
                   done
+                ''
+                # The WebKitGTK lanes, on Linux, where the flake has them.
+                + pkgs.lib.optionalString isLinux ''
+                  for suite in "webkit debug" "webkit no-provider" "fidelity webkit"; do
+                    lane "$suite" "$@"
+                  done
+                ''
+                + ''
                   lane zena
                   lane demo
                   exit "$status"
@@ -2600,10 +2610,8 @@
               # The web archive in WebKitGTK, the engine Safari is built
               # on, rather than headless Chrome: see `nix/webkit-tests.sh`.
               # It takes about two minutes once the archive is built.
-              # `tests all` and CI leave it out while tests that fail only
-              # in WebKitGTK remain.
               webkit = {
-                description = "Unit and integration tests in WebKitGTK's MiniBrowser on a headless Weston, one browser per test binary, with parallelism following available memory unless NEXTEST_TEST_THREADS says otherwise (arguments after the leaf reach `cargo nextest list`, as in `-E 'test(<name>)'`; Linux only)";
+                description = "Unit and integration tests in WebKitGTK's MiniBrowser on a headless Weston, one browser per test binary, as many at a time as available memory allows, and no more than -j or NEXTEST_TEST_THREADS gives (arguments after the leaf reach `cargo nextest list`, as in `-E 'test(<name>)'`; Linux only)";
                 subcommands = {
                   debug = webkitLane {
                     description = "Unit and integration tests in WebKitGTK (wasm32-unknown-unknown, debug)";
