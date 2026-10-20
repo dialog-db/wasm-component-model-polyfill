@@ -24,7 +24,7 @@ version = "0.1.0"
 authors = ["The Wasm Component Model Polyfill Authors"]
 license = "MPL-2.0"
 edition = "2024"
-repository = "https://github.com/cdata/wasm-component-model-polyfill"
+repository = "https://github.com/dialog-db/wasm-component-model-polyfill"
 
 [workspace.dependencies]
 anyhow = "1"

@@ -7,6 +7,10 @@ license.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+# The library is empty except on a native target.
+[package.metadata.docs.rs]
+targets = []
+
 # Wasmtime does not run in the browser, so the backend is native only. On
 # `wasm32-unknown-unknown` the library is empty, which keeps the workspace
 # building for the web lanes.

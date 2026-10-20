@@ -7,6 +7,11 @@ license.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+# The backend builds for the browser too, but it is the native backend, so
+# docs.rs builds the native target only.
+[package.metadata.docs.rs]
+targets = []
+
 # Wasmi builds for every target, `wasm32` included, so the backend does too.
 # No test lane runs it in the browser: its tests are native only.
 [dependencies]

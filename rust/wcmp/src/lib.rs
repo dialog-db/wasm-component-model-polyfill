@@ -12,6 +12,9 @@
 // and the tests besides, so it is the build that answers the
 // question, and `--all-targets` runs the lint there.
 #![cfg_attr(not(test), allow(dead_code))]
+// docs.rs builds with a nightly rustdoc and sets `docsrs`. There the
+// pages mark each item that only one target or one feature has.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! A polyfill that brings the WebAssembly Component Model (wasip3) to
 //! web browsers where only Wasm Core is presently supported.

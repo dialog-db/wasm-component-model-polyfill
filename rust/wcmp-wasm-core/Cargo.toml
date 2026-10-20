@@ -7,6 +7,10 @@ license.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+# The same on every target, so docs.rs builds one.
+[package.metadata.docs.rs]
+targets = []
+
 [dependencies]
 # The error a host function returns, which a trap carries back to the host
 # unchanged, as Wasmtime's own host errors are.

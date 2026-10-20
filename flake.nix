@@ -1847,6 +1847,75 @@
               touch "$out"
             '';
 
+        # The documentation docs.rs writes for each published crate. docs.rs
+        # builds each crate with a nightly rustdoc, sets the `docsrs` cfg,
+        # and builds every target that the crate's
+        # `[package.metadata.docs.rs]` table names. This check does the
+        # same, and it fails on a rustdoc warning, such as a broken link,
+        # because the published page would carry it.
+        #
+        # docs.rs uses its newest nightly. The date here is fixed so that a
+        # result stays cached, and it moves when a `flake.lock` bump brings
+        # a newer one.
+        docsRsToolchain =
+          (pkgs.extend (import katsuobushi.inputs.rust-overlay)).rust-bin.nightly."2026-06-22".minimal.override
+            {
+              targets = [
+                "x86_64-unknown-linux-gnu"
+                "wasm32-unknown-unknown"
+              ];
+            };
+
+        # The targets docs.rs builds for `crate`. The check refuses a
+        # published crate without the table, because docs.rs then builds
+        # every tier-one target.
+        docsRsTargets =
+          crate:
+          let
+            package = (builtins.fromTOML (builtins.readFile ./rust/${crate}/Cargo.toml)).package;
+            metadata =
+              package.metadata.docs.rs or (throw "rust/${crate}/Cargo.toml has no [package.metadata.docs.rs] table");
+            targets = metadata.targets or [ ];
+            default = metadata.default-target or (
+              if targets == [ ] then "x86_64-unknown-linux-gnu" else builtins.head targets
+            );
+          in
+          pkgs.lib.unique ([ default ] ++ targets);
+
+        docsRsFeatures =
+          crate:
+          let
+            package = (builtins.fromTOML (builtins.readFile ./rust/${crate}/Cargo.toml)).package;
+          in
+          package.metadata.docs.rs.features or [ ];
+
+        docsRsCheck =
+          let
+            crane = (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain (_: docsRsToolchain);
+          in
+          crane.mkCargoDerivation {
+            src = publicApiSource;
+            pname = "wcmp-docs-rs";
+            version = publishedVersion;
+            strictDeps = true;
+            nativeBuildInputs = commonBuildInputs;
+            cargoArtifacts = null;
+            buildPhaseCargoCommand = pkgs.lib.concatMapStringsSep "\n" (
+              crate:
+              pkgs.lib.concatMapStringsSep "\n" (target: ''
+                echo "docs.rs: ${crate} for ${target}" >&2
+                RUSTDOCFLAGS="--cfg docsrs -D warnings" cargo doc --locked --no-deps \
+                  --package ${crate} --target ${target} \
+                  --features '${pkgs.lib.concatStringsSep "," (docsRsFeatures crate)}'
+              '') (docsRsTargets crate)
+            ) publishedCrates;
+            installPhaseCommand = ''
+              touch "$out"
+            '';
+            doInstallCargoArtifacts = false;
+            doNotPostBuildInstallCargoBinaries = true;
+          };
+
         developmentBuildInputs =
           commonBuildInputs
           ++ (with pkgs; [
@@ -3294,6 +3363,9 @@
             # The crate's public surface must still be the checked-in one:
             # see `publicApiCheck`.
             public-api = publicApiCheck;
+            # Every published crate documents on docs.rs, for each target
+            # its metadata names, with no rustdoc warning: see `docsRsCheck`.
+            docs-rs = docsRsCheck;
             # Only the seam module names a runtime-layer crate: see
             # `runtimeLayerSeamCheck`.
             runtime-layer-seam = runtimeLayerSeamCheck;

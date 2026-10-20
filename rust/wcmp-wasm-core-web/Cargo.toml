@@ -7,6 +7,12 @@ license.workspace = true
 edition.workspace = true
 repository.workspace = true
 
+# The library is empty except on `wasm32`, so docs.rs builds that target and
+# no other. docs.rs builds the native target by default.
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = []
+
 # The WebAssembly JavaScript API exists only in the browser, so the backend
 # is `wasm32` only. On every other target the library is empty, which keeps
 # the workspace building for the native lanes.
