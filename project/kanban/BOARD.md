@@ -33,8 +33,12 @@ kanban-plugin: basic
 - [ ] [[208e1b]]
 - [ ] [[4937a1]]
 - [ ] [[e0bd05]]
+- [ ] [[c95b08]]
+- [ ] [[ff4d44]]
 
 ## In Progress
+
+- [ ] [[2397ff]]
 
 ## Needs Review
 
