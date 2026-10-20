@@ -66,8 +66,8 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use wcmp::{
     Accessor, Component, Engine, Error, Func, FunctionParameter, FunctionType, Instance, Linker,
@@ -1451,6 +1451,195 @@ async fn it_ends_the_entry_and_drops_the_other_call_when_one_calls_host_body_fai
         matches!(refused, Error::Task(TaskCause::CannotEnter)),
         "the next driver fails with the cannot-enter cause, got {refused:?}"
     );
+}
+
+/// What the host of [`LENDS_A_BORROW`] does inside its `borrow` import,
+/// in order: give way once, or call back into the guest's `reenter`
+/// with the borrow it was handed.
+#[derive(Clone, Copy, Debug)]
+enum HostAction {
+    Yield,
+    CallWasm,
+}
+
+/// The resource type of [`LENDS_A_BORROW`].
+struct Lent;
+
+/// A guest whose `run` makes a resource, lends it to the asynchronous
+/// host import `borrow`, waits for the call, and then drops the
+/// resource. The drop succeeds only if the end of the call gave the
+/// lend back. `reenter` takes a borrow and drops it. This is
+/// Wasmtime 50's `host_call_cleans_up_borrow`
+/// (`tests/all/component_model/resources.rs`).
+const LENDS_A_BORROW: &[u8] = component!(
+    r#"
+    (component
+      (import "r" (type $r (sub resource)))
+      (import "new" (func $new (result (own $r))))
+      (import "borrow" (func $borrow async (param "r" (borrow $r))))
+      (core func $new (canon lower (func $new)))
+      (core func $borrow (canon lower (func $borrow) async))
+      (core func $drop (canon resource.drop $r))
+      (core func $task-return (canon task.return))
+      (core func $waitable-set-new (canon waitable-set.new))
+      (core func $waitable-set-drop (canon waitable-set.drop))
+      (core func $waitable-join (canon waitable.join))
+      (core func $subtask-drop (canon subtask.drop))
+      (core module $m
+        (import "" "new" (func $new (result i32)))
+        (import "" "borrow" (func $borrow (param i32) (result i32)))
+        (import "" "drop" (func $drop (param i32)))
+        (import "" "task-return" (func $task-return))
+        (import "" "waitable-set-new" (func $waitable-set-new (result i32)))
+        (import "" "waitable-set-drop" (func $waitable-set-drop (param i32)))
+        (import "" "waitable-join" (func $waitable-join (param i32 i32)))
+        (import "" "subtask-drop" (func $subtask-drop (param i32)))
+        (global $r (mut i32) (i32.const 0))
+        (global $set (mut i32) (i32.const 0))
+        (global $subtask (mut i32) (i32.const 0))
+        (func $finish
+          (call $drop (global.get $r))
+          (call $waitable-set-drop (global.get $set))
+          call $task-return)
+        (func (export "run") (result i32)
+          (local $status i32)
+          (global.set $r (call $new))
+          (global.set $set (call $waitable-set-new))
+          (local.set $status (call $borrow (global.get $r)))
+          (if (i32.eq (i32.and (local.get $status) (i32.const 0xf)) (i32.const 2 (; RETURNED ;)))
+            (then
+              call $finish
+              (return (i32.const 0 (; EXIT ;)))))
+          (if (i32.ne (i32.and (local.get $status) (i32.const 0xf)) (i32.const 1 (; STARTED ;)))
+            (then unreachable))
+          (global.set $subtask (i32.shr_u (local.get $status) (i32.const 4)))
+          (call $waitable-join (global.get $subtask) (global.get $set))
+          (i32.or (i32.const 2 (; WAIT ;)) (i32.shl (global.get $set) (i32.const 4))))
+        (func (export "callback") (param $event i32) (param $handle i32) (param $result i32)
+          (result i32)
+          (if (i32.ne (local.get $event) (i32.const 1 (; SUBTASK ;))) (then unreachable))
+          (if (i32.ne (local.get $handle) (global.get $subtask)) (then unreachable))
+          (if (i32.ne (local.get $result) (i32.const 2 (; RETURNED ;))) (then unreachable))
+          (call $subtask-drop (global.get $subtask))
+          call $finish
+          i32.const 0 (; EXIT ;))
+        (func (export "reenter") (param i32)
+          (call $drop (local.get 0))))
+      (core instance $i (instantiate $m
+        (with "" (instance
+          (export "new" (func $new))
+          (export "borrow" (func $borrow))
+          (export "drop" (func $drop))
+          (export "task-return" (func $task-return))
+          (export "waitable-set-new" (func $waitable-set-new))
+          (export "waitable-set-drop" (func $waitable-set-drop))
+          (export "waitable-join" (func $waitable-join))
+          (export "subtask-drop" (func $subtask-drop))))))
+      (func (export "run") async
+        (canon lift (core func $i "run") async (callback (core func $i "callback"))))
+      (func (export "reenter") (param "r" (borrow $r))
+        (canon lift (core func $i "reenter"))))
+    "#
+);
+
+/// Give way once: the first poll wakes itself and answers pending.
+async fn give_way_once() {
+    let mut yielded = false;
+    core::future::poll_fn(|context| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            context.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
+}
+
+/// Run [`LENDS_A_BORROW`] once, with the host's `borrow` doing
+/// `actions`, and answer whether the resource's destructor ran.
+async fn lend_a_borrow(actions: &'static [HostAction]) -> bool {
+    let engine = Engine::with_backend(crate::test_backend::backend()).expect("engine");
+    let component = Component::new(&engine, LENDS_A_BORROW)
+        .await
+        .expect("the component parses");
+    let reenter: Arc<OnceLock<Func>> = Arc::new(OnceLock::new());
+    let mut linker: Linker<bool> = Linker::new(&engine);
+    let mut root = linker.root();
+    root.resource("r", ResourceType::host::<Lent>(), |mut store, _| {
+        *store.data_mut() = true;
+        Ok(())
+    })
+    .expect("the registration of `r`");
+    root.func_wrap("new", |_, ()| Ok((Resource::<Lent>::new_own(0),)))
+        .expect("the registration of `new`");
+    let slot = reenter.clone();
+    root.func_wrap_concurrent(
+        "borrow",
+        move |accessor: &Accessor<bool>, (lent,): (Resource<Lent>,)| {
+            let accessor = accessor.clone();
+            let slot = slot.clone();
+            async move {
+                let reenter = slot.get().expect("the instance is made");
+                let mut resource = Some(lent);
+                for action in actions {
+                    match action {
+                        HostAction::Yield => give_way_once().await,
+                        HostAction::CallWasm => {
+                            let lent = resource.take().expect("the borrow");
+                            let any = accessor
+                                .with(|mut access| lent.try_into_resource_any(access.store()))?;
+                            let params = [Val::Resource(any)];
+                            reenter.call_concurrent(&accessor, &params).await?;
+                            let [Val::Resource(any)] = params else {
+                                unreachable!("the parameter is a resource");
+                            };
+                            resource = Some(accessor.with(|mut access| {
+                                any.try_into_resource::<Lent>(access.store())
+                            })?);
+                        }
+                    }
+                }
+                Ok::<(), Error>(())
+            }
+        },
+    )
+    .expect("the registration of `borrow`");
+
+    let mut store: Store<bool> = Store::new(&engine, false).expect("store");
+    let instance = linker
+        .instantiate(&mut store, &component)
+        .await
+        .expect("instantiation succeeds");
+    let _ = reenter.set(func(&instance, "reenter"));
+    func(&instance, "run")
+        .call(&mut store, &[])
+        .await
+        .unwrap_or_else(|error| panic!("`run` with {actions:?} fails: {error}"));
+    *store.data()
+}
+
+#[wcmp_macros::test]
+async fn it_gives_back_a_lend_whatever_the_host_future_does_with_the_borrow() {
+    use HostAction::{CallWasm, Yield};
+    let sequences: [&'static [HostAction]; 9] = [
+        &[],
+        &[Yield],
+        &[CallWasm],
+        &[Yield, Yield],
+        &[Yield, CallWasm],
+        &[CallWasm, Yield],
+        &[CallWasm, CallWasm],
+        &[CallWasm, Yield, CallWasm],
+        &[Yield, CallWasm, Yield],
+    ];
+    for actions in sequences {
+        assert!(
+            lend_a_borrow(actions).await,
+            "the guest dropped its resource after {actions:?}"
+        );
+    }
 }
 
 #[path = "support/backend.rs"]
