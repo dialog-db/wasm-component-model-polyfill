@@ -166,11 +166,20 @@ mod browser {
     }
 
     /// The global's `setTimeout`, replaced by one that counts its
-    /// calls and then defers to the original.
+    /// calls of zero delay and then defers to the original.
     ///
     /// Counting rather than refusing is what lets the fallback test
     /// use the same stub: a wake that reaches for the timeout still
     /// works, and the count is what says whether it did.
+    ///
+    /// The wake's fallback asks for a delay of zero, and only those
+    /// calls count. The page's global is not the test's alone:
+    /// WebKit's WebDriver runs each script a driver sends through a
+    /// proxy in the page's own world, and the proxy arms the script
+    /// timeout with that world's `setTimeout`, with the timeout as
+    /// its delay. The test runner reads the page's output that way
+    /// every tenth of a second, so a test that runs past a read sees
+    /// a timeout the wake never asked for.
     struct CountedTimeout {
         calls: Rc<Cell<u32>>,
         // The member goes back before the closure behind it is
@@ -191,7 +200,10 @@ mod browser {
             let calls = Rc::new(Cell::new(0));
             let counted = calls.clone();
             let closure = Closure::wrap(Box::new(move |callback: JsValue, delay: JsValue| {
-                counted.set(counted.get() + 1);
+                // A missing delay is a delay of zero.
+                if delay.as_f64().unwrap_or(0.0) == 0.0 {
+                    counted.set(counted.get() + 1);
+                }
                 original
                     .call2(&js_sys::global(), &callback, &delay)
                     .unwrap_or(JsValue::UNDEFINED)
@@ -205,8 +217,8 @@ mod browser {
             }
         }
 
-        /// How many times the global's `setTimeout` was called since
-        /// the stub went in.
+        /// How many times the global's `setTimeout` was called with a
+        /// delay of zero since the stub went in.
         fn calls(&self) -> u32 {
             self.calls.get()
         }
