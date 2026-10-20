@@ -22,6 +22,7 @@ use super::host_task_set::HostTaskSet;
 use super::host_writer::HostWriter;
 use super::instance_id::InstanceId;
 use super::item::Item;
+use super::item_kind::ItemKind;
 use super::parked_thread::ParkedThread;
 use super::pending_block::PendingBlock;
 use super::readiness::Readiness;
@@ -1274,6 +1275,24 @@ impl<T: 'static> Scheduler<T> {
                 HeldFor::Event { thread: held, set } if held == thread => Some(set),
                 _ => None,
             })
+    }
+
+    /// Take the callback item that `task` left on the low-priority
+    /// queue when its callback returned the yield code, or `None` when
+    /// the task left none.
+    ///
+    /// This is how `subtask.cancel` wakes a callback task that gave way:
+    /// the item runs next, where the pending request is delivered in
+    /// place of the none event. Wasmtime 50 does the same: it promotes
+    /// the task's queued item and yields to it (`437161af0`, after the
+    /// reference's `request_cancellation` at component-model `2f1e56f`).
+    pub fn take_yielded_callback_of(&mut self, task: TaskId) -> Option<Item<T>> {
+        let is_it = |item: &Item<T>| item.kind() == ItemKind::Callback && item.task() == Some(task);
+        if self.resume_after_yield.as_ref().is_some_and(is_it) {
+            return self.resume_after_yield.take();
+        }
+        let position = self.low_priority.iter().position(is_it)?;
+        self.low_priority.remove(position)
     }
 
     /// Take the callback item held for an event on behalf of

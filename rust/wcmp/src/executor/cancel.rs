@@ -25,30 +25,33 @@
 //! - A started callee's task becomes pending-cancel, and learns of
 //!   the request once, at the next point its callback loop consults
 //!   it, as [`CallbackTask`](crate::executor::CallbackTask) states. A
-//!   callback task waiting in its loop takes the request at once: it
-//!   is woken, and the built-in gives way to it from inside its own
-//!   frame, as Wasmtime wakes it. No built-in takes a request, so a
-//!   stackful task is never told, and the cancel waits until it
-//!   resolves on its own.
+//!   callback task that waits in its loop, or that returned the yield
+//!   code, takes the request at once: it is woken, and the built-in
+//!   gives way to it from inside its own frame, as Wasmtime 50 and the
+//!   reference wake it. No built-in takes a request, so a stackful
+//!   task is never told, and the cancel waits until it resolves on its
+//!   own.
 //!
 //! When the callee has not resolved by then, an asynchronous cancel
 //! answers `BLOCKED`, and the caller waits for the subtask event. It
 //! gives way only to a callee the request woke, never on its own, as
 //! the reference's `canon_subtask_cancel` does since component-model
-//! #723, and as Wasmtime 49 does, which yields only on its wake paths.
+//! #723, and as Wasmtime 50 does, which yields only on its wake paths.
 //! A ready callee that the request did not wake therefore does not
 //! run inside the cancel.
 //!
-//! Which callees a request wakes follows Wasmtime 49 over the
-//! reference. A callback task that returned the yield code, and one
-//! waiting in its loop on a set that already holds an event, are not
-//! woken: Wasmtime queues the first with no way for a cancel to reach
-//! it, and hands the event to the second as the event arrives. The
-//! reference marks both cancellable and resumes them inside the cancel
-//! (`canon_lift` and `Task.request_cancellation` in `definitions.py`
-//! at `a25fc0b`), so there the cancel can answer the callee's
-//! confirmation where the polyfill answers `BLOCKED`. One guest binary
-//! must get the same answer in the polyfill and in Wasmtime. A synchronous cancel blocks until the callee
+//! One case follows Wasmtime 50 over the reference. A callback task
+//! that waits in its loop on a set that already holds an event is not
+//! woken: Wasmtime hands it the event as the event arrives, and takes
+//! it out of the cancel's reach (`mark_ready` clears `wake_on_cancel`
+//! in `crates/wasmtime/src/runtime/component/concurrent.rs` at
+//! `v50.0.0`). The reference resumes it inside the cancel
+//! (`wait_from_callback` in `definitions.py` at `2f1e56f`), so there
+//! the cancel can answer the callee's confirmation where the polyfill
+//! answers `BLOCKED`. One guest binary must get the same answer in the
+//! polyfill and in Wasmtime.
+//!
+//! A synchronous cancel blocks until the callee
 //! resolves, as every blocking built-in blocks, and a block that
 //! cannot progress fails with the cause the suspend seam names. The subtask is waited on
 //! synchronously for as long as the built-in runs, so the callee
@@ -374,7 +377,19 @@ fn request_cancellation<T: 'static>(
                 None
             };
             let Some((set, slot, item)) = taken else {
-                return Ok(None);
+                // A callback task that returned the yield code left its
+                // item on the low-priority queue. The item runs next,
+                // where the request is delivered in place of the none
+                // event, as Wasmtime 50 and the reference wake it.
+                let yielded = store
+                    .internal()
+                    .scheduler_mut()
+                    .take_yielded_callback_of(task);
+                let Some(item) = yielded else {
+                    return Ok(None);
+                };
+                store.internal().scheduler_mut().switch_to(item);
+                return Ok(instance);
             };
             {
                 let mut guard = lock(&tables)?;

@@ -30,13 +30,9 @@
 //! - A stackful callee has no built-in that takes the request, so it
 //!   is never told. An asynchronous cancel answers `BLOCKED`, and a
 //!   synchronous one waits until the callee returns on its own.
-//! - A callback callee that yielded is ready, but the request does not
-//!   wake it. An asynchronous cancel answers `BLOCKED` without running
-//!   it, as Wasmtime 49 does; the callee takes the request when its
-//!   yield ends, and the subtask event carries its confirmation. The
-//!   reference would resume it inside the cancel instead, and answer
-//!   its confirmation: the polyfill follows Wasmtime here, as its
-//!   design states.
+//! - A callback callee that yielded takes the request at once too. An
+//!   asynchronous cancel runs it from inside the cancel, and answers
+//!   its confirmation, as Wasmtime 50 and the reference do.
 //! - A request comes before an event the callee's set already holds
 //!   when the request arrives. The set keeps that event for the
 //!   callee's next wait.
@@ -364,18 +360,9 @@ const CALLS: &[u8] = component!(
             (i32.load (i32.const 12)))
 
           (func (export "cancel-yielding-async") (result i32)
-            (local $sub i32) (local $ws i32)
+            (local $sub i32)
             (local.set $sub (call $started (call $yield-confirm (i32.const 0))))
-            (if (i32.ne (call $cancel-async (local.get $sub)) (i32.const -1 (; BLOCKED ;)))
-              (then unreachable))
-            (local.set $ws (call $waitable-set.new))
-            (call $waitable.join (local.get $sub) (local.get $ws))
-            (if (i32.ne (call $waitable-set.wait (local.get $ws) (i32.const 8))
-                        (i32.const 1 (; SUBTASK ;)))
-              (then unreachable))
-            (if (i32.ne (i32.load (i32.const 8)) (local.get $sub))
-              (then unreachable))
-            (i32.load (i32.const 12)))
+            (call $cancel-async (local.get $sub)))
 
           (func (export "cancel-stackful-sync") (result i32)
             (local $status i32)
@@ -1729,12 +1716,12 @@ async fn it_never_tells_a_stackful_callee_and_answers_blocked_to_an_asynchronous
 }
 
 #[wcmp_macros::test]
-async fn it_answers_blocked_to_an_asynchronous_cancel_of_a_ready_callee_it_did_not_wake() {
+async fn it_runs_a_yielded_callee_inside_an_asynchronous_cancel_and_answers_its_confirmation() {
     assert_eq!(
         cancel("cancel-yielding-async").await,
         CANCELLED_BEFORE_RETURNED,
-        "the cancel answers `BLOCKED` without running the yielded callee, which confirms \
-         once its yield ends"
+        "the cancel wakes the yielded callee, which takes the request and confirms, and the \
+         cancel answers that"
     );
 }
 
