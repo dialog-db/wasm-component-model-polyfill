@@ -38,7 +38,6 @@ kanban-plugin: basic
 - [ ] [[43bdb9]]
 - [ ] [[ef6f2d]]
 - [ ] [[9178d1]]
-- [ ] [[365302]]
 - [ ] [[3631ba]]
 - [ ] [[7daabe]]
 - [ ] [[917683]]
@@ -46,10 +45,6 @@ kanban-plugin: basic
 - [ ] [[69c8d8]]
 
 ## In Progress
-
-- [ ] [[fdb910]]
-- [ ] [[b04ebf]]
-- [ ] [[049aa3]]
 
 ## Needs Review
 
@@ -79,6 +74,10 @@ kanban-plugin: basic
 - [ ] [[4b26f4]]
 - [ ] [[ff4d44]]
 - [ ] [[208e1b]]
+- [ ] [[fdb910]]
+- [ ] [[049aa3]]
+- [ ] [[b04ebf]]
+- [ ] [[365302]]
 
 ## Ready
 

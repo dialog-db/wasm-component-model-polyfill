@@ -26,11 +26,17 @@ leniency (`tests/conformance.rs:1346-1373`), as PDD021 decided. It goes too.
 
 ## Acceptance criteria
 
-- [ ] The four texts equal Wasmtime 50's, and a future end uses the future
+- [x] The four texts equal Wasmtime 50's, and a future end uses the future
       wording.
-- [ ] The harness matches the full text, and PDD021 says so.
-- [ ] The Display tests and the no-provider reasons that quote the old texts
+- [x] The harness matches the full text, and PDD021 says so.
+- [x] The Display tests and the no-provider reasons that quote the old texts
       are updated.
 
 ## Review notes
 
+- 2026-10-20: `feat: Name the stream or the future in the traps of a done
+  end`. The texts are Wasmtime 50's, and the error tests pin them to
+  `Trap::ReadFromDroppedStream`, `WriteToDroppedStream`,
+  `WriteToDroppedFuture`, and `LiftDroppedStream`. A done end is worded by its
+  kind alone, so `CopyEnd::notified_dropped` is gone. The harness relaxation
+  went with the corpus commit. PDD021's text waits for 7daabe.
