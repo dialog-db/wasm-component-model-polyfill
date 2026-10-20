@@ -29,7 +29,9 @@
 //! Every context carries a copy budget: the bytes of host values the
 //! crossing may still build out of the guest. It starts at the
 //! store's hostcall fuel, 128 MiB unless the host set another amount,
-//! and each list, string, and map the crossing lifts spends from it.
+//! and each list, string, and map the crossing lifts spends from it, as
+//! do the fields of a record, the elements of a tuple, the payload of a
+//! variant, an option, or a result, and each name the host copies.
 //! One call into the host, one `task.return`, and one result a host
 //! reads back each build a context of their own, so each has one
 //! budget.

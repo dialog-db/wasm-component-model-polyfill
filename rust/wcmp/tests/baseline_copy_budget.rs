@@ -259,6 +259,64 @@ fn lengths(value: &Val) -> Vec<usize> {
     }
 }
 
+/// A record result of two fields, `a` and `bb`, which comes back
+/// through memory, and one of one field, `bb`, which comes back in a
+/// flat slot.
+const RECORDS: &[u8] = component!(
+    r#"
+    (component
+      (core module $m
+        (memory (export "memory") 1)
+        (func (export "pair") (result i32)
+          (i32.store (i32.const 16) (i32.const 1))
+          (i32.store (i32.const 20) (i32.const 2))
+          i32.const 16)
+        (func (export "single") (result i32)
+          i32.const 3))
+      (core instance $i (instantiate $m))
+      (type $pair (record (field "a" u32) (field "bb" u32)))
+      (export $pair' "pair-record" (type $pair))
+      (type $single (record (field "bb" u32)))
+      (export $single' "single-record" (type $single))
+      (func (export "pair") (result $pair')
+        (canon lift (core func $i "pair") (memory (core memory $i "memory"))))
+      (func (export "single") (result $single')
+        (canon lift (core func $i "single"))))
+    "#
+);
+
+#[wcmp_macros::test]
+async fn it_charges_a_record_one_val_per_field_and_its_field_names() {
+    // Two fields of one `Val` each, and the names `a` and `bb`.
+    let cost = 2 * ELEMENT + 1 + 2;
+    let (mut store, instance) = instantiate(RECORDS).await;
+    store.set_hostcall_fuel(cost);
+    call(&mut store, &instance, "pair", &[])
+        .await
+        .expect("a record of exactly the budget lifts from memory");
+    store.set_hostcall_fuel(cost - 1);
+    let error = call(&mut store, &instance, "pair", &[])
+        .await
+        .expect_err("a record one byte past the budget is refused");
+    assert_budget_spent(&error);
+}
+
+#[wcmp_macros::test]
+async fn it_charges_a_record_that_lifts_from_a_flat_slot_as_one_from_memory() {
+    // One field of one `Val`, and the name `bb`.
+    let cost = ELEMENT + 2;
+    let (mut store, instance) = instantiate(RECORDS).await;
+    store.set_hostcall_fuel(cost);
+    call(&mut store, &instance, "single", &[])
+        .await
+        .expect("a record of exactly the budget lifts from a flat slot");
+    store.set_hostcall_fuel(cost - 1);
+    let error = call(&mut store, &instance, "single", &[])
+        .await
+        .expect_err("a record one byte past the budget is refused");
+    assert_budget_spent(&error);
+}
+
 #[wcmp_macros::test]
 async fn it_gives_a_store_wasmtimes_default_hostcall_fuel() {
     let (store, _) = instantiate(VALUES).await;
@@ -325,14 +383,16 @@ async fn it_charges_a_map_sixty_four_bytes_per_entry() {
 
 #[wcmp_macros::test]
 async fn it_charges_a_string_the_bytes_of_its_range_under_the_default_budget() {
-    // A string of the whole budget is 128 MiB of guest memory, so a
-    // list spends all of the crossing's budget but 4 KiB first; a
-    // string of exactly that many bytes spends the rest, and one
+    // A string of the whole budget is 128 MiB of guest memory, so the
+    // result tuple charges one `Val` for each of its two elements, a
+    // list spends all of the crossing's budget but 4 KiB after that,
+    // and a string of exactly that many bytes spends the rest. One
     // byte more passes it.
     let (mut store, instance) = instantiate(VALUES).await;
     let rest = 4096;
-    let n = (BUDGET - rest) / ELEMENT;
-    assert_eq!(n * ELEMENT + rest, BUDGET);
+    let tuple = 2 * ELEMENT;
+    let n = (BUDGET - tuple - rest) / ELEMENT;
+    assert_eq!(tuple + n * ELEMENT + rest, BUDGET);
     let results = call(&mut store, &instance, "list-and-string", &[n, rest])
         .await
         .expect("a string of the bytes the budget has left lifts");

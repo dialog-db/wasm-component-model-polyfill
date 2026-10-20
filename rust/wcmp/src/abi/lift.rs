@@ -64,11 +64,13 @@ pub fn lift<T: 'static>(
             lift_map(ctx, ptr, len, map, ty, position)
         }
         ValueType::Record(record) => {
+            ctx.charge_copy_budget(record.fields().len(), VAL_COST, position, ty)?;
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());
             let mut field_offset = offset;
             for f in record.fields() {
                 field_offset = align_to(field_offset, alignment_of(f.ty()));
                 let value = lift(ctx, field_offset, f.ty(), position)?;
+                ctx.charge_copy_budget(f.name().len(), 1, position, ty)?;
                 field_offset += size_of(f.ty());
                 fields.push(ValField {
                     name: f.name().to_owned(),
@@ -78,6 +80,7 @@ pub fn lift<T: 'static>(
             Ok(Val::Record(fields.into_boxed_slice()))
         }
         ValueType::Tuple(tuple) => {
+            ctx.charge_copy_budget(tuple.elements().len(), VAL_COST, position, ty)?;
             let mut elements: Vec<Val> = Vec::with_capacity(tuple.elements().len());
             let mut elem_offset = offset;
             for elem_ty in tuple.elements() {
@@ -106,10 +109,12 @@ pub fn lift<T: 'static>(
                 .unwrap_or(1);
             let payload_offset = align_to(offset + disc_size, payload_align);
             let payload = if let Some(payload_ty) = case.payload() {
+                ctx.charge_copy_budget(1, VAL_COST, position, ty)?;
                 Some(Box::new(lift(ctx, payload_offset, payload_ty, position)?))
             } else {
                 None
             };
+            ctx.charge_copy_budget(case.name().len(), 1, position, ty)?;
             Ok(Val::Variant {
                 discriminant: case.name().to_owned(),
                 payload,
@@ -123,6 +128,7 @@ pub fn lift<T: 'static>(
             match discriminant {
                 0 => Ok(Val::Option(None)),
                 1 => {
+                    ctx.charge_copy_budget(1, VAL_COST, position, ty)?;
                     let inner = lift(ctx, payload_offset, option.payload(), position)?;
                     Ok(Val::Option(Some(Box::new(inner))))
                 }
@@ -147,6 +153,7 @@ pub fn lift<T: 'static>(
             match discriminant {
                 0 => {
                     let payload = if let Some(ok_ty) = result.ok() {
+                        ctx.charge_copy_budget(1, VAL_COST, position, ty)?;
                         Some(Box::new(lift(ctx, payload_offset, ok_ty, position)?))
                     } else {
                         None
@@ -155,6 +162,7 @@ pub fn lift<T: 'static>(
                 }
                 1 => {
                     let payload = if let Some(err_ty) = result.err() {
+                        ctx.charge_copy_budget(1, VAL_COST, position, ty)?;
                         Some(Box::new(lift(ctx, payload_offset, err_ty, position)?))
                     } else {
                         None
@@ -175,6 +183,7 @@ pub fn lift<T: 'static>(
                 .cases()
                 .get(discriminant)
                 .ok_or_else(|| invalid_encoding(ty, position, "enum discriminant out of range"))?;
+            ctx.charge_copy_budget(case.len(), 1, position, ty)?;
             Ok(Val::Enum(case.clone()))
         }
         ValueType::Flags(flags) => {
@@ -187,6 +196,7 @@ pub fn lift<T: 'static>(
                 }
                 let byte = bytes.get(i / 8).copied().unwrap_or(0);
                 if (byte >> (i % 8)) & 1 == 1 {
+                    ctx.charge_copy_budget(name.len(), 1, position, ty)?;
                     active.push(name.clone());
                 }
             }
@@ -490,7 +500,16 @@ pub fn lift_list<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
 ) -> Result<Val> {
-    lift_elements(ctx, ptr, len, element_ty, ty, position, LIST_ELEMENT_COST)
+    lift_elements(
+        ctx,
+        ptr,
+        len,
+        element_ty,
+        ty,
+        position,
+        LIST_ELEMENT_COST,
+        lift,
+    )
 }
 
 /// Lift the `len` entries of the map `ty` that start at `ptr`. The
@@ -514,9 +533,38 @@ pub fn lift_map<T: 'static>(
         &crate::abi::map_entries_type(map),
         position,
         MAP_ENTRY_COST,
+        lift_map_entry,
     )?;
     crate::abi::entries_to_map(entries, ty, position)
 }
+
+/// Lift one entry of a map at `offset`: its key, then its value, as
+/// the key-value tuple [`lift_map`] hands on. The entry is charged
+/// [`MAP_ENTRY_COST`] up front with the rest of the map, so the tuple
+/// itself charges nothing more, as Wasmtime lifts a map's key and value
+/// one by one.
+fn lift_map_entry<T: 'static>(
+    ctx: &mut BoundaryContext<'_, T>,
+    offset: usize,
+    entry_ty: &ValueType,
+    position: AbiPosition,
+) -> Result<Val> {
+    let ValueType::Tuple(tuple) = entry_ty else {
+        return lift(ctx, offset, entry_ty, position);
+    };
+    let mut elements: Vec<Val> = Vec::with_capacity(tuple.elements().len());
+    let mut elem_offset = offset;
+    for elem_ty in tuple.elements() {
+        elem_offset = align_to(elem_offset, alignment_of(elem_ty));
+        elements.push(lift(ctx, elem_offset, elem_ty, position)?);
+        elem_offset += size_of(elem_ty);
+    }
+    Ok(Val::Tuple(elements.into_boxed_slice()))
+}
+
+/// How one element of a list is lifted out of the guest.
+type ElementLift<T> =
+    fn(&mut BoundaryContext<'_, T>, usize, &ValueType, AbiPosition) -> Result<Val>;
 
 /// What one element of a list or of a fixed-length list charges the
 /// crossing's copy budget, in bytes: the size of a [`Val`] on a 64-bit
@@ -524,7 +572,16 @@ pub fn lift_map<T: 'static>(
 /// It is fixed rather than the size of a `Val` on the target, which
 /// is smaller in a browser, so a list is refused at the same length
 /// on every target.
-pub const LIST_ELEMENT_COST: usize = 32;
+pub const LIST_ELEMENT_COST: usize = VAL_COST;
+
+/// What one [`Val`] the host builds charges the crossing's copy budget,
+/// in bytes: the size of a `Val` on a 64-bit host, fixed for the same
+/// reason as [`LIST_ELEMENT_COST`]. Wasmtime 50 charges the size of its
+/// own `Val` for each field of a record, each element of a tuple, and
+/// each payload of a variant, an option, or a result, and the length of
+/// each field, case, and flag name it copies into the host
+/// (`crates/wasmtime/src/runtime/component/values.rs` at `v50.0.0`).
+pub const VAL_COST: usize = 32;
 
 /// What one entry of a map charges the crossing's copy budget, in
 /// bytes: the size of a key and a value, a pair of [`Val`]s, on a
@@ -533,7 +590,8 @@ pub const MAP_ENTRY_COST: usize = 64;
 
 /// Lift the `len` elements of a list that starts at `ptr`, as
 /// [`lift_list`] states, charging the copy budget `cost` bytes per
-/// element.
+/// element, and lifting each element with `lift_element`.
+#[allow(clippy::too_many_arguments)]
 fn lift_elements<T: 'static>(
     ctx: &mut BoundaryContext<'_, T>,
     ptr: usize,
@@ -542,6 +600,7 @@ fn lift_elements<T: 'static>(
     ty: &ValueType,
     position: AbiPosition,
     cost: usize,
+    lift_element: ElementLift<T>,
 ) -> Result<Val> {
     let element_size = size_of(element_ty);
     let (byte_len, memory_size) = gate_list(ctx, ptr, len, element_ty, ty, position)?;
@@ -583,7 +642,12 @@ fn lift_elements<T: 'static>(
     ctx.lifting_within(ptr, byte_len, position, ty, |ctx| {
         let mut out = Vec::with_capacity(capacity);
         for i in 0..len {
-            out.push(lift(ctx, ptr + i * element_size, element_ty, position)?);
+            out.push(lift_element(
+                ctx,
+                ptr + i * element_size,
+                element_ty,
+                position,
+            )?);
         }
         Ok(Val::List(out.into_boxed_slice()))
     })

@@ -27,8 +27,8 @@
 use super::context::BoundaryContext;
 use super::layout::{FlatType, flags_chunk_count, flat_types};
 use super::{
-    LIST_ELEMENT_COST, canonical_f32, canonical_f64, lift_end_for_host, lift_list, lift_map,
-    lift_string, lower, lower_list, lower_str,
+    LIST_ELEMENT_COST, VAL_COST, canonical_f32, canonical_f64, lift_end_for_host, lift_list,
+    lift_map, lift_string, lower, lower_list, lower_str,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::{ErrorInternal, FutureAnyInternal, StreamAnyInternal};
@@ -267,9 +267,11 @@ pub fn lift_from_flat_slots<T: 'static>(
             lift_map(ctx, ptr, len, map, ty, position)
         }
         ValueType::Record(record) => {
+            ctx.charge_copy_budget(record.fields().len(), VAL_COST, position, ty)?;
             let mut fields: Vec<ValField> = Vec::with_capacity(record.fields().len());
             for record_field in record.fields() {
                 let value = lift_from_flat_slots(ctx, args, cursor, record_field.ty(), position)?;
+                ctx.charge_copy_budget(record_field.name().len(), 1, position, ty)?;
                 fields.push(ValField {
                     name: record_field.name().to_owned(),
                     value,
@@ -278,6 +280,7 @@ pub fn lift_from_flat_slots<T: 'static>(
             Ok(Val::Record(fields.into_boxed_slice()))
         }
         ValueType::Tuple(tuple) => {
+            ctx.charge_copy_budget(tuple.elements().len(), VAL_COST, position, ty)?;
             let mut elements: Vec<Val> = Vec::with_capacity(tuple.elements().len());
             for elem_ty in tuple.elements() {
                 elements.push(lift_from_flat_slots(ctx, args, cursor, elem_ty, position)?);
@@ -306,6 +309,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                 ty,
                 position,
             )?;
+            ctx.charge_copy_budget(case_name.len(), 1, position, ty)?;
             Ok(Val::Variant {
                 discriminant: case_name,
                 payload: payload.map(Box::new),
@@ -389,6 +393,7 @@ pub fn lift_from_flat_slots<T: 'static>(
                 .cases()
                 .get(tag)
                 .ok_or_else(|| invalid_encoding(ty, position, "enum discriminant out of range"))?;
+            ctx.charge_copy_budget(case.len(), 1, position, ty)?;
             Ok(Val::Enum(case.clone()))
         }
         ValueType::Flags(flags_ty) => {
@@ -401,6 +406,7 @@ pub fn lift_from_flat_slots<T: 'static>(
             for (i, name) in flags_ty.names().iter().enumerate() {
                 let chunk = bits.get(i / 32).copied().unwrap_or(0);
                 if (chunk >> (i % 32)) & 1 == 1 {
+                    ctx.charge_copy_budget(name.len(), 1, position, ty)?;
                     active.push(name.clone());
                 }
             }
@@ -496,6 +502,7 @@ fn lift_variant_payload_flat<T: 'static>(
     let Some(payload_ty) = payload_ty else {
         return Ok(None);
     };
+    ctx.charge_copy_budget(1, VAL_COST, position, ty)?;
     // Reinterpret the joined slots back into the active case's
     // flat shape and lift the value through a fresh sub-cursor.
     let mut decoded: Vec<RuntimeVal> = Vec::with_capacity(active_types.len());

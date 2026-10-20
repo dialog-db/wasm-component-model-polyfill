@@ -64,7 +64,7 @@ pub mod strings;
 pub mod transcode;
 
 pub use lift::{
-    LIST_ELEMENT_COST, canonical_f32, canonical_f64, check_spilled_address, gate_list,
+    LIST_ELEMENT_COST, VAL_COST, canonical_f32, canonical_f64, check_spilled_address, gate_list,
     gate_list_layout, lift, lift_end_for_host, lift_end_id_for_host, lift_error_context,
     lift_error_context_id, lift_host_resource, lift_list, lift_map, lift_readable_end,
     lift_resource_any, lift_string, read_discriminant, read_pointer_pair,
