@@ -385,13 +385,10 @@ struct Runner {
     reflected: HashMap<String, (Component, usize)>,
     /// The instance an unqualified `invoke` targets.
     current: Option<usize>,
-    /// Whether the file is from the Component Model's own suite
-    /// (`cm/`), whose trap wording `trap_matches` relaxes.
-    cm_corpus: bool,
 }
 
 impl Runner {
-    async fn new(config: &EngineConfig, cm_corpus: bool) -> Self {
+    async fn new(config: &EngineConfig) -> Self {
         let engine = Engine::with_backend(crate::test_backend::backend())
             .and_then(|engine| engine.with_config(config))
             .expect("engine");
@@ -406,7 +403,6 @@ impl Runner {
             named: HashMap::new(),
             reflected: HashMap::new(),
             current: None,
-            cm_corpus,
         }
     }
 
@@ -553,7 +549,7 @@ impl Runner {
             WastDirective::AssertTrap { exec, message, .. } => match self.execute(exec).await {
                 Ok((values, _)) => Err(format!("expected a trap `{message}`, got {values:?}")),
                 Err(err) => {
-                    if trap_matches(self.cm_corpus, message, &err) {
+                    if trap_matches(message, &err) {
                         Ok(())
                     } else {
                         Err(format!("expected a trap `{message}`, got `{err}`"))
@@ -1344,32 +1340,20 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 }
 
 /// Whether a trap raised with `actual` satisfies an `assert_trap`
-/// that expects `message`: `actual` contains `message`, or, in a file
-/// of the Component Model's own suite, both contain "cannot write" or
-/// both contain "cannot read".
+/// that expects `message`: `actual` contains `message`.
 ///
-/// The second arm mirrors Wasmtime's wast runner
-/// (`crates/wast/src/wast.rs`, `assert_trap`, lines 551-554 at the
-/// commit the corpora are drawn from). It accepts any trap containing
-/// "cannot write" when the expected text contains it, and the same
-/// for "cannot read", because "upstream component model tests expect
-/// slightly different error messages than we generate". The spec
-/// fixes no wording for these traps, and the polyfill raises
-/// Wasmtime's, so the Component Model suite is held to the rule that
-/// Wasmtime passes it by. Wasmtime's own suite expects Wasmtime's
-/// wording and gets no relaxation.
+/// Wasmtime's wast runner up to Wasmtime 49 also accepted any trap that
+/// contained "cannot write" or "cannot read" where the expected text did
+/// (`crates/wast/src/wast.rs`, `assert_trap`, lines 551-554 at
+/// `v49.0.0-rc.1`). Wasmtime 50 names the stream or the future in those
+/// traps and dropped the rule, and the harness dropped it with Wasmtime.
 ///
-/// The rule is not confined to a copy on a done end: it reaches every
-/// expected text with either phrase. The refusal of a read and a write
-/// from one instance is one such text ("cannot read from and write to
-/// intra-component future"), and any trap that says "cannot read"
-/// would satisfy it. The polyfill's refusal contains that text as
-/// written, so it passes on the first arm.
-fn trap_matches(cm_corpus: bool, message: &str, actual: &str) -> bool {
+/// Wasmtime's runner ignores the text of a trap in the Component Model's
+/// own suite (`tests/wast.rs` at `v50.0.0`). The harness holds that
+/// suite to the text, as it holds Wasmtime's own, so that a trap of the
+/// wrong cause does not pass.
+fn trap_matches(message: &str, actual: &str) -> bool {
     actual.contains(message)
-        || (cm_corpus
-            && ((message.contains("cannot write") && actual.contains("cannot write"))
-                || (message.contains("cannot read") && actual.contains("cannot read"))))
 }
 
 /// The engine configuration a corpus file runs with, as Wasmtime's
@@ -1436,7 +1420,7 @@ fn engine_config(path: &str, text: &str) -> EngineConfig {
 async fn report_file(path: &str, text: &str, lists: &Lists, suspend_provider: bool) -> FileReport {
     let mut config = engine_config(path, text);
     config.suspend_provider(suspend_provider);
-    let mut runner = Runner::new(&config, path.starts_with("cm/")).await;
+    let mut runner = Runner::new(&config).await;
     let expected = lists
         .applying(runner.engine.suspend_provider())
         .into_iter()
@@ -1586,8 +1570,8 @@ const FRAME_BELOW_DIRECTIVES: &[(&str, usize)] = &[
     ("cm/async/async-calls-sync.wast", 250),
     ("cm/async/async-calls-sync.wast", 251),
     ("cm/async/cancel-and-exclusive-lock.wast", 196),
-    ("cm/async/cancel-delivery.wast", 278),
-    ("cm/async/cancel-subtask.wast", 217),
+    ("cm/async/cancel-delivery.wast", 375),
+    ("cm/async/cancel-subtask.wast", 205),
     ("cm/async/sync-streams.wast", 208),
     ("cm/async/trap-if-block-and-sync.wast", 352),
     ("wasmtime/async/reenter-during-yield.wast", 81),
@@ -1638,7 +1622,7 @@ async fn it_serves_every_frame_below_block_under_a_provider_and_fails_it_with_th
                 .unwrap_or_else(|| panic!("{path} is not in the corpus"));
             let mut config = engine_config(path, text);
             config.suspend_provider(suspend_provider);
-            let mut runner = Runner::new(&config, path.starts_with("cm/")).await;
+            let mut runner = Runner::new(&config).await;
             let threads = runs_threads_through(runner.engine.suspend_provider());
             let (_, failures) = runner.run(text).await;
             for (_, line) in FRAME_BELOW_DIRECTIVES
@@ -1728,7 +1712,7 @@ mod tests {
     /// `None` where the directive passed, the failure's reason where
     /// it did not.
     async fn outcomes(text: &str) -> Vec<Option<String>> {
-        let mut runner = Runner::new(&EngineConfig::new(), false).await;
+        let mut runner = Runner::new(&EngineConfig::new()).await;
         let (directives, failures) = runner.run(text).await;
         let mut lines: Vec<Option<String>> = vec![None; directives];
         let numbers: Vec<usize> = text
@@ -1986,42 +1970,31 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    async fn it_accepts_another_copy_wording_only_in_the_cm_corpus() {
+    async fn it_matches_a_trap_only_when_it_contains_the_expected_text() {
         let expected = "cannot write to stream after being notified that the readable end dropped";
-        let actual = "cannot write after being notified that the readable end dropped";
-        assert!(trap_matches(true, expected, actual));
-        assert!(!trap_matches(false, expected, actual));
         assert!(trap_matches(
-            true,
-            "cannot read from future after previous read succeeded",
-            "cannot read after being notified that the writable end dropped"
+            expected,
+            "copy error: cannot write to stream after being notified that the readable end \
+             dropped"
+        ));
+        assert!(!trap_matches(
+            expected,
+            "cannot write to future after previous write succeeded or readable end dropped"
+        ));
+        assert!(!trap_matches(
+            expected,
+            "cannot read from stream after being notified that the writable end dropped"
         ));
     }
 
     #[wcmp_macros::test]
-    async fn it_matches_the_intra_instance_refusal_without_the_cm_relaxation() {
-        // The text `same-component-stream-future.wast` expects, which
-        // the relaxation would also grant any "cannot read" trap.
+    async fn it_matches_the_intra_instance_refusal_as_written() {
         let expected = "cannot read from and write to intra-component future";
         let actual = Error::Copy(wcmp::CopyCause::IntraInstanceNonNumber).to_string();
         assert!(
-            trap_matches(false, expected, &actual),
+            trap_matches(expected, &actual),
             "the polyfill's refusal contains the text as written: {actual}"
         );
-    }
-
-    #[wcmp_macros::test]
-    async fn it_keeps_the_copy_direction_in_the_cm_corpus() {
-        assert!(!trap_matches(
-            true,
-            "cannot write to stream after being notified that the readable end dropped",
-            "cannot read after being notified that the writable end dropped"
-        ));
-        assert!(!trap_matches(
-            true,
-            "unreachable",
-            "cannot write after being notified that the readable end dropped"
-        ));
     }
 
     #[wcmp_macros::test]

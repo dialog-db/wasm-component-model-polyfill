@@ -9,26 +9,28 @@ fails when a listed directive starts to pass or an unlisted one fails, so the
 lists stay current.
 
 The table gives directives passed, with the pass percentage, from the
-`tests all` run of 2026-10-13. The Baseline section of
+`tests all` run of 2026-10-20. The Baseline section of
 `rust/wcmp/tests/corpus/README.md` gives the same figures by failure category,
 and `tests conformance` prints the current numbers.
 
 | Corpus           | Directives | Native, stack switching | Browser, JSPI | Native, no provider | Browser, no provider | Wasmi       |
 | ---------------- | ---------- | ----------------------- | ------------- | ------------------- | -------------------- | ----------- |
-| `cm`             | 1126       | 1106 (98.2)             | 1105 (98.1)   | 1106 (98.2)         | 1105 (98.1)          | 1092 (97.0) |
-| `cm/async`       | 393        | 393 (100.0)             | 393 (100.0)   | 361 (91.9)          | 361 (91.9)           | 393 (100.0) |
+| `cm`             | 1130       | 1057 (93.5)             | 1056 (93.5)   | 1057 (93.5)         | 1056 (93.5)          | 1042 (92.2) |
+| `cm/async`       | 613        | 461 (75.2)              | 461 (75.2)    | 423 (69.0)          | 423 (69.0)           | 461 (75.2)  |
 | `fixtures`       | 71         | 65 (91.5)               | 65 (91.5)     | 65 (91.5)           | 65 (91.5)            | 65 (91.5)   |
-| `wasmtime`       | 469        | 464 (98.9)              | 460 (98.1)    | 464 (98.9)          | 460 (98.1)           | 433 (92.3)  |
-| `wasmtime/async` | 387        | 387 (100.0)             | 387 (100.0)   | 363 (93.8)          | 363 (93.8)           | 372 (96.1)  |
-| total            | 2446       | 2415 (98.7)             | 2410 (98.5)   | 2359 (96.4)         | 2354 (96.2)          | 2355 (96.3) |
+| `wasmtime`       | 481        | 476 (99.0)              | 473 (98.3)    | 476 (99.0)          | 473 (98.3)           | 445 (92.5)  |
+| `wasmtime/async` | 425        | 425 (100.0)             | 425 (100.0)   | 400 (94.1)          | 400 (94.1)           | 410 (96.5)  |
+| total            | 2720       | 2484 (91.3)             | 2480 (91.2)   | 2421 (89.0)         | 2417 (88.9)          | 2423 (89.1) |
 
-- With a suspend provider, the `async` corpora pass every directive on both
-  targets.
-- The browser fails five more directives than native. One is V8's wording of a
+- Three files of the Component Model corpus use `stream.forward`, which neither
+  the polyfill nor Wasmtime 50 implements. They hold 213 of the 236 directives
+  that fail natively. Wasmtime's own runner lists the same three files as
+  failing.
+- With a suspend provider, `wasmtime/async` passes every directive on both
+  targets, and `cm/async` passes every directive outside those files.
+- The browser fails four more directives than native. One is V8's wording of a
   validation error. One needs memory past 4 GiB, and its trap poisons the store
-  for the file's next two. One is the trap that loses its reason under
-  [host suspension](suspend-providers.md#limits-of-host-suspension)
-  (`rust/wcmp/tests/corpus/expected-failures.web.txt`).
+  for the file's next two (`rust/wcmp/tests/corpus/expected-failures.web.txt`).
 - Without a provider, the extra failures are blocks that only a stack switch can
   serve, plus later directives in the same file that then meet a poisoned store.
 - On Wasmi, the extra failures are components that need a capability Wasmi

@@ -13,6 +13,158 @@
 #   defect            a wrong result from a feature the polyfill claims
 #   cascade           a consequence of an earlier failure in the same file
 
+cm/async/big-interleaving-test.wast:14 deferred-feature component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x15ab) (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/async/big-interleaving-test.wast:893 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:895 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:897 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:906 cascade expected a trap `unreachable`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:912 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:914 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:926 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:933 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:943 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:954 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:966 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:976 cascade expected a trap `cannot drop future write end without first writing a value`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:982 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:984 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1004 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1016 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1034 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1094 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1128 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1174 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1202 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1230 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1276 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1326 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1358 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1414 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1462 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1476 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1477 cascade expected a trap `cannot have concurrent operations active on a future/stream`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1485 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1487 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1497 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1507 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1508 cascade expected a trap `cannot drop busy stream`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1516 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1518 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1527 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1539 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1551 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1561 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1574 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1590 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1603 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1614 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1625 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1638 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1654 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1661 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1662 cascade expected a trap `cannot drop a subtask which has not yet resolved`, got `no instance to invoke`
+cm/async/big-interleaving-test.wast:1669 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1671 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1682 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1695 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1706 cascade no instance to invoke
+cm/async/big-interleaving-test.wast:1724 cascade no definition named `Tester`
+cm/async/big-interleaving-test.wast:1726 cascade no instance to invoke
+cm/async/forward.wast:3 deferred-feature component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x18f0) (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/async/forward.wast:938 cascade no definition named `Tester`
+cm/async/forward.wast:939 cascade no instance to invoke
+cm/async/forward.wast:940 cascade no definition named `Tester`
+cm/async/forward.wast:941 cascade no instance to invoke
+cm/async/forward.wast:942 cascade no definition named `Tester`
+cm/async/forward.wast:943 cascade no instance to invoke
+cm/async/forward.wast:944 cascade no definition named `Tester`
+cm/async/forward.wast:945 cascade no instance to invoke
+cm/async/forward.wast:946 cascade no definition named `Tester`
+cm/async/forward.wast:947 cascade no instance to invoke
+cm/async/forward.wast:948 cascade no definition named `Tester`
+cm/async/forward.wast:949 cascade no instance to invoke
+cm/async/forward.wast:950 cascade no definition named `Tester`
+cm/async/forward.wast:951 cascade no instance to invoke
+cm/async/forward.wast:952 cascade no definition named `Tester`
+cm/async/forward.wast:953 cascade no instance to invoke
+cm/async/forward.wast:954 cascade no definition named `Tester`
+cm/async/forward.wast:955 cascade no instance to invoke
+cm/async/forward.wast:956 cascade no definition named `Tester`
+cm/async/forward.wast:957 cascade no instance to invoke
+cm/async/forward.wast:958 cascade no definition named `Tester`
+cm/async/forward.wast:959 cascade no instance to invoke
+cm/async/forward.wast:960 cascade no definition named `Tester`
+cm/async/forward.wast:961 cascade no instance to invoke
+cm/async/forward.wast:962 cascade no definition named `Tester`
+cm/async/forward.wast:963 cascade no instance to invoke
+cm/async/forward.wast:964 cascade no definition named `Tester`
+cm/async/forward.wast:965 cascade no instance to invoke
+cm/async/forward.wast:966 cascade no definition named `Tester`
+cm/async/forward.wast:967 cascade no instance to invoke
+cm/async/forward.wast:968 cascade no definition named `Tester`
+cm/async/forward.wast:969 cascade no instance to invoke
+cm/async/forward.wast:970 cascade no definition named `Tester`
+cm/async/forward.wast:971 cascade no instance to invoke
+cm/async/forward.wast:972 cascade no definition named `Tester`
+cm/async/forward.wast:973 cascade no instance to invoke
+cm/async/forward.wast:974 cascade no definition named `Tester`
+cm/async/forward.wast:975 cascade no instance to invoke
+cm/async/forward.wast:976 cascade no definition named `Tester`
+cm/async/forward.wast:977 cascade no instance to invoke
+cm/async/forward.wast:978 cascade no definition named `Tester`
+cm/async/forward.wast:979 cascade no instance to invoke
+cm/async/forward.wast:980 cascade no definition named `Tester`
+cm/async/forward.wast:981 cascade no instance to invoke
+cm/async/forward.wast:982 cascade no definition named `Tester`
+cm/async/forward.wast:983 cascade no instance to invoke
+cm/async/forward.wast:984 cascade no definition named `Tester`
+cm/async/forward.wast:985 cascade no instance to invoke
+cm/async/forward.wast:986 cascade no definition named `Tester`
+cm/async/forward.wast:987 cascade no instance to invoke
+cm/async/forward.wast:988 cascade no definition named `Tester`
+cm/async/forward.wast:989 cascade no instance to invoke
+cm/async/forward.wast:990 cascade no definition named `Tester`
+cm/async/forward.wast:991 cascade expected a trap `handle index 2 used with the wrong type`, got `no instance to invoke`
+cm/async/forward.wast:992 cascade no definition named `Tester`
+cm/async/forward.wast:993 cascade expected a trap `handle index 1 used with the wrong type`, got `no instance to invoke`
+cm/async/forward.wast:994 cascade no definition named `Tester`
+cm/async/forward.wast:995 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/async/forward.wast:996 cascade no definition named `Tester`
+cm/async/forward.wast:997 cascade expected a trap `cannot forward busy stream`, got `no instance to invoke`
+cm/async/forward.wast:998 cascade no definition named `Tester`
+cm/async/forward.wast:999 cascade expected a trap `cannot forward busy stream`, got `no instance to invoke`
+cm/async/forward.wast:1000 cascade no definition named `Tester`
+cm/async/forward.wast:1001 cascade expected a trap `cannot forward stream while it's in a waitable set`, got `no instance to invoke`
+cm/async/forward.wast:1002 cascade no definition named `Tester`
+cm/async/forward.wast:1003 cascade expected a trap `cannot forward stream while it's in a waitable set`, got `no instance to invoke`
+cm/async/forward.wast:1004 cascade no definition named `Tester`
+cm/async/forward.wast:1005 cascade expected a trap `cannot forward stream after being notified that the writable end dropped`, got `no instance to invoke`
+cm/async/forward.wast:1006 cascade no definition named `Tester`
+cm/async/forward.wast:1007 cascade expected a trap `cannot forward stream after being notified that the readable end dropped`, got `no instance to invoke`
+cm/async/forward.wast:1008 cascade no definition named `Tester`
+cm/async/forward.wast:1009 cascade expected a trap `unknown handle index 1`, got `no instance to invoke`
+cm/async/forward.wast:1010 cascade no definition named `Tester`
+cm/async/forward.wast:1011 cascade expected a trap `handle index 1 used with the wrong type`, got `no instance to invoke`
+cm/async/forward.wast:1012 cascade no definition named `Tester`
+cm/async/forward.wast:1013 cascade expected a trap `handle index 2 used with the wrong type`, got `no instance to invoke`
+cm/async/forward.wast:1014 cascade no definition named `Tester`
+cm/async/forward.wast:1015 cascade expected a trap `cannot forward busy future`, got `no instance to invoke`
+cm/async/forward.wast:1016 cascade no definition named `Tester`
+cm/async/forward.wast:1017 cascade expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got `no instance to invoke`
+cm/async/forward.wast:1018 cascade no definition named `Tester`
+cm/async/forward.wast:1019 cascade expected a trap `cannot read from and write to intra-component future/stream with non-numeric payload`, got `no instance to invoke`
+cm/async/forward.wast:1025 deferred-feature component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x2e0) (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/async/forward.wast:1185 cascade no definition named `ProxyTester`
+cm/async/forward.wast:1186 cascade no instance to invoke
+cm/async/forward.wast:1187 cascade no definition named `ProxyTester`
+cm/async/forward.wast:1188 cascade no instance to invoke
+cm/async/forward.wast:1189 cascade no definition named `ProxyTester`
+cm/async/forward.wast:1190 cascade no instance to invoke
+cm/async/forward.wast:1197 deferred-feature component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x263) (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/async/forward.wast:1440 cascade no definition named `PingPongTester`
+cm/async/forward.wast:1441 cascade no instance to invoke
+cm/async/forward.wast:1444 deferred-feature expected rejection ``stream.forward` requires a stream type`, got `component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x11)` (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/async/forward.wast:1450 deferred-feature expected rejection ``future.forward` requires a future type`, got `component rejected: invalid component binary at offset 0: `future.forward` requires the component model forward feature (at offset 0x11)` (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
 cm/binary/binary.wast:1110 validation expected rejection `invalid leading byte (0x2e) for canonical function`, got `component rejected: invalid component binary at offset 0: unexpected end-of-file (at offset 0xc)` (wasm-tools 0.261 reads 0x2e as `stream.forward`, and spec commit 6cd6393 drops this directive; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1166 validation expected rejection `invalid boolean value`, got `component rejected: invalid component binary at offset 0: invalid leading byte (0x2) for zero byte (at offset 0xc)` (wasm-tools 0.261 reads the byte as the zero byte that replaced `cancellable`, and spec commit 6cd6393 rewrites these directives to that wording; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1175 validation expected rejection `invalid boolean value`, got `component rejected: invalid component binary at offset 0: invalid leading byte (0x2) for zero byte (at offset 0xc)` (wasm-tools 0.261 reads the byte as the zero byte that replaced `cancellable`, and spec commit 6cd6393 rewrites these directives to that wording; the reference implementation does not pass this file either, see cm/nyi.txt)
@@ -25,16 +177,75 @@ cm/binary/binary.wast:1257 validation expected rejection `non-zero reserved byte
 cm/binary/binary.wast:1266 validation expected rejection `non-zero reserved byte`, got `component rejected: invalid component binary at offset 0: invalid leading byte (0x1) for zero byte; this was historically accepted as `cancellable` until WebAssembly/component-model#716 (at offset 0xc)` (wasmparser 0.261 rejects the byte in its own words, and spec commit 6cd6393 rewrites these directives to that wording; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/binary/binary.wast:1275 validation expected rejection `non-zero reserved byte`, got `component rejected: invalid component binary at offset 0: invalid leading byte (0x1) for zero byte; this was historically accepted as `cancellable` until WebAssembly/component-model#716 (at offset 0xc)` (wasmparser 0.261 rejects the byte in its own words, and spec commit 6cd6393 rewrites these directives to that wording; the reference implementation does not pass this file either, see cm/nyi.txt)
 cm/validation/kebab.wast:159 validation expected rejection `import name `foob-ar` conflicts with previous name `foo-bar``, got `component rejected: invalid component binary at offset 0: import name `FOOB-ar` conflicts with previous name `foo-bar` (at offset 0x27)` (the reference implementation does not pass this file either, see cm/nyi.txt)
+cm/values/post-return.wast:4 deferred-feature component rejected: invalid component binary at offset 0: `stream.forward` requires the component model forward feature (at offset 0x15f) (`stream.forward` is not implemented, and Wasmtime 50 lists this file as failing too)
+cm/values/post-return.wast:213 cascade no definition named `Tester`
+cm/values/post-return.wast:214 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:215 cascade no definition named `Tester`
+cm/values/post-return.wast:216 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:217 cascade no definition named `Tester`
+cm/values/post-return.wast:218 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:219 cascade no definition named `Tester`
+cm/values/post-return.wast:220 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:221 cascade no definition named `Tester`
+cm/values/post-return.wast:222 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:223 cascade no definition named `Tester`
+cm/values/post-return.wast:224 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:225 cascade no definition named `Tester`
+cm/values/post-return.wast:226 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:227 cascade no definition named `Tester`
+cm/values/post-return.wast:228 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:229 cascade no definition named `Tester`
+cm/values/post-return.wast:230 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:231 cascade no definition named `Tester`
+cm/values/post-return.wast:232 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:233 cascade no definition named `Tester`
+cm/values/post-return.wast:234 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:235 cascade no definition named `Tester`
+cm/values/post-return.wast:236 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:237 cascade no definition named `Tester`
+cm/values/post-return.wast:238 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:239 cascade no definition named `Tester`
+cm/values/post-return.wast:240 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:241 cascade no definition named `Tester`
+cm/values/post-return.wast:242 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:243 cascade no definition named `Tester`
+cm/values/post-return.wast:244 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:245 cascade no definition named `Tester`
+cm/values/post-return.wast:246 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:247 cascade no definition named `Tester`
+cm/values/post-return.wast:248 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:249 cascade no definition named `Tester`
+cm/values/post-return.wast:250 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:251 cascade no definition named `Tester`
+cm/values/post-return.wast:252 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:253 cascade no definition named `Tester`
+cm/values/post-return.wast:254 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:255 cascade no definition named `Tester`
+cm/values/post-return.wast:256 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:257 cascade no definition named `Tester`
+cm/values/post-return.wast:258 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:259 cascade no definition named `Tester`
+cm/values/post-return.wast:260 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:261 cascade no definition named `Tester`
+cm/values/post-return.wast:262 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:263 cascade no definition named `Tester`
+cm/values/post-return.wast:264 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:265 cascade no definition named `Tester`
+cm/values/post-return.wast:266 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:267 cascade no definition named `Tester`
+cm/values/post-return.wast:268 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:269 cascade no definition named `Tester`
+cm/values/post-return.wast:270 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
+cm/values/post-return.wast:271 cascade no definition named `Tester`
+cm/values/post-return.wast:272 cascade expected a trap `cannot leave component instance`, got `no instance to invoke`
 fixtures/wasi-http-same-instance.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http-same-instance.wast:2143 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
 fixtures/wasi-http-same-instance.wast:2146 cascade no instance to invoke (given a host for `wasi:http/types`, `drain` traps here on the spec's temporary same-instance rule for a non-number payload; it passes once the spec lifts that rule)
 fixtures/wasi-http.wast:4 deferred-feature instantiation failed: link error: no registered linker instance satisfies import `wasi:http/types@0.3.0`: no registered linker instance satisfies import `wasi:http/types@0.3.0`
 fixtures/wasi-http.wast:2263 cascade no instance to invoke
 fixtures/wasi-http.wast:2266 cascade no instance to invoke
-wasmtime/adapter.wast:98 defect instantiation failed: instantiation error: the runtime substrate failed to instantiate the component: the runtime substrate failed to instantiate the component: wasm trap: cannot enter component instance (Wasmtime 50 compiles a same-instance adapter to this trap, and its own copy of the file expects it; the vendored copy predates that, and card 365302 re-vendors it)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:14 substrate component rejected: unsupported component feature: non-nullable reference types in core module types (the runtime layer reads an i31 reference, but the polyfill's public `CoreValueType` names only `funcref` and `externref`, so it refuses the imported core module type with its `(ref i31)` table before instantiation)
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:101 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:102 cascade no instance to invoke
 wasmtime/alias-region-reexported-entities-to-imported-module.wast:103 cascade no instance to invoke
 wasmtime/exceptions.wast:237 trap-message expected a trap `uncaught exception propagated out of component`, got `resource destructor failed: thrown Wasm exception`
-wasmtime/thread-transparency/reentrancy.wast:114 defect expected a trap `wasm `unreachable` instruction executed`, got `wasm trap: cannot block a synchronous task before returning: cannot block a synchronous task before returning` (Wasmtime 50 sends this call through the entry gate, and its own copy of the file expects this trap; the vendored copy predates that, and card 365302 re-vendors it)

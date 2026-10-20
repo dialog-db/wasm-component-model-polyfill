@@ -7,10 +7,10 @@ commit, recorded below.
 
 | Directory         | Source                                                                                  | Commit         | Vendored   |
 | ----------------- | ---------------------------------------------------------------------------------------- | -------------- | ---------- |
-| `cm/`             | `WebAssembly/component-model`, `test/` (synchronous subsets)                              | `e5ee0af9c617` | 2026-09-14 |
-| `cm/async/`       | `WebAssembly/component-model`, `test/async/`                                              | `e5ee0af9c617` | 2026-09-16 |
-| `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `cb091c33cece` | 2026-09-14 |
-| `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `cb091c33cece` | 2026-09-16 |
+| `cm/`             | `WebAssembly/component-model`, `test/` (synchronous subsets)                              | `2f1e56f` | 2026-10-20 |
+| `cm/async/`       | `WebAssembly/component-model`, `test/async/`                                              | `2f1e56f` | 2026-10-20 |
+| `wasmtime/`       | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/` (synchronous subset) | `v50.0.0` (`ebe5e8df1f4e`) | 2026-10-20 |
+| `wasmtime/async/` | `bytecodealliance/wasmtime`, `tests/misc_testsuite/component-model/async/`                | `v50.0.0` (`ebe5e8df1f4e`) | 2026-10-20 |
 
 The vendored files keep their upstream licenses, not the project's: `cm/` is
 under the Apache License 2.0 and `wasmtime/` under the Apache License 2.0 with
@@ -289,21 +289,14 @@ only where the build's environment names `WCMP_WAST_RUNNER`, which the
 flake's test and lint builds do. It is not a Cargo feature, so no crate
 that depends on the polyfill can turn it on.
 
-An `assert_trap` passes when the trap's message contains the expected
-text, as in Wasmtime's runner. In a file of `cm/` it also passes when
-the expected text and the message both contain `cannot write`, or both
-contain `cannot read`. Wasmtime's runner accepts those pairs in every
-file (`crates/wast/src/wast.rs:551-554` at `cb091c33cece`), because the
-Component Model's suite words the traps of a copy on a done end
-differently from Wasmtime, and the spec fixes no wording for them. The
-polyfill raises Wasmtime's wording, which the `wasmtime` corpus
-expects as written, so the harness relaxes only `cm/`. The rule reaches
-every expected text with either phrase, not only a copy on a done end:
-the refusal of a read and a write from one instance in
-`same-component-stream-future.wast` expects `cannot read from and write
-to intra-component future`, which any `cannot read` trap would satisfy.
-The polyfill's refusal contains that text as written, so those lines
-pass without the relaxation.
+An `assert_trap` passes when the trap's message contains the expected text, as
+in Wasmtime's runner. Up to Wasmtime 49, that runner also accepted any trap that
+contained `cannot write` or `cannot read` where the expected text did
+(`crates/wast/src/wast.rs:551-554` at `v49.0.0-rc.1`). Wasmtime 50 names the
+stream or the future in those traps and dropped the rule, and the harness
+dropped it too. Wasmtime's runner ignores the text of every trap in the
+Component Model's own suite. The harness holds that suite to the text, as it
+holds Wasmtime's suite, so that a trap with the wrong cause does not pass.
 
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
@@ -351,36 +344,39 @@ and without one. The figures below come from one `tests all` run of
 (`tests conformance` prints the current provider tables).
 
 The progress summary on the native target, with the stack-switching
-provider:
+provider, from the `tests all` run of 2026-10-20:
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                               |
-| ---------------- | ---------- | ------ | ------ | ----------------------------------------------------------- |
-| `cm`             | 1126       | 1106   | 98.2   | validation 20                                               |
-| `cm/async`       | 393        | 393    | 100.0  | none                                                        |
-| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                               |
-| `wasmtime`       | 469        | 464    | 98.9   | substrate 1, trap-message 1, cascade 3                      |
-| `wasmtime/async` | 387        | 387    | 100.0  | none                                                        |
-| total            | 2446       | 2415   | 98.7   | deferred-feature 2, substrate 1, validation 20, trap-message 1, cascade 7 |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                                |
+| ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------------- |
+| `cm`             | 1130       | 1057   | 93.5   | deferred-feature 1, validation 12, cascade 60                                |
+| `cm/async`       | 613        | 461    | 75.2   | deferred-feature 6, cascade 146                                              |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                                                |
+| `wasmtime`       | 481        | 476    | 99.0   | substrate 1, trap-message 1, cascade 3                                       |
+| `wasmtime/async` | 425        | 425    | 100.0  | none                                                                         |
+| total            | 2720       | 2484   | 91.3   | deferred-feature 9, substrate 1, validation 12, trap-message 1, cascade 213  |
+
+Three files of the spec suite use `stream.forward`, which neither the
+polyfill nor Wasmtime 50 implements: `cm/async/forward.wast`,
+`cm/async/big-interleaving-test.wast`, and `cm/values/post-return.wast`.
+Each component that uses the built-in is refused, and every later
+directive of the file fails as `cascade`. They hold 7 of the 9
+`deferred-feature` lines and 206 of the 213 `cascade` lines. Wasmtime's
+runner lists the same three files as failing.
 
 The browser runs its guest threads through the host-suspension provider, so its
-summary is the native one, and the five lines of
-`expected-failures.web.txt` move five passing directives into
-`substrate` and `cascade`: `cm` passes 1105 (98.1%) with substrate 1,
-`wasmtime` 460 (98.1%) with substrate 3 and cascade 5, and the total is
-2410 (98.5%) with substrate 4 and cascade 9. The `async` rows do not
+summary is the native one, and the four lines of
+`expected-failures.web.txt` move four passing directives into
+`substrate` and `cascade`: `cm` passes 1056 (93.5%) with substrate 1,
+`wasmtime` 473 (98.3%) with substrate 2 and cascade 5, and the total is
+2480 (91.2%) with substrate 3 and cascade 215. The `async` rows do not
 change. One line is V8's wording for a core validation error that
 Wasmtime words differently. Three are in `wasmtime/memory64.wast`. The
 first needs an allocation past 4 GiB, which the polyfill cannot address
 in the browser: it is 32-bit code there, and its canonical ABI addresses
 guest memory with `usize`. Its trap poisons the store, so the file's two
-later calls fail as `cascade`. The last,
-`wasmtime/thread-transparency/reentrancy.wast:114`, is a trap in the
-first stretch of a thread started in place inside a host function,
-which the browser reports only to a caller that awaits the call. So
-four of the five lines are limits of the polyfill in the browser, not
-differences of the engine alone.
+later calls fail as `cascade`.
 
-On the Wasmi backend the 60 lines of `expected-failures.wasmi.txt` fail
+On the Wasmi backend the 61 lines of `expected-failures.wasmi.txt` fail
 beyond the shared list. Each `substrate` line is a component that needs
 a capability Wasmi does not declare, and `Component::new` refuses it
 with `Unsupported` and the capability's name: exception handling in
@@ -388,42 +384,43 @@ with `Unsupported` and the capability's name: exception handling in
 `wasmtime/modules.wast`, and `wasmtime/async/exceptions.wast`, GC in
 `cm/binary/binary.wast` and the four `wasmtime/alias-region-*` files, and
 typed function references in one module of `wasmtime/exceptions.wast`.
-Three are `assert_invalid` directives that the validator refuses for the
+Four are `assert_invalid` directives that the validator refuses for the
 missing proposal before it reaches the error the directive expects: two
-in `cm/linking/tags.wast`, and one shared memory in
-`cm/validation/instantiation.wast`, which needs threads. Each `cascade`
-line follows one of them. The summary of the `tests all` run of
-2026-10-13 on Wasmi, where the native run passed 2415 of 2446:
+in `cm/linking/tags.wast`, one subtype in `cm/binary/binary.wast`, which
+needs GC, and one shared memory in `cm/validation/instantiation.wast`,
+which needs threads. Each `cascade` line follows one of them. The
+summary of the same run on Wasmi:
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                                          |
-| ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------- |
-| `cm`             | 1126       | 1092   | 97.0   | substrate 8, validation 20, cascade 6                                  |
-| `cm/async`       | 393        | 393    | 100.0  | none                                                                   |
-| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                                          |
-| `wasmtime`       | 469        | 433    | 92.3   | substrate 13, trap-message 1, cascade 22                               |
-| `wasmtime/async` | 387        | 372    | 96.1   | substrate 3, cascade 12                                                |
-| total            | 2446       | 2355   | 96.3   | deferred-feature 2, substrate 24, validation 20, trap-message 1, cascade 44 |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                                 |
+| ---------------- | ---------- | ------ | ------ | ----------------------------------------------------------------------------- |
+| `cm`             | 1130       | 1042   | 92.2   | deferred-feature 1, substrate 9, validation 12, cascade 66                    |
+| `cm/async`       | 613        | 461    | 75.2   | deferred-feature 6, cascade 146                                               |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                                                 |
+| `wasmtime`       | 481        | 445    | 92.5   | substrate 13, trap-message 1, cascade 22                                      |
+| `wasmtime/async` | 425        | 410    | 96.5   | substrate 3, cascade 12                                                       |
+| total            | 2720       | 2423   | 89.1   | deferred-feature 9, substrate 25, validation 12, trap-message 1, cascade 250  |
 
-Without a provider, the 56 lines of `expected-failures.no-provider.txt`
-fail beyond the shared list, 32 in `cm/async` and 24 in
+Without a provider, the 63 lines of `expected-failures.no-provider.txt`
+fail beyond the shared list, 38 in `cm/async` and 25 in
 `wasmtime/async`. Each `deferred-feature` line among them carries the
 stack-switch reason, and each `cascade` line follows a directive that
 does. The other three rows do not change. The native summary with
-the provider turned off:
+the provider turned off, which is the native summary with the overlay
+added:
 
-| Corpus           | Directives | Passed | Pass % | Expected failures by category                               |
-| ---------------- | ---------- | ------ | ------ | ----------------------------------------------------------- |
-| `cm`             | 1126       | 1106   | 98.2   | validation 20                                               |
-| `cm/async`       | 393        | 361    | 91.9   | deferred-feature 22, cascade 10                             |
-| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                               |
-| `wasmtime`       | 469        | 464    | 98.9   | substrate 1, trap-message 1, cascade 3                      |
-| `wasmtime/async` | 387        | 363    | 93.8   | deferred-feature 16, cascade 8                              |
-| total            | 2446       | 2359   | 96.4   | deferred-feature 40, substrate 1, validation 20, trap-message 1, cascade 25 |
+| Corpus           | Directives | Passed | Pass % | Expected failures by category                                                |
+| ---------------- | ---------- | ------ | ------ | ---------------------------------------------------------------------------- |
+| `cm`             | 1130       | 1057   | 93.5   | deferred-feature 1, validation 12, cascade 60                                |
+| `cm/async`       | 613        | 423    | 69.0   | deferred-feature 34, cascade 156                                             |
+| `fixtures`       | 71         | 65     | 91.5   | deferred-feature 2, cascade 4                                                |
+| `wasmtime`       | 481        | 476    | 99.0   | substrate 1, trap-message 1, cascade 3                                       |
+| `wasmtime/async` | 425        | 400    | 94.1   | deferred-feature 17, cascade 8                                               |
+| total            | 2720       | 2421   | 89.0   | deferred-feature 54, substrate 1, validation 12, trap-message 1, cascade 231 |
 
 No line of the web delta names a directive of the overlay, so the
-browser without a provider moves the same five directives into
-`substrate` and `cascade`: `cm` passes 1105 (98.1%), `wasmtime` 460
-(98.1%), and the total is 2354 (96.2%) with substrate 4 and cascade 27.
+browser without a provider moves the same four directives into
+`substrate` and `cascade`: `cm` passes 1056 (93.5%), `wasmtime` 473
+(98.3%), and the total is 2417 (88.9%) with substrate 3 and cascade 233.
 
 Without a provider the `async` rows still hold the pass rate down, and
 the stack-switch reason covers what those directories still exercise. A directive that
@@ -432,27 +429,25 @@ without its instance, or with a thread or a callee the failure left
 behind in the same instance, and each such later directive is a
 `cascade` line. Each component instance runs in a store of its own,
 as under Wasmtime's wast runner, so what an earlier instance left
-behind never runs during a later instance's call. The two async rows
-hold none of the 30 cascade lines natively, and without a provider `cm/async` adds 10, nine in
+behind never runs during a later instance's call. Without a provider
+`cm/async` adds 10 cascade lines, nine in
 `cm/async/during-sync-scheduling-candidates.wast` and one in
 `cm/async/async-calls-sync.wast`, and `wasmtime/async` adds 8, all in
 `wasmtime/async/task-deletion.wast`, each after a directive whose
 stack-switch failure poisoned the store.
 
-Of the 38 files of `cm/async`, all 38 pass whole natively and 37 in
-the browser, where `builtin-trap-poisons-instance.wast` holds one line
-of the browser's delta, and 25 natively without a provider, where
-thirteen hold lines that only a provider serves, and 24 in the browser
-without one. Of the 54 files of `wasmtime/async`, all 54 pass whole
-natively and 52 in the browser, where `subtask-wait.wast` and
-`sync-call-context-trap.wast` each hold one line of the browser's delta,
-and 45 natively without a provider, where nine hold lines that
-only a provider serves, and 43 in the browser without one. Eight of the ten fixtures pass whole.
+Of the 44 files of `cm/async`, 42 pass whole natively and in the
+browser, and 26 without a provider, where sixteen hold lines that only
+a provider serves. Of the 62 files of `wasmtime/async`, all 62 pass
+whole natively and in the browser, and 52 without a provider, where ten
+hold lines that only a provider serves. Ten of the twelve fixtures pass
+whole.
 
-The streams and futures account for 33 of the files that pass whole.
+The streams and futures account for 35 of the files that pass whole.
 In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
 `cross-task-future.wast`, `drop-cross-task-borrow.wast`,
-`drop-stream.wast`, `empty-wait.wast`, `futures-must-write.wast`,
+`drop-stream.wast`, `empty-wait.wast`, `future-completion-order.wast`,
+`futures-must-write.wast`, `idle-drop.wast`,
 `partial-stream-copies.wast`, `passing-resources.wast`,
 `same-component-stream-future.wast`, `trap-if-done.wast`,
 `trap-if-transfer-in-waitable-set.wast`, `validate-no-stream-char.wast`,
@@ -468,8 +463,8 @@ In `cm/async`: `cancel-stream.wast`, `closed-stream.wast`,
 `stream-cancel-finished-op.wast`, `streams.wast`,
 `sync-and-async-waitable.wast`, `trap-if-transfer-in-waitable-set.wast`,
 and `waitable-set-stale-entry.wast`. `cm/async/trap-if-done.wast`
-passes five of its directives by the wording rule the harness takes
-from Wasmtime's runner. `cm/async/builtin-trap-poisons-instance.wast`
+passes whole, because the polyfill's trap texts contain the texts that
+the file expects. `cm/async/builtin-trap-poisons-instance.wast`
 passes whole natively: each of its two traps poisons the store, and the
 call after it fails with the cannot-enter trap.
 `wasmtime/async/cancel-sync-and-waitable.wast` passes whole, its fifth

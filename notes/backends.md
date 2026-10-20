@@ -68,16 +68,18 @@ this today:
 
 | Suite                          | Browser                      | Wasmi                 | Wasmtime              |
 | ------------------------------ | ---------------------------- | --------------------- | --------------------- |
-| Conformance, directives passed | 2410 of 2446 (98.5%)         | 2355 of 2446 (96.3%)  | 2415 of 2446 (98.7%)  |
-| Fidelity, script tests passed  | 264, with 83 listed failures | 264, with none listed | 267, with none listed |
+| Conformance, directives passed | 2480 of 2720 (91.2%)         | 2423 of 2720 (89.1%)  | 2484 of 2720 (91.3%)  |
+| Fidelity, script tests passed  | 265, with 83 listed failures | 264, with none listed | 267, with none listed |
 | Zena scenarios passed          | 18 of 18                     | 2 of 18               | 18 of 18              |
 
 The conformance row is the Component Model and Wasmtime `.wast` corpora under
 the [conformance](conformance.md) harness, with the suspend provider on. The
 figures are the Baseline tables of `rust/wcmp/tests/corpus/README.md`, from the
-`tests all` run of 2026-10-13. On Wasmi, the 60 lines of
+`tests all` run of 2026-10-20. On Wasmi, the 61 lines of
 `expected-failures.wasmi.txt` are components that need a capability Wasmi lacks,
-and the directives that fail after them.
+and the directives that fail after them. On every backend, three files of the
+Component Model corpus fail because they use `stream.forward`, which neither the
+polyfill nor Wasmtime 50 implements.
 
 The fidelity row is the WebAssembly specification test suite, run on one backend
 through the runtime layer (`rust/wcmp-wasm-core-fidelity`). The counts are from

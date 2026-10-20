@@ -12,8 +12,11 @@ corpus_test!(it_passes_cm_async_big_interleaving_test, "cm/async/big-interleavin
 corpus_test!(it_passes_cm_async_builtin_trap_poisons_instance, "cm/async/builtin-trap-poisons-instance.wast");
 corpus_test!(it_passes_cm_async_cancel_and_exclusive_lock, "cm/async/cancel-and-exclusive-lock.wast");
 corpus_test!(it_passes_cm_async_cancel_delivery, "cm/async/cancel-delivery.wast");
+corpus_test!(it_passes_cm_async_cancel_not_delivered, "cm/async/cancel-not-delivered.wast");
+corpus_test!(it_passes_cm_async_cancel_resumed_callback_switch, "cm/async/cancel-resumed-callback-switch.wast");
 corpus_test!(it_passes_cm_async_cancel_stream, "cm/async/cancel-stream.wast");
 corpus_test!(it_passes_cm_async_cancel_subtask, "cm/async/cancel-subtask.wast");
+corpus_test!(it_passes_cm_async_cancel_targeted_resume, "cm/async/cancel-targeted-resume.wast");
 corpus_test!(it_passes_cm_async_closed_stream, "cm/async/closed-stream.wast");
 corpus_test!(it_passes_cm_async_cross_abi_calls, "cm/async/cross-abi-calls.wast");
 corpus_test!(it_passes_cm_async_cross_task_future, "cm/async/cross-task-future.wast");
@@ -28,7 +31,10 @@ corpus_test!(it_passes_cm_async_during_sync_call_may_block_if_other_ready_thread
 corpus_test!(it_passes_cm_async_during_sync_call_no_sibling_resume, "cm/async/during-sync-call-no-sibling-resume.wast");
 corpus_test!(it_passes_cm_async_during_sync_scheduling_candidates, "cm/async/during-sync-scheduling-candidates.wast");
 corpus_test!(it_passes_cm_async_empty_wait, "cm/async/empty-wait.wast");
+corpus_test!(it_passes_cm_async_forward, "cm/async/forward.wast");
+corpus_test!(it_passes_cm_async_future_completion_order, "cm/async/future-completion-order.wast");
 corpus_test!(it_passes_cm_async_futures_must_write, "cm/async/futures-must-write.wast");
+corpus_test!(it_passes_cm_async_idle_drop, "cm/async/idle-drop.wast");
 corpus_test!(it_passes_cm_async_partial_stream_copies, "cm/async/partial-stream-copies.wast");
 corpus_test!(it_passes_cm_async_passing_resources, "cm/async/passing-resources.wast");
 corpus_test!(it_passes_cm_async_reentrance, "cm/async/reentrance.wast");
@@ -105,6 +111,8 @@ corpus_test!(it_passes_wasmtime_async_cancel_starting_subtask_does_not_leak, "wa
 corpus_test!(it_passes_wasmtime_async_cancel_sync_and_waitable, "wasmtime/async/cancel-sync-and-waitable.wast");
 corpus_test!(it_passes_wasmtime_async_context_in_compositions, "wasmtime/async/context-in-compositions.wast");
 corpus_test!(it_passes_wasmtime_async_context_in_resource_drop, "wasmtime/async/context-in-resource-drop.wast");
+corpus_test!(it_passes_wasmtime_async_default_flags_sync_cancel, "wasmtime/async/default-flags-sync-cancel.wast");
+corpus_test!(it_passes_wasmtime_async_default_flags_variant_second_call, "wasmtime/async/default-flags-variant-second-call.wast");
 corpus_test!(it_passes_wasmtime_async_drop_deadlock, "wasmtime/async/drop-deadlock.wast");
 corpus_test!(it_passes_wasmtime_async_drop_host, "wasmtime/async/drop-host.wast");
 corpus_test!(it_passes_wasmtime_async_drop_waitable_set_stackful, "wasmtime/async/drop-waitable-set-stackful.wast");
@@ -126,6 +134,7 @@ corpus_test!(it_passes_wasmtime_async_lift, "wasmtime/async/lift.wast");
 corpus_test!(it_passes_wasmtime_async_lower, "wasmtime/async/lower.wast");
 corpus_test!(it_passes_wasmtime_async_many_params_with_retptr, "wasmtime/async/many-params-with-retptr.wast");
 corpus_test!(it_passes_wasmtime_async_partial_stream_copies, "wasmtime/async/partial-stream-copies.wast");
+corpus_test!(it_passes_wasmtime_async_realloc_may_leave, "wasmtime/async/realloc-may-leave.wast");
 corpus_test!(it_passes_wasmtime_async_reenter_during_yield, "wasmtime/async/reenter-during-yield.wast");
 corpus_test!(it_passes_wasmtime_async_reentrance, "wasmtime/async/reentrance.wast");
 corpus_test!(it_passes_wasmtime_async_stackful, "wasmtime/async/stackful.wast");
@@ -139,12 +148,17 @@ corpus_test!(it_passes_wasmtime_async_sync_and_async_waitable, "wasmtime/async/s
 corpus_test!(it_passes_wasmtime_async_sync_call_context_slots, "wasmtime/async/sync-call-context-slots.wast");
 corpus_test!(it_passes_wasmtime_async_sync_call_context_trap, "wasmtime/async/sync-call-context-trap.wast");
 corpus_test!(it_passes_wasmtime_async_sync_call_context, "wasmtime/async/sync-call-context.wast");
+corpus_test!(it_passes_wasmtime_async_sync_callee_exit_drops_fiber, "wasmtime/async/sync-callee-exit-drops-fiber.wast");
+corpus_test!(it_passes_wasmtime_async_sync_lower_async_typed_entry_checks, "wasmtime/async/sync-lower-async-typed-entry-checks.wast");
 corpus_test!(it_passes_wasmtime_async_sync_streams, "wasmtime/async/sync-streams.wast");
+corpus_test!(it_passes_wasmtime_async_sync_task_exit, "wasmtime/async/sync-task-exit.wast");
 corpus_test!(it_passes_wasmtime_async_task_builtins, "wasmtime/async/task-builtins.wast");
 corpus_test!(it_passes_wasmtime_async_task_deletion, "wasmtime/async/task-deletion.wast");
 corpus_test!(it_passes_wasmtime_async_task_return_traps, "wasmtime/async/task-return-traps.wast");
+corpus_test!(it_passes_wasmtime_async_threading_and_yields, "wasmtime/async/threading-and-yields.wast");
 corpus_test!(it_passes_wasmtime_async_trap_if_done, "wasmtime/async/trap-if-done.wast");
 corpus_test!(it_passes_wasmtime_async_trap_if_transfer_in_waitable_set, "wasmtime/async/trap-if-transfer-in-waitable-set.wast");
+corpus_test!(it_passes_wasmtime_async_variant_second_call, "wasmtime/async/variant-second-call.wast");
 corpus_test!(it_passes_wasmtime_async_wait_forever, "wasmtime/async/wait-forever.wast");
 corpus_test!(it_passes_wasmtime_async_wait_forever2, "wasmtime/async/wait-forever2.wast");
 corpus_test!(it_passes_wasmtime_async_waitable_set_stale_entry, "wasmtime/async/waitable-set-stale-entry.wast");
@@ -168,10 +182,12 @@ corpus_test!(it_passes_wasmtime_nested_many_instantiations, "wasmtime/nested-man
 corpus_test!(it_passes_wasmtime_nested, "wasmtime/nested.wast");
 corpus_test!(it_passes_wasmtime_resources, "wasmtime/resources.wast");
 corpus_test!(it_passes_wasmtime_restrictions, "wasmtime/restrictions.wast");
+corpus_test!(it_passes_wasmtime_same_instance_call, "wasmtime/same-instance-call.wast");
 corpus_test!(it_passes_wasmtime_simple, "wasmtime/simple.wast");
 corpus_test!(it_passes_wasmtime_string_transcode_invalid, "wasmtime/string-transcode-invalid.wast");
 corpus_test!(it_passes_wasmtime_strings, "wasmtime/strings.wast");
 corpus_test!(it_passes_wasmtime_tags, "wasmtime/tags.wast");
+corpus_test!(it_passes_wasmtime_tail_calls, "wasmtime/tail-calls.wast");
 corpus_test!(it_passes_wasmtime_thread_transparency_blocks, "wasmtime/thread-transparency/blocks.wast");
 corpus_test!(it_passes_wasmtime_thread_transparency_reentrancy, "wasmtime/thread-transparency/reentrancy.wast");
 corpus_test!(it_passes_wasmtime_trap, "wasmtime/trap.wast");
@@ -184,8 +200,11 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("cm/async/builtin-trap-poisons-instance.wast", include_str!("../corpus/cm/async/builtin-trap-poisons-instance.wast")),
     ("cm/async/cancel-and-exclusive-lock.wast", include_str!("../corpus/cm/async/cancel-and-exclusive-lock.wast")),
     ("cm/async/cancel-delivery.wast", include_str!("../corpus/cm/async/cancel-delivery.wast")),
+    ("cm/async/cancel-not-delivered.wast", include_str!("../corpus/cm/async/cancel-not-delivered.wast")),
+    ("cm/async/cancel-resumed-callback-switch.wast", include_str!("../corpus/cm/async/cancel-resumed-callback-switch.wast")),
     ("cm/async/cancel-stream.wast", include_str!("../corpus/cm/async/cancel-stream.wast")),
     ("cm/async/cancel-subtask.wast", include_str!("../corpus/cm/async/cancel-subtask.wast")),
+    ("cm/async/cancel-targeted-resume.wast", include_str!("../corpus/cm/async/cancel-targeted-resume.wast")),
     ("cm/async/closed-stream.wast", include_str!("../corpus/cm/async/closed-stream.wast")),
     ("cm/async/cross-abi-calls.wast", include_str!("../corpus/cm/async/cross-abi-calls.wast")),
     ("cm/async/cross-task-future.wast", include_str!("../corpus/cm/async/cross-task-future.wast")),
@@ -200,7 +219,10 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("cm/async/during-sync-call-no-sibling-resume.wast", include_str!("../corpus/cm/async/during-sync-call-no-sibling-resume.wast")),
     ("cm/async/during-sync-scheduling-candidates.wast", include_str!("../corpus/cm/async/during-sync-scheduling-candidates.wast")),
     ("cm/async/empty-wait.wast", include_str!("../corpus/cm/async/empty-wait.wast")),
+    ("cm/async/forward.wast", include_str!("../corpus/cm/async/forward.wast")),
+    ("cm/async/future-completion-order.wast", include_str!("../corpus/cm/async/future-completion-order.wast")),
     ("cm/async/futures-must-write.wast", include_str!("../corpus/cm/async/futures-must-write.wast")),
+    ("cm/async/idle-drop.wast", include_str!("../corpus/cm/async/idle-drop.wast")),
     ("cm/async/partial-stream-copies.wast", include_str!("../corpus/cm/async/partial-stream-copies.wast")),
     ("cm/async/passing-resources.wast", include_str!("../corpus/cm/async/passing-resources.wast")),
     ("cm/async/reentrance.wast", include_str!("../corpus/cm/async/reentrance.wast")),
@@ -277,6 +299,8 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("wasmtime/async/cancel-sync-and-waitable.wast", include_str!("../corpus/wasmtime/async/cancel-sync-and-waitable.wast")),
     ("wasmtime/async/context-in-compositions.wast", include_str!("../corpus/wasmtime/async/context-in-compositions.wast")),
     ("wasmtime/async/context-in-resource-drop.wast", include_str!("../corpus/wasmtime/async/context-in-resource-drop.wast")),
+    ("wasmtime/async/default-flags-sync-cancel.wast", include_str!("../corpus/wasmtime/async/default-flags-sync-cancel.wast")),
+    ("wasmtime/async/default-flags-variant-second-call.wast", include_str!("../corpus/wasmtime/async/default-flags-variant-second-call.wast")),
     ("wasmtime/async/drop-deadlock.wast", include_str!("../corpus/wasmtime/async/drop-deadlock.wast")),
     ("wasmtime/async/drop-host.wast", include_str!("../corpus/wasmtime/async/drop-host.wast")),
     ("wasmtime/async/drop-waitable-set-stackful.wast", include_str!("../corpus/wasmtime/async/drop-waitable-set-stackful.wast")),
@@ -298,6 +322,7 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("wasmtime/async/lower.wast", include_str!("../corpus/wasmtime/async/lower.wast")),
     ("wasmtime/async/many-params-with-retptr.wast", include_str!("../corpus/wasmtime/async/many-params-with-retptr.wast")),
     ("wasmtime/async/partial-stream-copies.wast", include_str!("../corpus/wasmtime/async/partial-stream-copies.wast")),
+    ("wasmtime/async/realloc-may-leave.wast", include_str!("../corpus/wasmtime/async/realloc-may-leave.wast")),
     ("wasmtime/async/reenter-during-yield.wast", include_str!("../corpus/wasmtime/async/reenter-during-yield.wast")),
     ("wasmtime/async/reentrance.wast", include_str!("../corpus/wasmtime/async/reentrance.wast")),
     ("wasmtime/async/stackful.wast", include_str!("../corpus/wasmtime/async/stackful.wast")),
@@ -311,12 +336,17 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("wasmtime/async/sync-call-context-slots.wast", include_str!("../corpus/wasmtime/async/sync-call-context-slots.wast")),
     ("wasmtime/async/sync-call-context-trap.wast", include_str!("../corpus/wasmtime/async/sync-call-context-trap.wast")),
     ("wasmtime/async/sync-call-context.wast", include_str!("../corpus/wasmtime/async/sync-call-context.wast")),
+    ("wasmtime/async/sync-callee-exit-drops-fiber.wast", include_str!("../corpus/wasmtime/async/sync-callee-exit-drops-fiber.wast")),
+    ("wasmtime/async/sync-lower-async-typed-entry-checks.wast", include_str!("../corpus/wasmtime/async/sync-lower-async-typed-entry-checks.wast")),
     ("wasmtime/async/sync-streams.wast", include_str!("../corpus/wasmtime/async/sync-streams.wast")),
+    ("wasmtime/async/sync-task-exit.wast", include_str!("../corpus/wasmtime/async/sync-task-exit.wast")),
     ("wasmtime/async/task-builtins.wast", include_str!("../corpus/wasmtime/async/task-builtins.wast")),
     ("wasmtime/async/task-deletion.wast", include_str!("../corpus/wasmtime/async/task-deletion.wast")),
     ("wasmtime/async/task-return-traps.wast", include_str!("../corpus/wasmtime/async/task-return-traps.wast")),
+    ("wasmtime/async/threading-and-yields.wast", include_str!("../corpus/wasmtime/async/threading-and-yields.wast")),
     ("wasmtime/async/trap-if-done.wast", include_str!("../corpus/wasmtime/async/trap-if-done.wast")),
     ("wasmtime/async/trap-if-transfer-in-waitable-set.wast", include_str!("../corpus/wasmtime/async/trap-if-transfer-in-waitable-set.wast")),
+    ("wasmtime/async/variant-second-call.wast", include_str!("../corpus/wasmtime/async/variant-second-call.wast")),
     ("wasmtime/async/wait-forever.wast", include_str!("../corpus/wasmtime/async/wait-forever.wast")),
     ("wasmtime/async/wait-forever2.wast", include_str!("../corpus/wasmtime/async/wait-forever2.wast")),
     ("wasmtime/async/waitable-set-stale-entry.wast", include_str!("../corpus/wasmtime/async/waitable-set-stale-entry.wast")),
@@ -340,10 +370,12 @@ const CORPUS_FILES: &[(&str, &str)] = &[
     ("wasmtime/nested.wast", include_str!("../corpus/wasmtime/nested.wast")),
     ("wasmtime/resources.wast", include_str!("../corpus/wasmtime/resources.wast")),
     ("wasmtime/restrictions.wast", include_str!("../corpus/wasmtime/restrictions.wast")),
+    ("wasmtime/same-instance-call.wast", include_str!("../corpus/wasmtime/same-instance-call.wast")),
     ("wasmtime/simple.wast", include_str!("../corpus/wasmtime/simple.wast")),
     ("wasmtime/string-transcode-invalid.wast", include_str!("../corpus/wasmtime/string-transcode-invalid.wast")),
     ("wasmtime/strings.wast", include_str!("../corpus/wasmtime/strings.wast")),
     ("wasmtime/tags.wast", include_str!("../corpus/wasmtime/tags.wast")),
+    ("wasmtime/tail-calls.wast", include_str!("../corpus/wasmtime/tail-calls.wast")),
     ("wasmtime/thread-transparency/blocks.wast", include_str!("../corpus/wasmtime/thread-transparency/blocks.wast")),
     ("wasmtime/thread-transparency/reentrancy.wast", include_str!("../corpus/wasmtime/thread-transparency/reentrancy.wast")),
     ("wasmtime/trap.wast", include_str!("../corpus/wasmtime/trap.wast")),
