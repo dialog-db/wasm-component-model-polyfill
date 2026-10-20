@@ -165,6 +165,7 @@ total=$(wc -l <"$workspace/binaries")
 split -l 1 -d -a 4 "$workspace/binaries" "$workspace/runs/binary-"
 selected=$(jq '[."rust-suites"[] | select(."binary-path" | endswith(".wasm")) | .testcases[] | select(."filter-match".status == "matches")] | length' "$workspace/list.json")
 echo "tests webkit: $selected tests in $total binaries, $threads binaries at a time"
+echo "tests webkit: the runner's output says Firefox; the browser is MiniBrowser"
 
 run_binary() {
   local line id path cwd log

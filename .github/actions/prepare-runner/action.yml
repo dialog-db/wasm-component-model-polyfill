@@ -10,6 +10,16 @@ runs:
     # SEE: https://github.com/actions/runner-images/issues/10015
     - uses: cisagov/action-disable-apparmor@v1
 
+    # Unloading the profiles leaves the kernel's own AppArmor rule that
+    # refuses unprivileged user namespaces in place. WebKitGTK puts its web
+    # process in a bubblewrap sandbox, which needs one, so without this
+    # MiniBrowser dies at launch ("bwrap: Creating new namespace failed:
+    # Permission denied") and every WebKitGTK lane fails. Headless Chrome
+    # runs with `--no-sandbox` and does not need it.
+    - name: 'Allow unprivileged user namespaces'
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
     # Removes the runner's large preinstalled packages up front, so that
     # nothing-but-nix below starts from more free space. The preinstalled
     # language runtimes stay, and so does swap: without it a job under
