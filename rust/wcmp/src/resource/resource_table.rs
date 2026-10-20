@@ -6,7 +6,7 @@
 
 //! A table of host values that typed handles name, as Wasmtime's
 //! `ResourceTable` (`crates/wasmtime/src/runtime/component/resource_table.rs`
-//! at `v49.0.0-rc.1`).
+//! at `v50.0.0`).
 
 use core::any::Any;
 use core::fmt;
@@ -360,12 +360,16 @@ impl ResourceTable {
         }))
     }
 
-    /// Every value of the table, mutably.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.entries.iter_mut().filter_map(|slot| match slot {
-            Slot::Occupied { entry } => Some(&mut *entry.value),
-            Slot::Free { .. } => None,
-        })
+    /// Every value of the table, mutably, with the index of its entry,
+    /// which is the rep of the handle that names it.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (u32, &mut Value)> {
+        self.entries
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, slot)| match slot {
+                Slot::Occupied { entry } => Some((u32::try_from(index).ok()?, &mut *entry.value)),
+                Slot::Free { .. } => None,
+            })
     }
 
     fn push_entry(&mut self, entry: TableEntry) -> Result<u32, ResourceTableError> {
@@ -453,6 +457,23 @@ mod tests {
         let z = table.push(()).unwrap();
         assert_eq!(z.rep(), 2);
         assert_eq!(format!("{table:?}"), "[0, 1, 2]");
+    }
+
+    #[wcmp_macros::test]
+    fn it_yields_each_value_with_the_rep_of_its_handle() {
+        let mut table = ResourceTable::new();
+        let x = table.push(10_u32).unwrap();
+        let y = table.push(20_u32).unwrap();
+        let z = table.push(30_u32).unwrap();
+        table.delete(y).unwrap();
+        for (_, value) in table.iter_mut() {
+            *value.downcast_mut::<u32>().unwrap() += 1;
+        }
+        let seen: Vec<(u32, u32)> = table
+            .iter_mut()
+            .map(|(rep, value)| (rep, *value.downcast_ref::<u32>().unwrap()))
+            .collect();
+        assert_eq!(seen, [(x.rep(), 11), (z.rep(), 31)]);
     }
 
     #[wcmp_macros::test]
