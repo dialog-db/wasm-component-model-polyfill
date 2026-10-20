@@ -245,6 +245,13 @@ pub fn build_exit_sync_call<T: 'static>(
 /// suspend for the duration. The flag's old value is saved on the
 /// task's thread, which is where Wasmtime saves it and where the
 /// exit intrinsic reads it back.
+///
+/// Wasmtime 50's fused adapters pass `callee_async` as zero. An
+/// adapter calls this intrinsic only when the function type is not
+/// `async`, and an `async`-typed callee goes through the start
+/// intrinsic instead. The branch stays because the argument is part of
+/// the intrinsic's signature, and Wasmtime's own `enter_guest_sync_call`
+/// still reads it.
 fn enter_sync_call(
     tables: &Arc<Mutex<HandleTables>>,
     callee: InstanceId,

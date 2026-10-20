@@ -178,8 +178,12 @@ type Switches<T> = dyn Fn(&mut StoreContext<'_, T>, &[RuntimeVal]) -> bool;
 ///   the rest of the wait, held to the instance. That is the case of
 ///   a start function, of a host call into a synchronous export, of a
 ///   synchronous call between two components, and of a resource
-///   destructor. A task that is allowed to block runs every ready
-///   item and polls every woken host task.
+///   destructor. A nested turn is held the same way when the blocked
+///   task may block but the nearest caller below that waits for it
+///   must not, because under a provider control would go back to that
+///   caller, and its rule would apply. A task that is allowed to block,
+///   with no such caller below, runs every ready item and polls every
+///   woken host task.
 /// - **The seam keeps one budget, and past it the call fails with
 ///   the stack-switch cause.** This is the polyfill's one departure
 ///   from the reference, which bounds neither the yielded item the

@@ -565,6 +565,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data().must_not_block_instance()
     }
 
+    /// The instance a nested turn for the current block is held to.
+    /// Workspace-internal.
+    fn nested_turn_instance(&self) -> Option<InstanceId> {
+        self.store_data().nested_turn_instance()
+    }
+
     /// The waker of the turn that is running, or a waker that does
     /// nothing when no turn is running. Workspace-internal.
     fn active_waker(&self) -> Waker {

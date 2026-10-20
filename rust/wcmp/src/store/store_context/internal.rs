@@ -228,6 +228,12 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         self.context.must_not_block_instance()
     }
 
+    /// The instance a nested turn for the current block is held to,
+    /// when one is set.
+    pub fn nested_turn_instance(self) -> Option<InstanceId> {
+        self.context.nested_turn_instance()
+    }
+
     /// The store's boundary counters.
     pub fn boundary_sink(self) -> &'b BoundarySink {
         let context = self.context;

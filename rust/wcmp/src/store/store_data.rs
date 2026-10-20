@@ -549,4 +549,20 @@ impl<T: 'static> StoreData<T> {
             .may_not_suspend
             .then_some(instance)
     }
+
+    /// The instance whose ready work is the whole of what a nested turn
+    /// for the current block may run: the current task's own instance
+    /// when that task must not block, and otherwise the instance of the
+    /// nearest caller below that waits for the block and must not
+    /// suspend
+    /// ([`TaskTables::held_instance_below`](crate::concurrency::TaskTables::held_instance_below)).
+    /// `None` when the turn runs every ready item. Workspace-internal.
+    pub fn nested_turn_instance(&self) -> Option<InstanceId> {
+        self.must_not_block_instance().or_else(|| {
+            self.tables
+                .lock()
+                .ok()
+                .and_then(|guard| guard.tasks.held_instance_below())
+        })
+    }
 }

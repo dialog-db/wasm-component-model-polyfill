@@ -268,7 +268,7 @@ impl<T: 'static> SeamWait<T> {
     ) -> Result<()> {
         let mut open = Open::Closed;
         let mut own_turns = Some(0);
-        let only = store.internal().must_not_block_instance();
+        let only = store.internal().nested_turn_instance();
         Self::run_open(store, condition, None, only, &mut open, &mut own_turns)
             .unwrap_or(Err(Error::Scheduler(SchedulerCause::StackSwitchNeeded)))
     }
@@ -382,8 +382,10 @@ impl<T: 'static> SeamWait<T> {
             return Some(Err(SuspendSeam::past_budget(store)));
         }
         // A wait held to one instance is the block of a thread whose
-        // own instance must not suspend. Its cause is read from that
-        // instance and not from the other instances of the store.
+        // own instance must not suspend, or of a thread with a caller
+        // below that waits for it and must not suspend. Its cause is
+        // read from that instance and not from the other instances of
+        // the store.
         let cause = match only {
             Some(instance) => store.internal().suspend_cause_in(instance),
             None => store.internal().suspend_cause(),
@@ -474,7 +476,7 @@ impl<T: 'static> SeamWait<T> {
             condition,
             turns,
             call,
-            only: store.internal().must_not_block_instance(),
+            only: store.internal().nested_turn_instance(),
             open: Open::Closed,
             own_turns,
             store: PhantomData,
