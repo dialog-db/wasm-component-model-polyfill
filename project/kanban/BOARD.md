@@ -42,14 +42,14 @@ kanban-plugin: basic
 - [ ] [[3631ba]]
 - [ ] [[7daabe]]
 - [ ] [[917683]]
-- [ ] [[049aa3]]
-- [ ] [[b04ebf]]
 - [ ] [[d86af3]]
 - [ ] [[69c8d8]]
 
 ## In Progress
 
 - [ ] [[fdb910]]
+- [ ] [[b04ebf]]
+- [ ] [[049aa3]]
 
 ## Needs Review
 
