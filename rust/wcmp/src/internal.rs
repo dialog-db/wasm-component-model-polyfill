@@ -412,6 +412,9 @@ pub trait ResourceAnyInternal: Sized {
     /// Whether the release of an owned handle runs the resource's
     /// destructor.
     fn runs_destructor(&self) -> bool;
+    /// Whether the handle is a synthetic borrow: a borrow the host made
+    /// itself, which names a rep and no entry of the host table.
+    fn synthetic(&self) -> bool;
     /// The handle of the typed host handle `handle`, of the type
     /// `identity`, which takes an entry of the host table if it has
     /// none.

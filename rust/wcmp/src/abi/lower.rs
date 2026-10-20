@@ -628,6 +628,12 @@ pub fn lower_resource_any<T: 'static>(
         message: "resource handle tables lock poisoned".to_owned(),
     })?;
     let host_table = guard.host_table(handle.ty());
+    if matches!(ty, ValueType::Borrow(_)) && handle.synthetic() {
+        // A borrow the host made itself has no entry to look up or
+        // lend: its rep goes to the guest as it is, as Wasmtime 50
+        // lowers it.
+        return lower_borrowed_rep(ctx, &mut guard, table, handle.rep(), ty, position);
+    }
     if matches!(ty, ValueType::Borrow(_)) {
         // The entry must be the one the handle records, and an index
         // on its own does not say that: the host's table frees an

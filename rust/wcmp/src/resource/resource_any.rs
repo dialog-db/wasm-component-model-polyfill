@@ -6,7 +6,7 @@
 
 //! The dynamic handle to a resource of any type, as Wasmtime's
 //! `ResourceAny` (`crates/wasmtime/src/runtime/component/resources/any.rs`
-//! at `v49.0.0-rc.1`).
+//! at `v50.0.0`).
 
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result};
 use crate::internal::ResourceAnyInternal;
@@ -69,6 +69,10 @@ const DESTRUCTOR: u32 = 2;
 /// The bits of [`ResourceAny::generation_flags`] below the generation.
 const FLAG_BITS: u32 = 2;
 
+/// The index of a synthetic borrow, which names no entry of the host
+/// table. A host table reserves index 0, so no entry has it.
+const SYNTHETIC: u32 = 0;
+
 impl ResourceAny {
     fn of(
         ty: ResourceType,
@@ -109,7 +113,9 @@ impl ResourceAny {
     /// for one a component defines. A handle made with
     /// [`ResourceAny::try_from_resource`] runs none. A borrow's entry
     /// goes when the call that lent it ends, so its release checks the
-    /// entry and leaves it.
+    /// entry and leaves it. A borrow the host made itself, with
+    /// [`Resource::new_borrow`] or [`ResourceDynamic::new_borrow`], has
+    /// no entry, and its release does nothing, as in Wasmtime.
     ///
     /// The destructor runs as a task with one thread of its own, as
     /// it does when a guest drops the last owning handle, and may not
@@ -133,6 +139,9 @@ impl ResourceAny {
     /// cause, and so does an owned handle lent out as a borrow until
     /// the call that borrowed it ends.
     pub fn resource_drop<D: 'static>(self, store: &mut StoreContext<'_, D>) -> Result<()> {
+        if self.synthetic() {
+            return Ok(());
+        }
         store.internal().reachable()?;
         store.internal().resource_drop(self)
     }
@@ -198,6 +207,10 @@ impl ResourceAnyInternal for ResourceAny {
         self.generation_flags & DESTRUCTOR != 0
     }
 
+    fn synthetic(&self) -> bool {
+        self.index == SYNTHETIC
+    }
+
     fn from_host<D: 'static>(
         store: &mut StoreContext<'_, D>,
         handle: &HostHandle,
@@ -207,12 +220,10 @@ impl ResourceAnyInternal for ResourceAny {
         let refuse = |reason: String| refusal(identity, reason);
         let mut guard = store.internal().lock_tables()?;
         let (index, generation, owned) = match handle.state() {
-            HostHandleState::Borrow => {
-                let (index, generation) = guard
-                    .insert_host_borrow(None, identity, false, rep)
-                    .ok_or_else(|| refuse(HandleLookupError::NoCallInFlight.to_string()))?;
-                (index, generation, false)
-            }
+            // A borrow the host made itself takes no entry, so it needs
+            // no call in flight. Its rep goes to the guest when it is
+            // lowered, as Wasmtime 50 defers it (`4ac4c8cbf`).
+            HostHandleState::Borrow => (SYNTHETIC, 0, false),
             HostHandleState::NotInTable => {
                 let (index, generation) = guard.insert_host_own(identity, false, rep);
                 (index, generation, true)
@@ -230,6 +241,9 @@ impl ResourceAnyInternal for ResourceAny {
     ) -> Result<HostHandle> {
         if self.ty != identity {
             return Err(resource_type_mismatch(self.ty));
+        }
+        if self.synthetic() {
+            return Ok(HostHandle::borrow(self.rep));
         }
         let mut guard = store.internal().lock_tables()?;
         let table = guard.host_table(self.ty);

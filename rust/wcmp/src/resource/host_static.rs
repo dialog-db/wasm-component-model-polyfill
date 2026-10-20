@@ -87,9 +87,13 @@ impl<T: 'static> Resource<T> {
             .map(Self::from_handle)
     }
 
-    /// The [`ResourceAny`] of this handle, which names an entry of the
-    /// store's host table. An owned handle in no table takes an entry,
-    /// and a borrow takes one that goes when the call in flight ends.
+    /// The [`ResourceAny`] of this handle. An owned handle names an
+    /// entry of the store's host table, and one in no table takes an
+    /// entry. A borrow takes no entry: the [`ResourceAny`] carries its
+    /// rep, so the conversion needs no call in flight, as in Wasmtime 50.
+    /// Releasing such a borrow does nothing, lowering it as a `borrow`
+    /// gives the guest its rep, and lowering it as an `own` fails with
+    /// "cannot lower a `borrow` resource into an `own`".
     ///
     /// The entry has no destructor: releasing the [`ResourceAny`] with
     /// [`ResourceAny::resource_drop`] runs none, as in Wasmtime.
@@ -97,8 +101,7 @@ impl<T: 'static> Resource<T> {
     /// # Errors
     ///
     /// A handle already lowered into a guest as an `own` fails with
-    /// "host resource already consumed", and a borrow outside a call
-    /// fails with the invalid-handle cause.
+    /// "host resource already consumed".
     pub fn try_into_resource_any<D: 'static>(
         self,
         store: &mut StoreContext<'_, D>,

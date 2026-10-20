@@ -388,6 +388,42 @@ async fn it_converts_between_a_resource_any_and_a_typed_handle() {
 }
 
 #[wcmp_macros::test]
+async fn it_converts_a_host_borrow_to_a_resource_any_with_no_call_in_flight() {
+    let (mut store, instance) = instance().await;
+    let mut context = store.as_context_mut();
+    let any = ResourceAny::try_from_resource(Resource::<Thing>::new_borrow(5), &mut context)
+        .expect("a borrow the host made needs no call in flight");
+    assert!(!any.owned());
+    assert_eq!(any.ty(), ResourceType::host::<Thing>());
+    let back = any
+        .try_into_resource::<Thing>(&mut context)
+        .expect("the typed round trip");
+    assert_eq!(back.rep(), 5);
+    assert!(!back.owned());
+    any.resource_drop(&mut context)
+        .expect("releasing it does nothing");
+    any.resource_drop(&mut context)
+        .expect("and releasing it again does nothing either");
+
+    let peek = typed::<(ResourceAny,), ()>(&instance, "peek");
+    peek.call(&mut store, (any,))
+        .await
+        .expect("the guest borrows its rep");
+    assert_eq!(store.data().inspected, vec![5], "the guest saw the rep");
+
+    let keep = typed::<(ResourceAny,), ()>(&instance, "keep");
+    let refused = keep
+        .call(&mut store, (any,))
+        .await
+        .expect_err("a borrow is not an own");
+    assert_eq!(
+        invalid_handle(&refused),
+        "cannot lower a `borrow` resource into an `own`",
+        "{refused}"
+    );
+}
+
+#[wcmp_macros::test]
 async fn it_refuses_a_resource_any_whose_entry_was_freed_and_reused() {
     let (mut store, instance) = instance().await;
     let mut context = store.as_context_mut();

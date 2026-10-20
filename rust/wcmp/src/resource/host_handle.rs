@@ -7,7 +7,7 @@
 //! The handle to a host resource that `Resource<T>` and
 //! `ResourceDynamic` share, with Wasmtime's four states
 //! (`crates/wasmtime/src/runtime/component/resources/host.rs` at
-//! `v49.0.0-rc.1`).
+//! `v50.0.0`).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
