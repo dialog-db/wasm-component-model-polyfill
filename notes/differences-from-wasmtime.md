@@ -23,6 +23,16 @@ ways:
 - It drops all queued guest work and pending host futures at the moment of the
   trap. Wasmtime keeps them for a later `run_concurrent`.
 
+## A dropped queued call still runs
+
+A call into a component can wait in a queue before it starts, for example while
+the callee instance has backpressure set. If the host drops the future of such a
+call, Wasmtime 50 makes the call trap when it starts, and the trap poisons the
+store. Wasmtime's own source calls this a stopgap. The polyfill starts the call
+when its turn comes, because the call owns its arguments and needs nothing from
+the dropped future. A trap in that call still poisons the store, and the next
+driver of the store reports it.
+
 ## A lifted NaN is canonical
 
 The Component Model makes every NaN that a lift produces the one canonical NaN
