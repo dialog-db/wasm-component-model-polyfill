@@ -394,10 +394,10 @@ fn assert_memory_option_required(err: &Error) {
     );
 }
 
-/// Wasmtime 49's message for an async-typed import satisfied by a
+/// Wasmtime 50's message for an async-typed import satisfied by a
 /// synchronous registration, verbatim from `typecheck_async` in
 /// `crates/wasmtime/src/runtime/component/func/host.rs` at
-/// `v49.0.0-rc.1`. Pinned here so the polyfill's rendering stays the
+/// `v50.0.0`. Pinned here so the polyfill's rendering stays the
 /// text a host reads from either runtime.
 const SYNC_REGISTRATION_MESSAGE: &str = "type mismatch with async: this import is declared \
      `async func` in WIT, but was satisfied with a sync-style host function \
@@ -405,7 +405,7 @@ const SYNC_REGISTRATION_MESSAGE: &str = "type mismatch with async: this import i
      implement a *sync*-WIT-typed function via blocking host code, not an `async func` import); \
      use `func_new_concurrent`/`func_wrap_concurrent` instead";
 
-/// Wasmtime 49's message for the other mismatch, a sync-typed import
+/// Wasmtime 50's message for the other mismatch, a sync-typed import
 /// satisfied by a concurrent registration, from the same function.
 const CONCURRENT_REGISTRATION_MESSAGE: &str = "type mismatch with async: this import's WIT type \
      is a plain (non-`async`) function, but was satisfied with \

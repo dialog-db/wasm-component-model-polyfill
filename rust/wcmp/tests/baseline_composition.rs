@@ -393,12 +393,13 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
     instantiate(LOWERS_ITS_OWN_LIFT).await;
 
     // Calling that adapter from the same instance reenters the
-    // component instance. Wasmtime 49's fused adapter compiler
-    // allows that: the rule that compiled such an adapter to an
-    // unconditional `cannot enter component instance` trap is gone,
-    // so the start function below calls through and the component
-    // instantiates, as the corpus expects
-    // (`wasmtime/adapter.wast:98`).
+    // component instance. The spec allows the call, but Wasmtime 50's
+    // fused adapter compiler compiles a same-instance adapter to an
+    // unconditional `cannot enter component instance` trap
+    // (`crates/environ/src/fact/trampoline.rs:117-127` at `v50.0.0`).
+    // The polyfill takes its adapters from that compiler, so the start
+    // function below traps, as the corpus expects
+    // (`wasmtime/adapter.wast`), and the trap poisons the store.
     const CALLS_ITS_OWN_LIFT: &[u8] = component!(
         r#"
         (component
@@ -420,10 +421,26 @@ async fn it_lowers_a_lifted_function_of_the_same_component() {
         .expect("component parses");
     let linker: Linker<()> = Linker::new(&engine);
     let mut store: Store<()> = Store::new(&engine, ()).expect("store");
-    linker
-        .instantiate(&mut store, &component)
+    let Err(error) = linker.instantiate(&mut store, &component).await else {
+        panic!("the start function traps in the same-instance adapter");
+    };
+    assert!(
+        format!("{error:?}").contains("cannot enter component instance"),
+        "the adapter traps with Wasmtime's message, got {error:?}"
+    );
+
+    // The trap poisoned the store, so the store refuses to enter any
+    // instance afterwards, even the harmless component above.
+    let harmless = Component::new(&engine, LOWERS_ITS_OWN_LIFT)
         .await
-        .expect("the start function calls the same-instance adapter");
+        .expect("component parses");
+    let Err(refused) = linker.instantiate(&mut store, &harmless).await else {
+        panic!("a poisoned store refuses the next instantiation");
+    };
+    assert!(
+        matches!(refused, Error::Task(wcmp::TaskCause::CannotEnter)),
+        "the poisoned store refuses with `CannotEnter`, got {refused:?}"
+    );
 }
 
 #[wcmp_macros::test]

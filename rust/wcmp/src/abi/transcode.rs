@@ -187,7 +187,7 @@ pub fn transcode<T: 'static>(
                 walk(ctx, src, bytes, Some(dst), |chunk, _, out| {
                     // Every unit is at most 0xFF, so its low byte,
                     // which comes first, is the whole of it.
-                    out.extend(chunk.chunks_exact(2).map(|pair| pair[0]));
+                    out.extend(chunk.as_chunks::<2>().0.iter().map(|pair| pair[0]));
                     Ok(Step::Next(chunk.len()))
                 })?;
                 set_results(results, &[len])
@@ -233,8 +233,8 @@ pub fn transcode<T: 'static>(
             check_source(ctx, src, bytes)?;
             overlap(src, bytes, dst, len)?;
             let written = walk(ctx, src, bytes, Some(dst), |chunk, _, out| {
-                for pair in chunk.chunks_exact(2) {
-                    match u8::try_from(u16::from_le_bytes([pair[0], pair[1]])) {
+                for pair in chunk.as_chunks::<2>().0 {
+                    match u8::try_from(u16::from_le_bytes(*pair)) {
                         Ok(b) => out.push(b),
                         Err(_) => return Ok(Step::Stop),
                     }
@@ -466,8 +466,10 @@ fn whole_utf16(chunk: &[u8], last: bool) -> impl ExactSizeIterator<Item = u16> +
         units -= 1;
     }
     chunk[..units * 2]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
 }
 
 /// The byte length of `units` UTF-16 code units.

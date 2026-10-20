@@ -40,10 +40,9 @@ use crate::store::StoreContextInternalExt;
 use crate::types::ResourceType;
 
 use super::ResourceDestructor;
-use super::build_async_start_call;
 use super::build_prepare_call;
+use super::build_start_call;
 use super::build_subtask_cancel;
-use super::build_sync_start_call;
 use super::build_task_cancel;
 use super::build_task_return;
 use super::build_thread_yield;
@@ -788,24 +787,17 @@ fn build_runtime_trampoline<T: 'static>(
             instance,
             signature,
         } => build_waitable_set_new(store, *instance, signature, abi_state.clone()),
-        TrampolineSpec::WaitableSetWait {
-            options,
-            cancellable,
-            signature,
-        } => {
+        TrampolineSpec::WaitableSetWait { options, signature } => {
             return Ok(Trampoline::Blocking(build_waitable_set_wait(
                 store,
                 options,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
         }
-        TrampolineSpec::WaitableSetPoll {
-            options,
-            cancellable,
-            signature,
-        } => build_waitable_set_poll(store, options, *cancellable, signature, abi_state.clone()),
+        TrampolineSpec::WaitableSetPoll { options, signature } => {
+            build_waitable_set_poll(store, options, signature, abi_state.clone())
+        }
         TrampolineSpec::WaitableSetDrop {
             instance,
             signature,
@@ -892,23 +884,12 @@ fn build_runtime_trampoline<T: 'static>(
         TrampolineSpec::PrepareCall { memory, signature } => {
             build_prepare_call(store, *memory, signature, abi_state.clone())
         }
-        TrampolineSpec::SyncStartCall {
-            callback,
-            signature,
-        } => {
-            return Ok(Trampoline::Blocking(build_sync_start_call(
-                store,
-                *callback,
-                signature,
-                abi_state.clone(),
-            )));
-        }
-        TrampolineSpec::AsyncStartCall {
+        TrampolineSpec::StartCall {
             callback,
             post_return,
             signature,
         } => {
-            return Ok(Trampoline::Blocking(build_async_start_call(
+            return Ok(Trampoline::Blocking(build_start_call(
                 store,
                 *callback,
                 *post_return,
@@ -918,13 +899,11 @@ fn build_runtime_trampoline<T: 'static>(
         }
         TrampolineSpec::ThreadYield {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_yield(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
@@ -944,65 +923,55 @@ fn build_runtime_trampoline<T: 'static>(
         } => build_thread_resume_later(store, *instance, signature, abi_state.clone()),
         TrampolineSpec::ThreadSuspend {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_suspend(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
         }
         TrampolineSpec::ThreadSuspendThenResume {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_suspend_then_resume(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
         }
         TrampolineSpec::ThreadYieldThenResume {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_yield_then_resume(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
         }
         TrampolineSpec::ThreadSuspendThenPromote {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_suspend_then_promote(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));
         }
         TrampolineSpec::ThreadYieldThenPromote {
             instance,
-            cancellable,
             signature,
         } => {
             return Ok(Trampoline::Blocking(build_thread_yield_then_promote(
                 store,
                 *instance,
-                *cancellable,
                 signature,
                 abi_state.clone(),
             )));

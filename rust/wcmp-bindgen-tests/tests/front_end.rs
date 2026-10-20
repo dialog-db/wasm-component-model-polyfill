@@ -116,6 +116,30 @@ mod from_a_file {
     wcmp::bindgen!({ include_generated_code_from_file: true });
 }
 
+/// An interface whose types are named `result` and `option`, the case
+/// Wasmtime 50 added to its codegen tests. The generated code names the
+/// prelude's types by their full paths, so the WIT names do not shadow
+/// them.
+mod prelude_names {
+    wcmp::bindgen!({
+        inline: "
+            package foo:foo;
+
+            interface a {
+                type %result = bool;
+                type %option = bool;
+
+                r: func() -> %result;
+                o: func() -> %option;
+            }
+
+            world foo {
+                export a;
+            }
+        ",
+    });
+}
+
 /// `record point { x: u32, y: u32 }`, derived by hand.
 #[derive(ComponentType, Lift, Lower, Clone, Copy, Debug, PartialEq)]
 #[component(record)]
@@ -238,6 +262,13 @@ fn it_generates_the_modules_of_each_invocation_form() {
     let _ = inline::test::inline::colors::Color::Green;
     let _ = interfaces::test::other::sizes::Size::Large;
     let _ = from_a_file::test::forms::shapes::Point { x: 3, y: 4 };
+}
+
+#[wcmp_macros::test]
+fn it_generates_an_interface_whose_types_are_named_after_prelude_types() {
+    let result: prelude_names::exports::foo::foo::a::Result = true;
+    let option: prelude_names::exports::foo::foo::a::Option = false;
+    assert!(result && !option);
 }
 
 #[wcmp_macros::test]

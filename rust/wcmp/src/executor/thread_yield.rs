@@ -6,9 +6,9 @@
 
 //! The `thread.yield` built-in.
 //!
-//! `thread.yield` gives way and returns zero, unless it carries the
-//! `cancellable` immediate and takes a cancellation request, as the
-//! last paragraph states. The reference treats a yield as a point
+//! `thread.yield` gives way and returns zero. It never takes a pending
+//! cancellation request: only a callback receives the task-cancelled
+//! event. The reference treats a yield as a point
 //! where any other ready thread can run, and Wasmtime switches to a
 //! ready thread of the instance when one exists. The built-in traps
 //! with the cannot-leave cause when the instance's may-leave flag is
@@ -30,8 +30,8 @@
 //! The built-in has no rule of its own that fails, which is what
 //! the reference states: `canon_thread_yield` has the may-leave
 //! trap and otherwise always answers `[0]`, and Wasmtime has no
-//! counterpart trap at all. A yield without the `cancellable`
-//! immediate returns zero whenever it returns.
+//! counterpart trap at all. The yield returns zero whenever it
+//! returns.
 //!
 //! Two things can stop it returning, and neither is the yield's own
 //! rule. An error the nested turn raised while it ran an item is
@@ -58,20 +58,6 @@
 //! turn's rule, and it is what keeps a task blocked on such a
 //! resumption from waiting for ever. A callback task that wants the
 //! executor to run returns the yield status word instead.
-//!
-//! The `cancellable` immediate changes what the built-in answers. The
-//! reference removed it, and `canon_thread_yield` there always answers
-//! `[0]`, but Wasmtime 49 still reads it and honors it, and the C
-//! generator of wit-bindgen still emits `[cancellable][thread-yield]`,
-//! so the polyfill honors it as Wasmtime does. A cancellable yield
-//! first takes a cancellation request pending for the calling
-//! thread's task, and answers 1 at once without giving way. Otherwise
-//! it gives way, and answers 1 when a request is pending once it goes
-//! on, which it then takes; `subtask.cancel` of its task runs a thread
-//! that gives way in a cancellable yield, suspended in the provider,
-//! before anything else. Taking the request moves the task to
-//! cancel-delivered. A yield without the immediate never takes a
-//! request, and answers zero whenever it returns.
 
 use std::sync::{Arc, Mutex};
 
@@ -82,46 +68,36 @@ use crate::concurrency::{BlockStep, BlockingBuiltin, InstanceId, Readiness};
 use crate::error::{Error, TaskCause};
 use crate::executor::intrinsics::core_func_type;
 use crate::executor::ir::CoreSignature;
-use crate::resource::HandleTables;
 use crate::runtime_layer::{AsContextMut, Val as RuntimeVal};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 
-/// The value `thread.yield` returns when it takes no cancellation
-/// request, which is Wasmtime's `WaitResult::Completed`.
-/// `canon_thread_yield` answers `[0]` and the Explainer says the word
-/// is always zero, so a yield without the `cancellable` immediate
-/// answers it whenever it returns.
+/// The value `thread.yield` returns, which is Wasmtime's
+/// `WaitResult::Completed`. `canon_thread_yield` answers `[0]` and the
+/// Explainer says the word is always zero.
 const COMPLETED: i32 = 0;
-
-/// The value a cancellable yield returns when it took a cancellation
-/// request, which is Wasmtime's `WaitResult::Cancelled`.
-const CANCELLED: i32 = 1;
 
 /// Build the `thread.yield` built-in for `instance`, the
 /// translator's per-instantiation index of the component instance
 /// that calls it. The guest imports the built-in directly, so the
 /// instance comes from the trampoline rather than from an argument,
-/// and the built-in takes nothing and returns one word. `cancellable`
-/// is the built-in's `cancellable` immediate.
+/// and the built-in takes nothing and returns one word.
 pub fn build_thread_yield<T: 'static>(
     _store: &mut StoreContext<'_, T>,
     instance: usize,
-    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
     BlockingBuiltin::new(
         core_func_type(signature),
         move |store: &mut StoreContext<'_, T>, _args: &[RuntimeVal]| {
-            begin_thread_yield(store, &abi_state, instance, cancellable)
+            begin_thread_yield(store, &abi_state, instance)
         },
     )
 }
 
 /// The first part of the built-in: refuse the call the instance may
-/// not be left for, take a pending cancellation request when the
-/// yield is cancellable, and otherwise give way once.
+/// not be left for, and otherwise give way once.
 ///
 /// One chance to be given back control is the whole of what a yield
 /// waits for, so it waits on a condition that always holds. With no
@@ -130,59 +106,21 @@ pub fn build_thread_yield<T: 'static>(
 /// it after every other ready item. What the wait can fail with is
 /// the failure of an item the turn ran, or the seam's budget ending
 /// the call this thread is inside; see the module documentation.
-///
-/// A cancellable yield marks its thread while it gives way, which is
-/// what lets `subtask.cancel` run the thread first, and takes a
-/// request pending once it goes on.
 #[tracing::instrument(level = "trace", name = "thread.yield", skip_all)]
 fn begin_thread_yield<T: 'static>(
     store: &mut StoreContext<'_, T>,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     instance: usize,
-    cancellable: bool,
 ) -> anyhow::Result<BlockStep<T>> {
     let id = calling_instance(abi_state, instance)?;
     trap_if_cannot_leave(abi_state, id, store.internal().runtime_mut())?;
-    let tables = store.internal().tables_handle();
-    let thread = {
-        let mut guard = lock_tables(&tables)?;
-        let thread = guard.tasks.current_thread().filter(|_| cancellable);
-        if let Some(thread) = thread {
-            if guard.tasks.take_pending_cancel_of(thread) {
-                return Ok(BlockStep::Ready(vec![RuntimeVal::I32(CANCELLED)]));
-            }
-            guard.tasks.set_cancellable_yield(thread, true);
-        }
-        thread
-    };
     Ok(BlockStep::wait(
         Readiness::Yielded,
         move |_store: &mut StoreContext<'_, T>, waited| {
-            let cancelled = match thread {
-                Some(thread) => {
-                    let mut guard = lock_tables(&tables)?;
-                    guard.tasks.set_cancellable_yield(thread, false);
-                    waited.is_ok() && guard.tasks.take_pending_cancel_of(thread)
-                }
-                None => false,
-            };
             waited.map_err(trap)?;
-            Ok(vec![RuntimeVal::I32(if cancelled {
-                CANCELLED
-            } else {
-                COMPLETED
-            })])
+            Ok(vec![RuntimeVal::I32(COMPLETED)])
         },
     ))
-}
-
-/// Lock the store's handle tables and record state.
-fn lock_tables(
-    tables: &Arc<Mutex<HandleTables>>,
-) -> anyhow::Result<std::sync::MutexGuard<'_, HandleTables>> {
-    tables
-        .lock()
-        .map_err(|_| anyhow!("resource handle tables lock poisoned"))
 }
 
 /// The store-wide identity of the component instance the translator

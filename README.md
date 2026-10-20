@@ -33,7 +33,7 @@ an eight-minute introduction:
 
 ## Requirements
 
-- Native: any target Wasmtime 49 or Wasmi 2.0 supports, with the runtime layer's
+- Native: any target Wasmtime 50 or Wasmi 2.0 supports, with the runtime layer's
   Wasmtime or Wasmi backend as the core engine. The library is executor
   agnostic. The tests use `tokio`.
 - Web: `wasm32-unknown-unknown` with `wasm-bindgen`, with the browser's

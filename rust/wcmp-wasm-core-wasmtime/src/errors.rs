@@ -146,7 +146,7 @@ mod tests {
     /// Every trap of Wasmtime's that is not a core trap: the Component
     /// Model's, the debug assertions of its fused adapters, and Pulley's
     /// disabled opcode. `core_trap` leaves each to the polyfill.
-    const NOT_CORE: [wasmtime::Trap; 31] = [
+    const NOT_CORE: [wasmtime::Trap; 35] = [
         wasmtime::Trap::CannotEnterComponent,
         wasmtime::Trap::NoAsyncResult,
         wasmtime::Trap::DisabledOpcode,
@@ -178,6 +178,10 @@ mod tests {
         wasmtime::Trap::StreamOpTooBig,
         wasmtime::Trap::WaitableSyncAndAsync,
         wasmtime::Trap::UncaughtException,
+        wasmtime::Trap::ReadFromDroppedStream,
+        wasmtime::Trap::WriteToDroppedStream,
+        wasmtime::Trap::WriteToDroppedFuture,
+        wasmtime::Trap::LiftDroppedStream,
     ];
 
     /// Every trap Wasmtime has, read back from the byte that encodes each,

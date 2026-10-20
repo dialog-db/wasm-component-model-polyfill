@@ -7,7 +7,7 @@ hands it to `Engine::with_backend`.
 | -------- | ------------------------------ | ---------------------------------------------------------- | --------------------------------------- |
 | Browser  | `rust/wcmp-wasm-core-web`      | In a browser, on `wasm32-unknown-unknown`                  | The browser's `WebAssembly` API         |
 | Wasmi    | `rust/wcmp-wasm-core-wasmi`    | Natively. It also builds for `wasm32`, which no lane tests | Wasmi 2.0, an interpreter               |
-| Wasmtime | `rust/wcmp-wasm-core-wasmtime` | Natively only                                              | Wasmtime 49, used as a core engine only |
+| Wasmtime | `rust/wcmp-wasm-core-wasmtime` | Natively only                                              | Wasmtime 50, used as a core engine only |
 
 The Wasmtime backend is the control. It runs beside the other two on every test
 lane, so a person can compare their results with Wasmtime's.

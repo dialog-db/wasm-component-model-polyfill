@@ -6,7 +6,7 @@
 
 //! The `flags!` macro, which declares a flags type with Wasmtime's
 //! syntax and API (`crates/component-macro/src/component.rs`,
-//! `expand_flags`, at `v49.0.0-rc.1`).
+//! `expand_flags`, at `v50.0.0`).
 //!
 //! The type holds its flags as the words the Canonical ABI lays them
 //! out in: one `u8` for at most 8 flags, one `u16` for at most 16, and

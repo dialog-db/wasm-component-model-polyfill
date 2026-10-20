@@ -2586,12 +2586,17 @@ async fn it_fails_a_thread_with_its_own_trap_or_host_error_before_and_after_it_s
 
 /// `run` starts a second thread of `$Outer`, then makes a synchronous call
 /// through `$Mid` into `$Inner`, which blocks on an empty waitable set.
-/// The blocked call cannot suspend the stack below the host functions
-/// it runs in, so the scheduler starts the second thread in place,
-/// inside the wait. That thread's first act is the host import
-/// `refuse`, which fails. The shape is that of
-/// `wasmtime/thread-transparency/reentrancy.wast`, with the host import
-/// where `$Mid`'s guard traps.
+/// `$Mid.f` is async-typed, so its task may block, and other threads may
+/// run while it waits. The blocked call cannot suspend the stack below
+/// the host functions it runs in, so the scheduler starts the second
+/// thread in place, inside the wait. That thread's first act is the host
+/// import `refuse`, which fails.
+///
+/// The shape is close to that of
+/// `wasmtime/thread-transparency/reentrancy.wast`. There `$Mid.f` is
+/// sync-typed, so its block lets only the threads of `$Mid` run, and the
+/// call fails with the cannot-block cause before any other thread
+/// starts.
 const REFUSES_IN_A_NESTED_START: &[u8] = component!(
     r#"
     (component
@@ -2619,9 +2624,9 @@ const REFUSES_IN_A_NESTED_START: &[u8] = component!(
           (func (export "f") (call $g)))
         (canon lower (func $inner "g") (core func $g))
         (core instance $m (instantiate $M (with "" (instance (export "g" (func $g))))))
-        (func (export "f") (canon lift (core func $m "f"))))
+        (func (export "f") async (canon lift (core func $m "f"))))
       (component $Outer
-        (import "mid" (instance $mid (export "f" (func))))
+        (import "mid" (instance $mid (export "f" (func async))))
         (import "refuse" (func $refuse))
         (core module $Table (table (export "__indirect_function_table") 1 funcref))
         (core instance $table (instantiate $Table))

@@ -15,7 +15,7 @@ use crate::names::resolve_type_definition_id;
 
 /// What the generator needs to know of one WIT type, as Wasmtime's
 /// `TypeInfo` records it (`crates/wit-bindgen/src/types.rs` at
-/// `v49.0.0-rc.1`).
+/// `v50.0.0`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TypeInfo {
     /// The type is the error of a function's `result`, so its Rust type

@@ -7,7 +7,7 @@
 //! The type checks the derive macros call: a record, a variant, and an
 //! enum, compared with the declared type in Wasmtime's order
 //! (`crates/wasmtime/src/runtime/component/func/typed.rs`, `typecheck_record`,
-//! `typecheck_variant`, and `typecheck_enum`, at `v49.0.0-rc.1`).
+//! `typecheck_variant`, and `typecheck_enum`, at `v50.0.0`).
 
 use crate::error::TypePathStep;
 use crate::types::ValueType;

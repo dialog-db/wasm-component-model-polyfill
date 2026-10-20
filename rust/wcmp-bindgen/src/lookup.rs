@@ -25,7 +25,7 @@ pub enum LookupItem<'a> {
 
 /// The names `item` of the interface `key` is looked up by, from the
 /// most specific to the least, as Wasmtime's `lookup_keys` gives them
-/// (`crates/wit-bindgen/src/lib.rs` at `v49.0.0-rc.1`).
+/// (`crates/wit-bindgen/src/lib.rs` at `v50.0.0`).
 ///
 /// Each name comes with its projection: the Rust path segments from
 /// what the name maps to down to the item. For an interface

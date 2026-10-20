@@ -9,11 +9,11 @@
 use std::collections::{BTreeSet, HashMap};
 
 use heck::{ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream};
 use quote::{format_ident, quote};
 use wit_parser::{
-    Docs, Enum, Flags, Handle, InterfaceId, PackageId, Record, Resolve, SizeAlign, Type,
-    TypeDefKind, TypeId, TypeOwner, Variant, WorldId, WorldItem, WorldKey,
+    Docs, Enum, Flags, FunctionKind, Handle, InterfaceId, PackageId, Record, Resolve, SizeAlign,
+    Type, TypeDefKind, TypeId, TypeOwner, Variant, WorldId, WorldItem, WorldKey,
 };
 
 use crate::config::Config;
@@ -58,16 +58,19 @@ pub struct Generator<'a> {
 }
 
 impl<'a> Generator<'a> {
-    /// A generator for the world `config` selects.
-    pub fn new(config: &'a Config) -> Self {
+    /// A generator for the world `config` selects, or the error of a
+    /// type whose size or alignment the WIT parser cannot compute.
+    pub fn new(config: &'a Config) -> syn::Result<Self> {
         let resolve = &config.resolve;
         let mut sizes = SizeAlign::default();
-        sizes.fill(resolve);
+        sizes
+            .fill(resolve)
+            .map_err(|error| syn::Error::new(Span::call_site(), format!("{error:#}")))?;
         let c = match &config.options.wcmp_crate {
             Some(path) => quote!(#path),
             None => quote!(::wcmp),
         };
-        Self {
+        Ok(Self {
             config,
             resolve,
             world: config.world,
@@ -80,7 +83,7 @@ impl<'a> Generator<'a> {
             exported_interfaces: Vec::new(),
             trappable_errors: HashMap::new(),
             with_names: Vec::new(),
-        }
+        })
     }
 
     /// Write the code.
@@ -88,6 +91,18 @@ impl<'a> Generator<'a> {
         let world = &self.resolve.worlds[self.world];
         let only_interfaces = self.config.options.only_interfaces;
         self.refuse_options()?;
+        if !only_interfaces {
+            Self::refuse_accessors(
+                world
+                    .imports
+                    .values()
+                    .chain(world.exports.values())
+                    .filter_map(|item| match item {
+                        WorldItem::Function(func) => Some(func),
+                        _ => None,
+                    }),
+            )?;
+        }
         let mut root = self.with_aliases();
         root.extend(self.resolve_trappable_errors()?);
         let mut world_functions = Vec::new();
@@ -190,6 +205,7 @@ impl<'a> Generator<'a> {
             self.imported_interfaces.push((key.clone(), path));
             return Ok(());
         }
+        Self::refuse_accessors(self.resolve.interfaces[id].functions.values())?;
         let mut items = self.interface_types(&path, id);
 
         let interface = &self.resolve.interfaces[id];
@@ -425,6 +441,7 @@ impl<'a> Generator<'a> {
             self.exported_interfaces.push((key.clone(), id, path));
             return Ok(());
         }
+        Self::refuse_accessors(self.resolve.interfaces[id].functions.values())?;
         let mut items = self.interface_types(&path, id);
 
         let interface = &self.resolve.interfaces[id];
@@ -700,6 +717,25 @@ impl<'a> Generator<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// Refuse a getter or a setter among `functions`, as Wasmtime's
+    /// macro does. The refusal covers only what the macro writes, so an
+    /// interface that `with` maps elsewhere may hold one.
+    fn refuse_accessors<'f>(
+        functions: impl IntoIterator<Item = &'f wit_parser::Function>,
+    ) -> syn::Result<()> {
+        match functions.into_iter().find(|func| is_accessor(&func.kind)) {
+            Some(func) => Err(syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "`{}` is a getter or a setter, which `bindgen!` does not support: \
+                     Wasmtime's macro refuses them too (\"unimplemented getter/setter\")",
+                    func.name
+                ),
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Write the module at `path` of an interface `with` maps as a
@@ -1269,4 +1305,17 @@ impl<'a> Generator<'a> {
             }
         }
     }
+}
+
+/// Whether `kind` is a getter or a setter, of a resource or not.
+fn is_accessor(kind: &FunctionKind) -> bool {
+    matches!(
+        kind,
+        FunctionKind::Getter
+            | FunctionKind::Setter
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticGetter(_)
+            | FunctionKind::StaticSetter(_)
+    )
 }

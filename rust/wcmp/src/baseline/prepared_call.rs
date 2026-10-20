@@ -7,12 +7,12 @@
 //! Baseline tests for the prepare-and-start protocol of the fused
 //! adapters, on its synchronous half.
 //!
-//! With the fused adapter compiler of Wasmtime 49, a call between two
-//! components whose lower or lift is asynchronous goes through
-//! `component-prepare-call` and then one of the two start
-//! intrinsics. A synchronous lower of an asynchronously lifted export
-//! reaches the synchronous start: the callee runs next, and the
-//! caller has its flat results when the intrinsic returns.
+//! With the fused adapter compiler of Wasmtime 50, a call between two
+//! components whose lower, lift, or function type is async goes
+//! through `component-prepare-call` and then the start intrinsic. A
+//! sync lower reaches the start intrinsic's sync path: the callee runs
+//! next, and the caller has its flat results when the intrinsic
+//! returns.
 //!
 //! The tests here cover what no corpus file reaches from a repository
 //! test: the lazy rule of a sync-typed caller's block, and what a
@@ -451,7 +451,7 @@ async fn it_returns_the_callees_result_to_a_synchronous_lower() {
 
 #[wcmp_macros::test]
 async fn it_blocks_a_sync_typed_caller_only_after_the_callee_did_not_resolve_at_once() {
-    // The rule is lazy, as the reference and Wasmtime 49 state it. A
+    // The rule is lazy, as the reference and Wasmtime 50 state it. A
     // sync-typed caller is not allowed to block, but the callee runs
     // before the caller ever waits, so a callee that resolves while
     // the caller's start intrinsic runs never reaches the failure.

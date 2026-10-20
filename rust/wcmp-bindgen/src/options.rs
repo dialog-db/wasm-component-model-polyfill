@@ -46,7 +46,7 @@ mod kw {
 }
 
 /// The options of one invocation, as Wasmtime's macro parses them
-/// (`crates/component-macro/src/bindgen.rs` at `v49.0.0-rc.1`), with
+/// (`crates/component-macro/src/bindgen.rs` at `v50.0.0`), with
 /// the polyfill's `wcmp_crate`.
 #[derive(Default)]
 pub struct Options {

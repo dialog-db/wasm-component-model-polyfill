@@ -676,7 +676,9 @@ pub struct wcmp::EngineConfig
 impl wcmp::EngineConfig
 pub fn wcmp::EngineConfig::new() -> Self
 pub fn wcmp::EngineConfig::suspend_provider(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_accessors(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_async_stackful(&mut self, bool) -> &mut Self
+pub fn wcmp::EngineConfig::wasm_component_model_canonical_names(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_error_context(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_fixed_length_lists(&mut self, bool) -> &mut Self
 pub fn wcmp::EngineConfig::wasm_component_model_gc(&mut self, bool) -> &mut Self

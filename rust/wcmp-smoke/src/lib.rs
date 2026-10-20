@@ -718,35 +718,29 @@ const GUEST_THREADS: &[u8] = component!(
     "#
 );
 
-/// Two components, as a C library that uses pthreads and the program
-/// that calls it would be.
+/// Two components: a library whose async export works in rounds, and
+/// the program that calls it.
 ///
-/// The library's stackful export `work` starts a worker thread and
-/// returns, leaving the worker to finish the call. The worker yields
-/// with the cancellable form of `thread.yield` and tells the host's
-/// `tally` what each yield answered: 0 while nothing has asked it to
-/// stop, and 1 once its caller has. On 1 it confirms with
-/// `task.cancel`. It gives up after `rounds` yields and returns how
-/// many it made.
+/// The library's export `work` is lifted with a callback, as
+/// wit-bindgen lifts an `async` export. It answers its first call with
+/// a yield, so the caller's lower returns while the work goes on. Each
+/// time its callback runs it tells the host's `tally` 0 and answers
+/// with another yield. When the callback receives the task-cancelled
+/// event (6), it tells the host 1 and confirms with `task.cancel`. It
+/// gives up after `rounds` rounds and returns how many it made.
 ///
-/// The program's export `run` is lifted with a callback, as
-/// wit-bindgen lifts an `async` export. It calls `work` through an
-/// asynchronous lower and gives way `yields` times, answering its
-/// callback loop with a yield, so the worker runs. Then it tells the
-/// host 50, cancels the call with the asynchronous `subtask.cancel`,
-/// waits for the call to resolve if the cancel answered that it has
-/// not yet, and returns the state the call resolved to: 4,
-/// `CANCELLED_BEFORE_RETURNED`, when the worker confirmed, and 2,
-/// `RETURNED`, when it gave up first.
+/// The program's export `run` is lifted with a callback too. It calls
+/// `work` through an asynchronous lower and gives way `yields` times,
+/// answering its callback loop with a yield, so the library runs.
+/// Then it tells the host 50, cancels the call with the asynchronous
+/// `subtask.cancel`, waits for the call to resolve if the cancel
+/// answered that it has not yet, and returns the state the call
+/// resolved to: 4, `CANCELLED_BEFORE_RETURNED`, when the library
+/// confirmed, and 2, `RETURNED`, when it gave up first.
 ///
-/// wit-bindgen's C generator emits the cancellable yield, but the
-/// flake carries no C toolchain, and its Rust generator exposes no
-/// thread built-in. So the component is written here by hand. The
-/// text format no longer spells the `cancellable` immediate, so it is
-/// assembled with the yield's immediate byte zero, and
-/// [`with_cancellable_yield`] sets it, as a toolchain that emits the
-/// immediate encodes it. The worker's yield is the only `thread.yield`
-/// in the binary.
+/// wit-bindgen's generators write the same callback loop, but the
+/// flake carries no C toolchain for a guest of this shape, so the
+/// component is written here by hand.
 const CANCELLED_WORKER: &[u8] = component!(
     r#"
     (component
@@ -757,53 +751,43 @@ const CANCELLED_WORKER: &[u8] = component!(
 
       (component $library
         (import "tally" (func $tally (param "n" u32)))
-        (core module $libc (table (export "table") 1 funcref))
-        (core instance $libc (instantiate $libc))
-        (alias core export $libc "table" (core table $table))
-        (core type $start-ty (func (param i32)))
         (core func $tally (canon lower (func $tally)))
-        (core func $yield (canon thread.yield))
         (core func $task-cancel (canon task.cancel))
         (core func $task-return (canon task.return (result u32)))
-        (core func $new-indirect (canon thread.new-indirect $start-ty (core table $table)))
-        (core func $resume-later (canon thread.resume-later))
         (core module $m
           (import "" "tally" (func $tally (param i32)))
-          (import "" "thread.yield" (func $yield (result i32)))
           (import "" "task.cancel" (func $task-cancel))
           (import "" "task.return" (func $task-return (param i32)))
-          (import "" "thread.new-indirect" (func $new-indirect (param i32 i32) (result i32)))
-          (import "" "thread.resume-later" (func $resume-later (param i32)))
-          (import "libc" "table" (table 1 funcref))
-          (func $worker (param $rounds i32)
-            (local $made i32)
-            (local $answer i32)
-            (block $gave-up
-              (loop $more
-                (br_if $gave-up (i32.ge_u (local.get $made) (local.get $rounds)))
-                (local.set $answer (call $yield))
-                (call $tally (local.get $answer))
-                (if (local.get $answer)
-                  (then
-                    (call $task-cancel)
-                    (return)))
-                (local.set $made (i32.add (local.get $made) (i32.const 1)))
-                (br $more)))
-            (call $task-return (local.get $made)))
-          (elem (table 0) (i32.const 0) func $worker)
-          (func (export "work") (param $rounds i32)
-            (call $resume-later (call $new-indirect (i32.const 0) (local.get $rounds)))))
+          (global $rounds (mut i32) (i32.const 0))
+          (global $made (mut i32) (i32.const 0))
+          ;; Give way at once, so the caller's lower returns while the
+          ;; work goes on.
+          (func (export "work") (param $rounds i32) (result i32)
+            (global.set $rounds (local.get $rounds))
+            (i32.const 1 (; YIELD ;)))
+          ;; The task-cancelled event stops the work. Any other turn is
+          ;; one more round.
+          (func (export "work-callback") (param $event i32) (param $index i32) (param $payload i32)
+            (result i32)
+            (if (i32.eq (local.get $event) (i32.const 6 (; TASK_CANCELLED ;)))
+              (then
+                (call $tally (i32.const 1))
+                (call $task-cancel)
+                (return (i32.const 0 (; EXIT ;)))))
+            (call $tally (i32.const 0))
+            (global.set $made (i32.add (global.get $made) (i32.const 1)))
+            (if (i32.ge_u (global.get $made) (global.get $rounds))
+              (then
+                (call $task-return (global.get $made))
+                (return (i32.const 0 (; EXIT ;)))))
+            (i32.const 1 (; YIELD ;))))
         (core instance $m (instantiate $m
           (with "" (instance
             (export "tally" (func $tally))
-            (export "thread.yield" (func $yield))
             (export "task.cancel" (func $task-cancel))
-            (export "task.return" (func $task-return))
-            (export "thread.new-indirect" (func $new-indirect))
-            (export "thread.resume-later" (func $resume-later))))
-          (with "libc" (instance $libc))))
+            (export "task.return" (func $task-return))))))
         (func (export "work") async (param "rounds" u32) (result u32)
-          (canon lift (core func $m "work") async)))
+          (canon lift (core func $m "work") async (callback (core func $m "work-callback")))))
       (instance $library (instantiate $library (with "tally" (func $tally))))
 
       (component $program
@@ -1032,11 +1016,11 @@ pub static ERROR_BETWEEN_COMPONENTS: Story = Story {
     goal: "Turn on `error-context`, and an error's message travels between components intact.",
 };
 
-pub static STOP_A_GUEST_THREAD: Story = Story {
+pub static STOP_A_GUEST_TASK: Story = Story {
     chapter: "Failure and cancellation",
-    title: "Stop a guest thread when its caller cancels",
-    goal: "Cancel a call, and the worker thread it started sees the cancel and stops. Works \
-           without JSPI too.",
+    title: "Stop a guest task when its caller cancels",
+    goal: "Cancel a call, and the callee's callback sees the cancel and stops. Works without \
+           JSPI too.",
 };
 
 pub static WASI_HTTP_STORY: Story = Story {
@@ -1098,7 +1082,7 @@ fn stories(engine: &Engine) -> Vec<(&'static Story, Body<'_>)> {
             &ERROR_BETWEEN_COMPONENTS,
             Box::pin(error_between_components(engine)),
         ),
-        (&STOP_A_GUEST_THREAD, Box::pin(stop_a_guest_thread())),
+        (&STOP_A_GUEST_TASK, Box::pin(stop_a_guest_task())),
         (&WASI_HTTP_STORY, Box::pin(wasi_http(engine))),
         (&SUSPENDING_OFF, Box::pin(suspending_off())),
     ]
@@ -3035,73 +3019,38 @@ async fn error_between_components(engine: &Engine) -> Result<String, String> {
 }
 
 /// How many times the program in [`CANCELLED_WORKER`] gives way before
-/// it cancels, which is how many turns the worker gets.
+/// it cancels.
 const PROGRAM_YIELDS: u32 = 3;
 
-/// What the host is told in [`CANCELLED_WORKER`]: the worker's yield
-/// answers 0 on each of the turns the program gives it, the program
-/// says 50 as it cancels, and the worker's next yield answers 1.
-const WORKER_TALLIES: [u32; 5] = [0, 0, 0, 50, 1];
+/// What the program tells the host as it cancels.
+const CANCELLING: u32 = 50;
 
 /// The state of a subtask whose callee confirmed a cancellation.
 const CANCELLED_BEFORE_RETURNED: u32 = 4;
 
-/// `binary` with the `cancellable` immediate of its first
-/// `thread.yield` set, as a toolchain that emits the immediate encodes
-/// it. The text format no longer spells the immediate, so the
-/// component is assembled with the byte zero.
-fn with_cancellable_yield(binary: &[u8]) -> Result<Vec<u8>, String> {
-    for payload in wasmparser::Parser::new(0).parse_all(binary) {
-        let wasmparser::Payload::ComponentCanonicalSection(section) = payload.map_err(fail)? else {
-            continue;
-        };
-        for entry in section.into_iter_with_offsets() {
-            let (offset, function) = entry.map_err(fail)?;
-            if let wasmparser::CanonicalFunction::ThreadYield { .. } = function {
-                let immediate = usize::try_from(offset).map_err(fail)? + 1;
-                let mut patched = binary.to_vec();
-                expect(
-                    "the immediate of the assembled `thread.yield`",
-                    patched[immediate],
-                    0,
-                )?;
-                patched[immediate] = 1;
-                return Ok(patched);
-            }
-        }
-    }
-    Err("the component defines no `thread.yield`".to_owned())
-}
-
-/// An engine that accepts [`CANCELLED_WORKER`]: stackful exports and
-/// the thread built-ins, as [`suspending_engine`] allows them, and the
-/// asynchronous form of `subtask.cancel`. Wasmtime keeps each behind a
-/// feature gate that is off by default.
+/// An engine that accepts [`CANCELLED_WORKER`]: the asynchronous form
+/// of `subtask.cancel`, which Wasmtime keeps behind a feature gate that
+/// is off by default.
 fn cancelling_engine(suspending: bool) -> Result<Engine, String> {
     let mut config = EngineConfig::new();
-    config.wasm_component_model_async_stackful(true);
-    config.wasm_component_model_threading(true);
     config.wasm_component_model_more_async_builtins(true);
     config.suspend_provider(suspending);
     configured_engine(&config).map_err(fail)
 }
 
 /// The program in [`CANCELLED_WORKER`] calls the library's `work`,
-/// gives way so the worker it started runs, and cancels the call. The
-/// worker's cancellable yield answers 0 on each turn it gets and 1
-/// once the program has cancelled, the worker confirms with
-/// `task.cancel`, and the program reads `CANCELLED_BEFORE_RETURNED`.
-/// Answers what the host was told: each answer of the worker's yields,
-/// with the program's 50 where it cancelled.
+/// gives way so the library's callback runs, and cancels the call. The
+/// callback tells the host 0 on each round it runs before the cancel,
+/// receives the task-cancelled event after it, tells the host 1, and
+/// confirms with `task.cancel`. The program reads
+/// `CANCELLED_BEFORE_RETURNED`. Answers what the host was told.
 ///
-/// Nothing in it needs a stack switch. The program gives way through
-/// its callback loop rather than by setting its stack aside, so with
-/// no provider the worker's yield runs the program in a turn nested
-/// above it on the one stack, and the program's cancel reaches the
-/// worker's yield when that turn ends.
+/// Nothing in it needs a stack switch. Both components give way
+/// through their callback loops, not by setting their stacks aside.
 async fn cancelled_worker_on(engine: &Engine) -> Result<Vec<u32>, String> {
-    let binary = with_cancellable_yield(CANCELLED_WORKER)?;
-    let component = Component::new(engine, &binary).await.map_err(fail)?;
+    let component = Component::new(engine, CANCELLED_WORKER)
+        .await
+        .map_err(fail)?;
     let linker = tallying(engine)?;
     let mut store = Store::new(engine, HostState::default()).map_err(fail)?;
     let instance = linker
@@ -3124,22 +3073,31 @@ async fn cancelled_worker_on(engine: &Engine) -> Result<Vec<u32>, String> {
         state,
         CANCELLED_BEFORE_RETURNED,
     )?;
-    expect(
-        "what the worker's yields answered, and where the program cancelled",
-        tallies.as_slice(),
-        &WORKER_TALLIES,
-    )?;
+    // The library runs at least one round before the program cancels,
+    // and every round before the cancel tells the host 0. The order in
+    // which the two callbacks take turns is the scheduler's, so the
+    // count of rounds is not fixed.
+    let rounds = tallies.len().saturating_sub(2);
+    let shape = rounds > 0
+        && tallies[..rounds].iter().all(|tally| *tally == 0)
+        && tallies[rounds..] == [CANCELLING, 1];
+    if !shape {
+        return Err(format!(
+            "the host was told {tallies:?}, not zeros, then {CANCELLING} as the program \
+             cancelled, then 1 as the library saw the cancel"
+        ));
+    }
     Ok(tallies)
 }
 
 /// The cancelled worker on an engine with a provider where the target
 /// offers one, and on an engine with suspending turned off.
-async fn stop_a_guest_thread() -> Result<String, String> {
+async fn stop_a_guest_task() -> Result<String, String> {
     let here = cancelled_worker_on(&cancelling_engine(true)?).await?;
     cancelled_worker_on(&cancelling_engine(false)?).await?;
     Ok(format!(
-        "the worker yielded {} times, saw the cancel on the next yield, and stopped; the \
-         caller saw the call cancelled before it returned; same with suspending off",
+        "the library ran {} rounds, saw the cancel in its callback, and stopped; the caller \
+         saw the call cancelled before it returned; same with suspending off",
         here.len() - 2
     ))
 }

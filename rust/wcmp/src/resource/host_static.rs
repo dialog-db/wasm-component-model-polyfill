@@ -6,7 +6,7 @@
 
 //! The typed handle to a host resource, as Wasmtime's `Resource<T>`
 //! (`crates/wasmtime/src/runtime/component/resources/host_static.rs`
-//! at `v49.0.0-rc.1`).
+//! at `v50.0.0`).
 
 use core::fmt;
 use core::marker::PhantomData;

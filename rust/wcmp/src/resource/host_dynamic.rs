@@ -7,7 +7,7 @@
 //! The handle to a host resource of a type the host makes at run
 //! time, as Wasmtime's `ResourceDynamic`
 //! (`crates/wasmtime/src/runtime/component/resources/host_dynamic.rs`
-//! at `v49.0.0-rc.1`).
+//! at `v50.0.0`).
 
 use crate::error::Result;
 use crate::internal::{ResourceAnyInternal, ResourceInternal, ResourceTypeInternal};

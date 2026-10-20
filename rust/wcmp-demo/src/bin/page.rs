@@ -7,6 +7,11 @@
 //! The page's binary. `main` runs when Trunk's loader instantiates the
 //! module, and schedules the page's start on the browser's event loop.
 
+// The page's start is one async block over many nested futures, and
+// rustc 1.99 needs more than the default query depth of 128 to compute
+// its layout.
+#![recursion_limit = "256"]
+
 #[cfg(target_arch = "wasm32")]
 fn main() {
     wcmp_demo::install_tracing("page");

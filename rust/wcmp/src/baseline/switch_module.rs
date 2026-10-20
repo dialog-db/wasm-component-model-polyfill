@@ -22,7 +22,7 @@
 //! the switch module's table, and the tests resume them in either
 //! order.
 //!
-//! Wasmtime 49 implements the stack-switching proposal on x86_64
+//! Wasmtime 50 implements the stack-switching proposal on x86_64
 //! Linux only, and no browser ships it, so the tests run there alone,
 //! over Wasmtime whatever backend the lane chose: Wasmi does not
 //! declare stack switching.

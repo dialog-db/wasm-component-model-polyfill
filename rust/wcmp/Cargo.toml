@@ -78,9 +78,7 @@ wasm-bindgen = { workspace = true }
 # `time` backs the Zena test host's `wait-for` natively.
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
 wast = { workspace = true }
-# Sets the `cancellable` immediate in a test fixture, which the text format
-# no longer spells, and tells which Zena components need GC or exception
-# handling.
+# Tells which Zena components need GC or exception handling.
 wasmparser = { workspace = true, features = ["validate", "features", "simd"] }
 # The scenario model the `zena` test judges each Zena scenario with.
 wcmp-scenario = { workspace = true }

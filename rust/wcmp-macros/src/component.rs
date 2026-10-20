@@ -8,7 +8,7 @@
 //! `ComponentType`, `Lift`, and `Lower`.
 //!
 //! The attributes and the shape rules are Wasmtime's
-//! (`crates/component-macro/src/component.rs` at `v49.0.0-rc.1`): a
+//! (`crates/component-macro/src/component.rs` at `v50.0.0`): a
 //! style attribute, `record`, `variant`, or `enum`, on the type, and
 //! `name = "…"` on a field or a case. A crate that re-exports the
 //! polyfill names it with `wcmp_crate = path`. Each refusal is a

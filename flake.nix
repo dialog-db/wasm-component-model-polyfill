@@ -48,11 +48,11 @@
     # The official WebAssembly specification test suite, the fidelity
     # suite of the runtime layer, pinned by commit in the URL so that `nix
     # flake update` cannot move it. The commit is the one Wasmtime
-    # 49.0.0-rc.1, the control's engine, pins as its own `spec_testsuite`
+    # 50.0.0, the control's engine, pins as its own `spec_testsuite`
     # submodule. Moving the pin is a deliberate change: every backend's
     # expected failures are held against it.
     spec-testsuite = {
-      url = "github:WebAssembly/testsuite/0dc0343c9876267d99a7577ed4fc2289406a7869";
+      url = "github:WebAssembly/testsuite/b464a4cd100d98175ae6e3890db89a2e6c8302f7";
       flake = false;
     };
 
@@ -951,37 +951,47 @@
           '';
 
         # The one Wasmtime of the workspace: `Cargo.lock` resolves
-        # `wasmtime` to a single version, the one `Cargo.toml` pins, and
-        # `wasmtime-wasi` to that same version, so the Wasmtime run and the
-        # polyfill's native backend link the same Wasmtime.
-        wasmtimeVersionCheck =
+        # `wasmtime` to a single version, in the major version that
+        # `Cargo.toml` asks for, and `wasmtime-wasi` and `wasmtime-environ`
+        # to that same version, so the Wasmtime run and the polyfill's native
+        # backend link the same Wasmtime.
+        lockedVersions =
           let
             lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+          in
+          name: map (package: package.version) (builtins.filter (package: package.name == name) lock.package);
+        lockedWasmtime = builtins.head (lockedVersions "wasmtime");
+        wasmtimeVersionCheck =
+          let
             manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-            pinned = pkgs.lib.removePrefix "=" manifest.workspace.dependencies.wasmtime;
-            versions =
-              name: map (package: package.version) (builtins.filter (package: package.name == name) lock.package);
-            wasmtime = versions "wasmtime";
-            wasi = versions "wasmtime-wasi";
+            required = manifest.workspace.dependencies.wasmtime;
+            major = version: builtins.head (pkgs.lib.splitString "." version);
+            wasmtime = lockedVersions "wasmtime";
+            wasi = lockedVersions "wasmtime-wasi";
+            environ = lockedVersions "wasmtime-environ";
           in
           pkgs.runCommand "wasmtime-version-check" { } (
-            if wasmtime == [ pinned ] && wasi == [ pinned ] then
+            if
+              builtins.length wasmtime == 1
+              && major lockedWasmtime == major required
+              && wasi == wasmtime
+              && environ == wasmtime
+            then
               ''touch "$out"''
             else
               ''
-                echo "Cargo.lock resolves wasmtime to [${toString wasmtime}] and wasmtime-wasi to [${toString wasi}]; the workspace pins ${pinned} for both" >&2
+                echo "Cargo.lock resolves wasmtime to [${toString wasmtime}], wasmtime-wasi to [${toString wasi}], and wasmtime-environ to [${toString environ}]; the workspace asks for one version of all three, in the major version of ${required}" >&2
                 exit 1
               ''
           );
 
         # The copies of Wasmtime's macro sources and codegen corpus that the
         # tests of `wcmp::bindgen!` read (`rust/wcmp-bindgen-tests/wasmtime`)
-        # are the ones the pinned Wasmtime crates hold, so the option ledger
+        # are the ones the locked Wasmtime crates hold, so the option ledger
         # and the corpus test cannot drift from the pin.
         bindgenPinCheck =
           let
-            manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-            pinned = pkgs.lib.removePrefix "=" manifest.workspace.dependencies.wasmtime;
+            pinned = lockedWasmtime;
             vendor = publishCrane.vendorCargoDeps { cargoLock = ./Cargo.lock; };
             copies = ./rust/wcmp-bindgen-tests/wasmtime;
           in

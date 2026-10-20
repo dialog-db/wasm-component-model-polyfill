@@ -1,7 +1,7 @@
 # Wasmtime's macro, pinned
 
-These files are copies of Wasmtime's sources at `v49.0.0-rc.1` (commit
-`62ef0a5586d450d8dff436388370fe7fc736a2bb`), the version the workspace pins.
+These files are copies of Wasmtime's sources at `v50.0.0` (commit
+`ebe5e8df1f4e12c5fc2f5954926881d8d61367d8`), the version the workspace pins.
 Wasmtime is licensed under Apache-2.0 WITH LLVM-exception.
 
 - `bindgen.rs.txt` is `crates/component-macro/src/bindgen.rs`: the parser of

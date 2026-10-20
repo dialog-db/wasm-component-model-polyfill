@@ -249,6 +249,66 @@ fn it_refuses_include_component_type() {
     );
 }
 
+/// A world that imports an interface with a getter, and one with a
+/// resource that has a getter and a setter.
+const ACCESSOR_WORLD: &str = "
+    package test:refusals;
+
+    interface settings {
+        volume: get() -> u32;
+    }
+
+    interface files {
+        resource file {
+            name: get() -> string;
+            name: set(value: string);
+        }
+    }
+
+    world refusals {
+        import settings;
+        import files;
+    }
+";
+
+#[test]
+fn it_refuses_a_getter_as_wasmtime_does() {
+    let message = refusal(quote!({
+        inline: #ACCESSOR_WORLD,
+        with: { "test:refusals/files": crate::files },
+    }));
+    assert!(
+        message.contains("`[get]volume`") && message.contains("unimplemented getter/setter"),
+        "the refusal names the getter and Wasmtime's refusal: {message}"
+    );
+}
+
+#[test]
+fn it_refuses_a_resource_accessor_as_wasmtime_does() {
+    let message = refusal(quote!({
+        inline: #ACCESSOR_WORLD,
+        with: { "test:refusals/settings": crate::settings },
+    }));
+    assert!(
+        message.contains("file.name`") && message.contains("unimplemented getter/setter"),
+        "the refusal names the accessor and Wasmtime's refusal: {message}"
+    );
+}
+
+#[test]
+fn it_expands_a_world_whose_accessors_are_all_in_with_mapped_interfaces() {
+    let input = quote!({
+        inline: #ACCESSOR_WORLD,
+        with: {
+            "test:refusals/settings": crate::settings,
+            "test:refusals/files": crate::files,
+        },
+    });
+    if let Err(error) = expand(input, Path::new(".")) {
+        panic!("the invocation is refused: {error}");
+    }
+}
+
 /// The parser of Wasmtime's options at the pinned version.
 const WASMTIME_BINDGEN: &str = include_str!("../../wcmp-bindgen-tests/wasmtime/bindgen.rs.txt");
 

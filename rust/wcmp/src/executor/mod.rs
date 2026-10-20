@@ -27,7 +27,6 @@
 //! paths, all of which build on `wasm32-unknown-unknown`.
 
 mod async_lift;
-mod async_start_call;
 mod callback_task;
 mod cancel;
 mod compile_module;
@@ -42,9 +41,9 @@ mod instantiate;
 mod prepare_call;
 mod resource_destructor;
 mod start_call;
+mod start_call_intrinsic;
 mod start_failure;
 mod start_task;
-mod sync_start_call;
 mod task_return;
 mod thread_builtins;
 mod thread_start_table;
@@ -58,7 +57,6 @@ pub mod trampoline;
 pub mod waitable_builtins;
 
 pub use async_lift::AsyncLift;
-pub use async_start_call::build_async_start_call;
 pub use callback_task::CallbackTask;
 pub use cancel::{build_subtask_cancel, build_task_cancel};
 pub use compile_module::{compile_module, compile_modules};
@@ -70,7 +68,7 @@ pub use instantiate::instantiate;
 pub use prepare_call::build_prepare_call;
 pub use resource_destructor::ResourceDestructor;
 pub use start_call::release_subtask;
-pub use sync_start_call::build_sync_start_call;
+pub use start_call_intrinsic::build_start_call;
 pub use task_return::build_task_return;
 pub use thread_builtins::{
     build_thread_index, build_thread_new_indirect, build_thread_resume_later, build_thread_suspend,

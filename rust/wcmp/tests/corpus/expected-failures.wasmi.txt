@@ -9,6 +9,7 @@
 # it from the Wasmi run, from the failures the shared list does not name.
 
 cm/binary/binary.wast:892 substrate component rejected: unsupported component feature: gc
+cm/binary/binary.wast:946 substrate expected rejection `invalid leading byte`, got `component rejected: invalid component binary at offset 0: gc proposal must be enabled to use subtypes (at offset 0xe)` (the validator refuses the subtype for the missing GC proposal before it reaches the error the directive expects)
 cm/linking/tags.wast:7 substrate component rejected: unsupported component feature: exceptions
 cm/linking/tags.wast:31 cascade no instance to invoke
 cm/linking/tags.wast:32 cascade no instance to invoke

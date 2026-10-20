@@ -11,7 +11,7 @@ between two components. The same translator runs on every target.
 ## Core execution
 
 The polyfill's own runtime layer, `wcmp-wasm-core`, runs the core modules on the
-backend the host chooses. `wcmp-wasm-core-wasmtime` runs them on Wasmtime 49,
+backend the host chooses. `wcmp-wasm-core-wasmtime` runs them on Wasmtime 50,
 used only as a core Wasm engine, and `wcmp-wasm-core-web` runs them on the
 browser's `WebAssembly` JavaScript API. The polyfill has no backend of its own:
 the host hands one to `Engine::with_backend`. [Backends](backends.md) compares

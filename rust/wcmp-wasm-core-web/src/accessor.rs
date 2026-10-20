@@ -244,13 +244,13 @@ impl Accessor {
     /// This is the copy of a shared memory where the accessor has no
     /// `read`: JavaScript's `TypedArray.set` is not atomic.
     pub fn read_atomic(&self, offset: u64, buffer: &mut [u8]) {
-        let mut words = buffer.chunks_exact_mut(8);
+        let (words, rest) = buffer.as_chunks_mut::<8>();
         let mut at = offset;
-        for word in &mut words {
-            word.copy_from_slice(&self.load64(at).to_le_bytes());
+        for word in words {
+            *word = self.load64(at).to_le_bytes();
             at += 8;
         }
-        for byte in words.into_remainder() {
+        for byte in rest {
             *byte = self.load8(at);
             at += 1;
         }
@@ -262,15 +262,13 @@ impl Accessor {
     /// This is the copy to a shared memory where the accessor has no
     /// `write`.
     pub fn write_atomic(&self, offset: u64, bytes: &[u8]) {
-        let mut words = bytes.chunks_exact(8);
+        let (words, rest) = bytes.as_chunks::<8>();
         let mut at = offset;
-        for word in &mut words {
-            let mut value = [0; 8];
-            value.copy_from_slice(word);
-            self.store64(at, u64::from_le_bytes(value));
+        for word in words {
+            self.store64(at, u64::from_le_bytes(*word));
             at += 8;
         }
-        for byte in words.remainder() {
+        for byte in rest {
             self.store8(at, *byte);
             at += 1;
         }

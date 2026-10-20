@@ -25,7 +25,7 @@ struct Rule {
 }
 
 /// The rules of the `imports` or the `exports` option, with Wasmtime's
-/// matching (`crates/wit-bindgen/src/config.rs` at `v49.0.0-rc.1`).
+/// matching (`crates/wit-bindgen/src/config.rs` at `v50.0.0`).
 ///
 /// The first rule that matches a function applies, and `default`
 /// applies when none does. A rule names a function by its WIT path, as
@@ -76,7 +76,13 @@ impl FunctionConfig {
             FunctionKind::Freestanding
             | FunctionKind::Method(_)
             | FunctionKind::Static(_)
-            | FunctionKind::Constructor(_) => {}
+            | FunctionKind::Constructor(_)
+            | FunctionKind::Getter
+            | FunctionKind::Setter
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticGetter(_)
+            | FunctionKind::StaticSetter(_) => {}
         }
         flags
     }

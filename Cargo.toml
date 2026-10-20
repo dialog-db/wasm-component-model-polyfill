@@ -70,32 +70,33 @@ wasm-bindgen-test = "0.3"
 web-sys = "0.3"
 # Encodes the switch module the polyfill generates for each store. The
 # version is the one `wasmtime-environ` already links, so the graph keeps one.
-wasm-encoder = { version = "0.258", default-features = false, features = ["std"] }
+wasm-encoder = { version = "0.261", default-features = false, features = ["std"] }
 # Reads the canonical section of a test fixture to set the vestigial byte the
 # text format no longer spells. The version is the one `wasmtime-environ`
 # already links, so the graph keeps one.
-wasmparser = { version = "0.258", default-features = false, features = ["std", "component-model"] }
-wast = "259"
+wasmparser = { version = "0.261", default-features = false, features = ["std", "component-model"] }
+wast = "262"
 # The engine of the Wasmi backend of the runtime layer, at the current
 # major version. Nothing else in the graph must agree with it: Wasmi links
 # its own `wasmparser`. The backend turns off the default features, which
 # add the text format to `Module::new`, and names each one it needs.
 wasmi = { version = "2", default-features = false }
-# Wasmtime 49 removed the rule that compiled a fused adapter between a lift
-# and a lower of one component instance to an unconditional trap. 49 is a
-# release candidate on crates.io; the pin moves to the stable release when it
-# publishes.
-wasmtime = "=49.0.0-rc.1"
-wasmtime-environ = { version = "=49.0.0-rc.1", default-features = false, features = ["component-model"] }
+# The polyfill takes its fused adapters, its trampolines, and the start-call
+# protocol from Wasmtime 50, so the floor is 50. The requirements are
+# carets. Wasmtime pins its own crates to each other exactly, so an exact
+# `wasmtime-environ` here keeps a consumer on that one patch release of
+# `wasmtime`.
+wasmtime = "50.0.0"
+wasmtime-environ = { version = "50.0.0", default-features = false, features = ["component-model"] }
 # The WASI imports of the Wasmtime run of the toolchain compatibility
 # scenarios. It moves with `wasmtime`: one Wasmtime runs the scenarios,
 # and it is this workspace's. Only the p2 and p3 interfaces are linked.
-wasmtime-wasi = { version = "=49.0.0-rc.1", default-features = false, features = ["p2", "p3"] }
+wasmtime-wasi = { version = "50.0.0", default-features = false, features = ["p2", "p3"] }
 wat = "1"
 # The WIT parser `wcmp::bindgen!` reads WIT with, at compile time on the
-# build machine. The version is the one Wasmtime 49's generator links, so
+# build machine. The version is the one Wasmtime 50's generator links, so
 # the graph keeps one.
-wit-parser = "0.258"
+wit-parser = "0.261"
 
 [workspace.dependencies.wcmp]
 path = "./rust/wcmp"

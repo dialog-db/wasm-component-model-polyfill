@@ -662,11 +662,6 @@ pub enum TrampolineSpec {
         /// component instance and the memory the payloads are
         /// written through.
         options: CanonOptions,
-        /// The built-in's `cancellable` immediate, which its canon
-        /// options carry: whether it takes a pending cancellation
-        /// request and delivers the task-cancelled event for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
@@ -675,11 +670,6 @@ pub enum TrampolineSpec {
     WaitableSetPoll {
         /// The canon options the built-in declared.
         options: CanonOptions,
-        /// The built-in's `cancellable` immediate, which its canon
-        /// options carry: whether it takes a pending cancellation
-        /// request and delivers the task-cancelled event for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports.
         signature: CoreSignature,
     },
@@ -809,48 +799,33 @@ pub enum TrampolineSpec {
         /// then the caller's own flat arguments.
         signature: CoreSignature,
     },
-    /// The `sync-start-call` intrinsic of a fused adapter whose
-    /// lower is synchronous and whose lift is asynchronous: it runs
-    /// the prepared call and blocks the caller until it resolves.
-    SyncStartCall {
-        /// The runtime callback slot of the callee's lift. `None`
-        /// for the stackful form of `canon lift async`, which names
-        /// none.
+    /// The `start-call` intrinsic of a fused adapter whose call is not
+    /// sync on every side: it runs the prepared call. An async caller
+    /// gets the status word, and a sync caller blocks until the call
+    /// resolves and gets its flat results. The flag word that the
+    /// adapter passes at the call says which caller it is and whether
+    /// the callee's lift is async.
+    StartCall {
+        /// The runtime callback slot of an async-lifted callee. `None`
+        /// for a sync-lifted one, and for the stackful form, which
+        /// the adapter tells apart only by the flag word.
         callback: Option<usize>,
-        /// The core signature the adapter imports: the callee's
-        /// `funcref` and its flat parameter count in, and the
-        /// caller's flat results out.
-        signature: CoreSignature,
-    },
-    /// The `async-start-call` intrinsic of a fused adapter whose
-    /// lower is asynchronous: it runs the prepared call and answers
-    /// with the status word, so the caller gets control back before
-    /// the callee necessarily returns.
-    AsyncStartCall {
-        /// The runtime callback slot of an asynchronously lifted
-        /// callee. `None` for a synchronously lifted one, and for
-        /// the stackful form, which the adapter distinguishes only
-        /// by the flag word it passes at the call.
-        callback: Option<usize>,
-        /// The runtime post-return slot of a synchronously lifted
-        /// callee, which runs once its results have crossed. `None`
-        /// when the callee's lift declared none.
+        /// The runtime post-return slot of a sync-lifted callee, which
+        /// runs once its results have crossed. `None` when the
+        /// callee's lift declared none.
         post_return: Option<usize>,
         /// The core signature the adapter imports: the callee's
         /// `funcref`, its flat parameter and result counts, and the
-        /// flag word in; the status word out.
+        /// flag word in. The status word comes out for an async
+        /// caller, and the caller's flat results for a sync one.
         signature: CoreSignature,
     },
     /// The `thread.yield` built-in: the calling thread gives way to
     /// the work the store already holds, and the built-in returns
-    /// zero, or 1 for a pending request it took.
+    /// zero.
     ThreadYield {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: no parameters and
         /// one `i32` result.
         signature: CoreSignature,
@@ -888,15 +863,10 @@ pub enum TrampolineSpec {
         signature: CoreSignature,
     },
     /// The `thread.suspend` built-in: the calling thread suspends
-    /// until a resume names it, and the built-in returns zero, or 1
-    /// for a pending request it took.
+    /// until a resume names it, and the built-in returns zero.
     ThreadSuspend {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: no parameters and
         /// one `i32` result.
         signature: CoreSignature,
@@ -906,10 +876,6 @@ pub enum TrampolineSpec {
     ThreadSuspendThenResume {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -919,10 +885,6 @@ pub enum TrampolineSpec {
     ThreadYieldThenResume {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -933,10 +895,6 @@ pub enum TrampolineSpec {
     ThreadSuspendThenPromote {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,
@@ -947,10 +905,6 @@ pub enum TrampolineSpec {
     ThreadYieldThenPromote {
         /// The component instance that calls the built-in.
         instance: usize,
-        /// The built-in's `cancellable` immediate: whether it takes a
-        /// pending cancellation request and answers 1 for it, as
-        /// Wasmtime 49 does.
-        cancellable: bool,
         /// The core signature the guest imports: the thread's index
         /// in and one `i32` result.
         signature: CoreSignature,

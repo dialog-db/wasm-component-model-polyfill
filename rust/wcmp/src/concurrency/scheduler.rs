@@ -478,19 +478,6 @@ impl<T: 'static> Scheduler<T> {
         Some((parked.task, parked.number))
     }
 
-    /// The task of the parked `thread` and the number of the
-    /// suspension it is parked in, for a resumption that runs it out
-    /// of turn. `None` when the thread is not parked, or when a plan
-    /// it left holds it. A resumption a turn queued for it already is
-    /// spent once this one runs.
-    pub fn resumption_of(&self, thread: ThreadId) -> Option<(TaskId, u64)> {
-        let parked = self.parked.get(&thread)?;
-        if parked.held {
-            return None;
-        }
-        Some((parked.task, parked.number))
-    }
-
     /// The number of the suspension `thread` is parked in, when it is
     /// parked.
     pub fn parked_number(&self, thread: ThreadId) -> Option<u64> {
@@ -907,12 +894,13 @@ impl<T: 'static> Scheduler<T> {
     ///
     /// This is the whole of the polyfill's reentrance rule, because
     /// the gate is the only thing a call into an instance that is
-    /// already on the stack meets. No call traps for reentrance: the
-    /// gate never raises `CannotEnterComponent`, and the fused
-    /// adapters of Wasmtime 49 emit none either, for a call between
-    /// a parent and a child or into the caller's own instance. The
-    /// one place the polyfill raises it is a host entry into a store
-    /// a trap poisoned, and that entry is refused before it creates a
+    /// already on the stack meets. The gate never raises
+    /// `CannotEnterComponent`, and the fused adapters of Wasmtime 50
+    /// raise it for one call only: a call into the caller's own
+    /// instance, whose adapter Wasmtime compiles to that trap. A call
+    /// between a parent and a child does not trap. The one place the
+    /// polyfill itself raises the cause is a host entry into a store a
+    /// trap poisoned, and that entry is refused before it creates a
     /// task, so it never reaches the gate. The five rules the gate
     /// carries:
     ///
@@ -1497,10 +1485,10 @@ impl<T: 'static> Scheduler<T> {
         task: TaskId,
     ) -> Vec<(ThreadId, ParkedThread<T>, Option<PendingBlock<T>>)> {
         let names_task = |item: &Item<T>| item.task() == Some(task);
-        if self.switch_slot.as_ref().is_some_and(&names_task) {
+        if self.switch_slot.as_ref().is_some_and(names_task) {
             self.switch_slot = None;
         }
-        if self.resume_after_yield.as_ref().is_some_and(&names_task) {
+        if self.resume_after_yield.as_ref().is_some_and(names_task) {
             self.resume_after_yield = None;
         }
         self.high_priority.retain(|item| !names_task(item));

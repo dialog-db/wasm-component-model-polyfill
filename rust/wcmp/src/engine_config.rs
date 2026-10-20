@@ -43,13 +43,31 @@ pub struct EngineConfig {
     suspend_provider: bool,
 }
 
+/// The features a default configuration selects, named one by one.
+///
+/// The set does not follow `WasmFeatures::default()`, because
+/// `wasmparser` changes its own defaults between releases: 0.259 turned
+/// on `implements`, which Wasmtime keeps off. Wasmtime builds its
+/// defaults from an explicit base too. The core features here are the
+/// ones `wasmparser` 0.258 turned on by default. The translator replaces
+/// each one that a backend can declare with what the backend declares.
+const DEFAULT_FEATURES: WasmFeatures = WasmFeatures::WASM3
+    .union(WasmFeatures::GC_TYPES)
+    .union(WasmFeatures::FLOATS)
+    .union(WasmFeatures::WIDE_ARITHMETIC)
+    .union(WasmFeatures::CALL_INDIRECT_OVERLONG)
+    .union(WasmFeatures::BULK_MEMORY_OPT)
+    .union(WasmFeatures::COMPACT_IMPORTS)
+    .union(WasmFeatures::COMPONENT_MODEL)
+    .union(WasmFeatures::CM_ASYNC)
+    .union(WasmFeatures::CM_MAP)
+    .union(WasmFeatures::CM_FIXED_LENGTH_LISTS)
+    .union(WasmFeatures::CM64);
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            features: WasmFeatures::default()
-                | WasmFeatures::CM_MAP
-                | WasmFeatures::CM_FIXED_LENGTH_LISTS
-                | WasmFeatures::CM64,
+            features: DEFAULT_FEATURES,
             suspend_provider: true,
         }
     }
@@ -114,6 +132,18 @@ impl EngineConfig {
     /// built-ins. Off by default, as in Wasmtime.
     pub fn wasm_component_model_more_async_builtins(&mut self, enable: bool) -> &mut Self {
         self.set(WasmFeatures::CM_MORE_ASYNC_BUILTINS, enable)
+    }
+
+    /// Accept the names that the canonical-names proposal gives core
+    /// built-ins. Off by default, as in Wasmtime.
+    pub fn wasm_component_model_canonical_names(&mut self, enable: bool) -> &mut Self {
+        self.set(WasmFeatures::CM_CANON_NAMES, enable)
+    }
+
+    /// Accept getter and setter functions (`[get]` and `[set]` names).
+    /// Off by default, as in Wasmtime.
+    pub fn wasm_component_model_accessors(&mut self, enable: bool) -> &mut Self {
+        self.set(WasmFeatures::CM_ACCESSORS, enable)
     }
 
     /// Let the engine select a suspend provider. On by default.

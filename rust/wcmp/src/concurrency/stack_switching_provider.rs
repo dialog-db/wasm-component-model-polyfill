@@ -66,7 +66,7 @@ type Compiled = Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>;
 /// never resumed in the later thread's place.
 ///
 /// The provider works on any engine that implements the proposal.
-/// Wasmtime 49 implements it on x86_64 Linux. No browser ships it.
+/// Wasmtime 50 implements it on x86_64 Linux. No browser ships it.
 ///
 /// The provider holds handles to the modules' functions and nothing
 /// that borrows the store. The store keeps it for its whole life, and

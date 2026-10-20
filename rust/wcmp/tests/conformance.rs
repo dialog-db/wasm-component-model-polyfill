@@ -1386,6 +1386,8 @@ fn engine_config(path: &str, text: &str) -> EngineConfig {
     if path.starts_with("cm/") {
         config
             .wasm_component_model_implements(true)
+            .wasm_component_model_canonical_names(true)
+            .wasm_component_model_accessors(true)
             .wasm_component_model_more_async_builtins(true)
             .wasm_component_model_async_stackful(true)
             .wasm_component_model_threading(true);
@@ -1415,6 +1417,10 @@ fn engine_config(path: &str, text: &str) -> EngineConfig {
             "component_model_more_async_builtins" => {
                 config.wasm_component_model_more_async_builtins(enable)
             }
+            "component_model_canonical_names" => {
+                config.wasm_component_model_canonical_names(enable)
+            }
+            "component_model_accessors" => config.wasm_component_model_accessors(enable),
             _ => &mut config,
         };
     }

@@ -40,11 +40,11 @@
 //! - The two context slots of the current thread, which an adapter
 //!   saves and restores around the callee.
 //!
-//! An adapter whose lower or lift is asynchronous imports two more:
-//! the prepare intrinsic of [`super::prepare_call`] and one of the
-//! start intrinsics, of which [`super::sync_start_call`] is the
-//! synchronous one. They are large enough to have modules of their
-//! own, and they are the only intrinsics that take a `funcref`.
+//! An adapter whose call is not sync on every side imports two more:
+//! the prepare intrinsic of [`super::prepare_call`] and the start
+//! intrinsic of [`super::start_call_intrinsic`]. They are large enough
+//! to have modules of their own, and they are the only intrinsics that
+//! take a `funcref`.
 //!
 //! A guest module imports two more host functions here without an
 //! adapter in between: the `backpressure.inc` and `backpressure.dec`
@@ -190,9 +190,9 @@ pub fn build_trap<T: 'static>(
     )
 }
 
-/// Build the `enter-sync-call` intrinsic. The adapter passes the
-/// caller instance, whether the callee is asynchronous, and the
-/// callee instance. A synchronous call between two components is a
+/// Build the `enter-sync-call` intrinsic. The adapter passes whether
+/// the callee is asynchronous and the callee instance. A synchronous
+/// call between two components is a
 /// task with one thread, so the intrinsic pushes the callee's task
 /// on the store's stack of current scopes.
 pub fn build_enter_sync_call<T: 'static>(
@@ -212,16 +212,15 @@ pub fn build_enter_sync_call<T: 'static>(
 }
 
 /// The callee of an `enter-sync-call` and whether it is
-/// asynchronous. The adapter passes the caller instance, then
-/// whether the callee is asynchronous, then the callee instance;
-/// only the last two are read, because the task the intrinsic pushes
-/// and the instance it flags are the callee's.
+/// asynchronous. The adapter passes whether the callee is
+/// asynchronous, then the callee instance. The task that the
+/// intrinsic pushes and the instance that it flags are the callee's.
 fn enter_sync_call_arguments(
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     args: &[RuntimeVal],
 ) -> anyhow::Result<(InstanceId, bool)> {
-    let callee_async = arg_u32(args, 1)? != 0;
-    let callee = instance_at(abi_state, arg_u32(args, 2)?)?;
+    let callee_async = arg_u32(args, 0)? != 0;
+    let callee = instance_at(abi_state, arg_u32(args, 1)?)?;
     Ok((callee, callee_async))
 }
 
@@ -1007,10 +1006,10 @@ mod tests {
     }
 
     #[wcmp_macros::test]
-    fn it_takes_the_callee_of_an_enter_from_the_third_adapter_argument() {
+    fn it_takes_the_callee_of_an_enter_from_the_second_adapter_argument() {
         let mut tables = HandleTables::new();
-        let caller = tables.tasks.insert_instance();
-        let callee = tables.tasks.insert_instance();
+        let first = tables.tasks.insert_instance();
+        let second = tables.tasks.insert_instance();
         let abi_state = Arc::new(Mutex::new(AbiRuntimeState {
             memories: Vec::new(),
             reallocs: Vec::new(),
@@ -1018,34 +1017,29 @@ mod tests {
             callbacks: Vec::new(),
             thread_start_tables: Vec::new(),
             resource_tables: Arc::from([]),
-            component_instances: vec![caller, callee],
+            component_instances: vec![first, second],
             handle_tables: Vec::new(),
             instance_flags: Vec::new(),
         }));
 
-        // The adapter passes the caller instance, whether the callee
-        // is asynchronous, and the callee instance, in that order.
-        let (named, callee_async) = enter_sync_call_arguments(
-            &abi_state,
-            &[RuntimeVal::I32(0), RuntimeVal::I32(0), RuntimeVal::I32(1)],
-        )
-        .expect("the arguments decode");
-        assert_eq!(named, callee, "the third argument names the callee");
-        assert_ne!(named, caller, "not the first, which names the caller");
-        assert!(!callee_async, "the second argument is clear");
+        // The adapter passes whether the callee is asynchronous, then
+        // the callee instance, in that order.
+        let (named, callee_async) =
+            enter_sync_call_arguments(&abi_state, &[RuntimeVal::I32(0), RuntimeVal::I32(1)])
+                .expect("the arguments decode");
+        assert_eq!(named, second, "the second argument names the callee");
+        assert!(!callee_async, "the first argument is clear");
 
-        let (named, callee_async) = enter_sync_call_arguments(
-            &abi_state,
-            &[RuntimeVal::I32(1), RuntimeVal::I32(1), RuntimeVal::I32(0)],
-        )
-        .expect("the arguments decode");
+        let (named, callee_async) =
+            enter_sync_call_arguments(&abi_state, &[RuntimeVal::I32(1), RuntimeVal::I32(0)])
+                .expect("the arguments decode");
         assert_eq!(
-            named, caller,
-            "the two instances swap when the third argument does"
+            named, first,
+            "the callee changes when the second argument does"
         );
         assert!(
             callee_async,
-            "the second argument says the callee is asynchronous"
+            "the first argument says the callee is asynchronous"
         );
     }
 

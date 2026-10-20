@@ -9,7 +9,7 @@
 //!
 //! A synchronous lower of an asynchronously lifted export goes
 //! through a fused adapter, and the adapter reaches the callee
-//! through the `sync-start-call` intrinsic. That intrinsic names no
+//! through the `start-call` intrinsic. That intrinsic names no
 //! component instance, only the callee's callback, so the translator
 //! makes one host function of it for every caller of that callee.
 //! When the callee parks and no suspend provider is filled, the
@@ -55,7 +55,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 /// synchronous lower, logs one higher, and answers with what `work`
 /// returned. The outer component instantiates it twice over the same
 /// `work` and exports the two `run`s as `first` and `second`. Both
-/// adapters reach the callee through the one `sync-start-call`
+/// adapters reach the callee through the one `start-call`
 /// intrinsic its callback names.
 const TWO_CALLERS_OF_ONE_CALLEE: &[u8] = component!(
     r#"
@@ -191,7 +191,7 @@ type Outcome = (Result<Box<[Val]>>, Result<Box<[Val]>>, Vec<u32>);
 /// `second` with 10 at once, and hand back the [`Outcome`].
 ///
 /// The host `answer` doubles its argument, one poll late. The first
-/// call blocks in `sync-start-call`, and the nested turn its block
+/// call blocks in `start-call`, and the nested turn its block
 /// opens runs the second call's start, so the second call reaches
 /// that intrinsic while the first call's block is still on the stack.
 ///
@@ -268,13 +268,13 @@ async fn two_callers() -> Outcome {
     (first, second, entries)
 }
 
-/// What the two calls answer: the second call's `sync-start-call`
+/// What the two calls answer: the second call's `start-call`
 /// opens a nested turn of its own, which completes its callee's host
 /// call, and both calls return.
 ///
 /// Under a suspend provider neither call opens a nested turn. Each
 /// caller's thread runs on a stack of its own and suspends in its
-/// `sync-start-call` until its callee returns, so the second call
+/// `start-call` until its callee returns, so the second call
 /// starts while the first is suspended, and each caller logs its
 /// second entry once its own callee has answered.
 #[wcmp_macros::test]
@@ -293,7 +293,7 @@ async fn it_runs_two_callers_that_synchronously_lower_one_async_export() {
     assert_eq!(
         second.expect("the second call resolves").as_ref(),
         [Val::U32(20)],
-        "both backends call `sync-start-call` while a call of it is \
+        "both backends call `start-call` while a call of it is \
          still on the stack, so the second caller's lower returned as well"
     );
     if provider {

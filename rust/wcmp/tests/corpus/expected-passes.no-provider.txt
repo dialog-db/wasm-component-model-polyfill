@@ -7,4 +7,4 @@
 # directive one of those two lists names. `tests regenerate` neither
 # reads nor writes this list, so a line is written and removed by
 # hand.
-wasmtime/thread-transparency/reentrancy.wast:114 without a provider the thread runs in a nested turn on the caller's stack, so its trap reaches the caller whole; the web delta's line is the host-suspension provider's
+wasmtime/thread-transparency/reentrancy.wast:114 without a provider the second thread runs in a nested turn above the blocked synchronous call, reenters `$Mid`, and reaches the `unreachable` that the vendored copy expects. With a provider, and in Wasmtime 50, the call traps with the cannot-block cause first. Card fdb910 makes the nested turn follow that rule.

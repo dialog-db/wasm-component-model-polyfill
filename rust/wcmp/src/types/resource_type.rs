@@ -8,7 +8,7 @@
 //!
 //! A resource type is told from every other by its identity alone,
 //! as in Wasmtime (`crates/wasmtime/src/runtime/component/resources/ty.rs`
-//! at `v49.0.0-rc.1`). Two resource types that a component names the
+//! at `v50.0.0`). Two resource types that a component names the
 //! same way are different types when their identities differ, and the
 //! identity carries no name: an error names a resource by the name the
 //! component declares where the error is.

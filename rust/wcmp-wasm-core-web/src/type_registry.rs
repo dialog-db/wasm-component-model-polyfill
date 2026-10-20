@@ -126,8 +126,8 @@ impl Shape<'_> {
 
     fn sub_type(&mut self, ty: &SubType) {
         self.word(if ty.is_final { "(final" } else { "(sub" });
-        if let Some(supertype) = ty.supertype_idx {
-            self.packed(supertype);
+        for supertype in &ty.supertype_idxs {
+            self.packed(*supertype);
         }
         let composite = &ty.composite_type;
         if composite.shared {

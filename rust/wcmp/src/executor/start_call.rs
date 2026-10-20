@@ -4,10 +4,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! What the two start intrinsics of a fused adapter share.
+//! What the start intrinsic of a fused adapter runs.
 //!
 //! The prepare intrinsic of [`super::prepare_call`] leaves one
-//! prepared call in the store. A start intrinsic takes it out,
+//! prepared call in the store. The start intrinsic takes it out,
 //! builds the item that starts the callee's implicit thread, puts
 //! that item in the scheduler's switch slot, and enters the thread
 //! through the entry gate. A callee the gate lets through keeps the
@@ -16,13 +16,12 @@
 //! arrival order. That is the reference resuming the callee's thread
 //! before the lower returns.
 //!
-//! [`Prepared`] is that call, from the moment a start intrinsic
-//! takes it to the moment its item is queued. The two intrinsics
-//! differ in what they do afterwards — a synchronous lower blocks
-//! for the callee's result, an asynchronous one answers with the
-//! status word — and in how the item reports a failure, which is
-//! what [`Prepared::item`] and
-//! [`Prepared::item_reporting_to`] name.
+//! [`Prepared`] is that call, from the moment the start intrinsic
+//! takes it to the moment its item is queued. The two callers differ
+//! in what happens afterwards. A sync lower blocks for the callee's
+//! result, and an async one answers with the status word. They also
+//! differ in how the item reports a failure, which is what
+//! [`Prepared::item`] and [`Prepared::item_reporting_to`] name.
 //!
 //! What the item does is the same for both:
 //!
@@ -46,7 +45,7 @@
 //! A trap in the callee, or a failure of either generated function,
 //! ends the call: the subtask's resolution is a cancellation, which
 //! gives back every handle the caller lent, and the failure travels
-//! to whichever of the two intrinsics is waiting for it.
+//! to the start intrinsic, which is waiting for it.
 //!
 //! The handles come back with the cancellation because the lends
 //! the start function recorded are on the subtask, which is the

@@ -7,7 +7,7 @@
 //! The codegen corpus: `wcmp::bindgen!` over each entry of the WIT files
 //! Wasmtime's macro tests use, at the pinned version
 //! (`wasmtime/codegen/`, from `crates/component-macro/tests/codegen.rs`
-//! at `v49.0.0-rc.1`).
+//! at `v50.0.0`).
 //!
 //! Each entry generates under each set of options that compiles, on
 //! both targets, which this file is built for. The sets that the

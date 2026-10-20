@@ -42,20 +42,9 @@
 //! the suspension went, so a set is never left naming a waiter that
 //! is no longer there.
 //!
-//! `waitable-set.wait` and `waitable-set.poll` can carry the
-//! `cancellable` immediate. The reference removed it, but Wasmtime 49
-//! still reads it and honors it, and the C generator of wit-bindgen
-//! still emits it, so the polyfill honors it as Wasmtime does. A
-//! cancellable built-in first takes a cancellation request pending for
-//! the calling thread's task, and delivers the task-cancelled event
-//! (6), with both payloads zero, in place of anything the set holds;
-//! the set keeps its event for the next wait. A cancellable wait that
-//! blocks also ends when a request arrives, and delivers that event
-//! then: `subtask.cancel` wakes the thread and gives way to it when it
-//! is suspended in the provider, and a nested turn ends once work it
-//! ran made the request. Taking the request moves the task to
-//! cancel-delivered. A built-in without the immediate never takes a
-//! request.
+//! Neither built-in takes a pending cancellation request. Only a
+//! callback receives the task-cancelled event, as the reference and
+//! Wasmtime say.
 
 use std::sync::{Arc, Mutex};
 
@@ -107,18 +96,16 @@ pub fn build_waitable_set_new<T: 'static>(
 /// Build the `waitable-set.wait` built-in. The guest passes the set
 /// index and a pointer, and receives the code of the event the set
 /// delivered; the event's two payloads are written at the pointer.
-/// `cancellable` is the built-in's `cancellable` immediate.
 pub fn build_waitable_set_wait<T: 'static>(
     store: &mut StoreContext<'_, T>,
     options: &CanonOptions,
-    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> BlockingBuiltin<T> {
     let tables = store.internal().tables_handle();
     let options = Arc::new(options.clone());
     BlockingBuiltin::new(core_func_type(signature), move |store, args| {
-        begin_waitable_set_wait(store, &options, cancellable, &abi_state, &tables, args)
+        begin_waitable_set_wait(store, &options, &abi_state, &tables, args)
     })
 }
 
@@ -129,7 +116,6 @@ pub fn build_waitable_set_wait<T: 'static>(
 pub fn build_waitable_set_poll<T: 'static>(
     store: &mut StoreContext<'_, T>,
     options: &CanonOptions,
-    cancellable: bool,
     signature: &CoreSignature,
     abi_state: Arc<Mutex<AbiRuntimeState>>,
 ) -> crate::error::Result<RuntimeFunc> {
@@ -139,15 +125,7 @@ pub fn build_waitable_set_poll<T: 'static>(
         store.internal().runtime_mut(),
         core_func_type(signature),
         move |store_ctx, args, results| {
-            waitable_set_poll(
-                store_ctx,
-                &options,
-                cancellable,
-                &abi_state,
-                &tables,
-                args,
-                results,
-            )
+            waitable_set_poll(store_ctx, &options, &abi_state, &tables, args, results)
         },
     )
 }
@@ -268,16 +246,10 @@ pub fn build_subtask_drop<T: 'static>(
 /// the set's record whichever way the wait went, so a set is never
 /// left naming a waiter that is no longer there, and delivers the
 /// event.
-///
-/// A cancellable wait takes a pending cancellation request first, and
-/// delivers the task-cancelled event in its place, before it looks at
-/// the set. One that parks waits on the set or on a request, and takes
-/// a request that ended its wait in place of the set's event.
 #[tracing::instrument(level = "trace", name = "waitable-set.wait", skip_all)]
 fn begin_waitable_set_wait<T: 'static>(
     store: &mut StoreContext<'_, T>,
     options: &Arc<CanonOptions>,
-    cancellable: bool,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
@@ -291,14 +263,11 @@ fn begin_waitable_set_wait<T: 'static>(
         let mut guard = lock_tables(tables)?;
         let set = set_at(&guard, table, set_index)?;
         let thread = current_thread(&guard)?;
-        let readiness = wait_readiness(&guard, set, thread, cancellable)?;
-        // A pending request comes first for a cancellable wait. A set
-        // that already holds an event delivers it here and the
-        // thread does not block; otherwise the thread is parked on
+        let readiness = Readiness::WaitableSet { set };
+        // A set that already holds an event delivers it here and the
+        // thread does not block. Otherwise the thread is parked on
         // the set and the wait is what gives way.
-        let delivered = if cancellable && guard.tasks.take_pending_cancel_of(thread) {
-            Some(Event::task_cancelled())
-        } else if guard.tasks.set_has_pending_event(set).map_err(trap)? {
+        let delivered = if guard.tasks.set_has_pending_event(set).map_err(trap)? {
             Some(guard.poll_waitable_set(set).map_err(trap)?)
         } else {
             guard
@@ -321,41 +290,16 @@ fn begin_waitable_set_wait<T: 'static>(
         move |store: &mut StoreContext<'_, T>, waited| {
             let ended = {
                 let mut guard = lock_tables(&tables)?;
-                guard.tasks.end_wait(set, thread).and_then(|()| {
-                    // A request that ended the wait comes before the
-                    // set's event, which the set keeps.
-                    if cancellable && waited.is_ok() && guard.tasks.take_pending_cancel_of(thread) {
-                        Ok(Event::task_cancelled())
-                    } else {
-                        guard.poll_waitable_set(set)
-                    }
-                })
+                guard
+                    .tasks
+                    .end_wait(set, thread)
+                    .and_then(|()| guard.poll_waitable_set(set))
             };
             waited.map_err(trap)?;
             let event = ended.map_err(trap)?;
             deliver_event(store, &options, &abi_state, &tables, pointer, event)
         },
     ))
-}
-
-/// The condition a wait on `set` by `thread` parks on: an event on
-/// the set, or, for a cancellable wait, a cancellation request to the
-/// thread's task as well.
-fn wait_readiness(
-    tables: &HandleTables,
-    set: WaitableSetId,
-    thread: ThreadId,
-    cancellable: bool,
-) -> anyhow::Result<Readiness> {
-    if !cancellable {
-        return Ok(Readiness::WaitableSet { set });
-    }
-    let task = tables
-        .tasks
-        .thread(thread)
-        .map(|record| record.task)
-        .ok_or_else(|| anyhow!("a waitable set built-in ran on a thread with no record"))?;
-    Ok(Readiness::WaitableSetOrCancel { set, task })
 }
 
 /// Deliver `event` to the guest: its payloads at `pointer`, and its
@@ -385,7 +329,6 @@ fn deliver_event<T: 'static>(
 fn waitable_set_poll<T: 'static>(
     mut store_ctx: RuntimeContextMut<'_, StoreData<T>>,
     options: &Arc<CanonOptions>,
-    cancellable: bool,
     abi_state: &Arc<Mutex<AbiRuntimeState>>,
     tables: &Arc<Mutex<HandleTables>>,
     args: &[RuntimeVal],
@@ -396,25 +339,13 @@ fn waitable_set_poll<T: 'static>(
     let (id, table) = calling_instance(abi_state, options.instance)?;
     trap_if_cannot_leave(abi_state, id, &mut store_ctx)?;
 
-    // A pending request comes first for a cancellable poll, and the
-    // set keeps its event. Otherwise the set answers: the event of
-    // the waitable that joined it earliest among those that hold one,
-    // or the none event, whose two payloads are zero, when it holds
-    // none.
+    // The set answers: the event of the waitable that joined it
+    // earliest among those that hold one, or the none event, whose two
+    // payloads are zero, when it holds none.
     let event = {
         let mut guard = lock_tables(tables)?;
         let set = set_at(&guard, table, set_index)?;
-        let cancelled = if cancellable {
-            let thread = current_thread(&guard)?;
-            guard.tasks.take_pending_cancel_of(thread)
-        } else {
-            false
-        };
-        if cancelled {
-            Event::task_cancelled()
-        } else {
-            guard.poll_waitable_set(set).map_err(trap)?
-        }
+        guard.poll_waitable_set(set).map_err(trap)?
     };
 
     // The none event is written at the pointer the way a delivered

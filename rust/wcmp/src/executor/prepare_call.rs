@@ -6,12 +6,12 @@
 
 //! The `prepare-call` intrinsic of a fused adapter.
 //!
-//! With the fused adapter compiler of Wasmtime 49, a call between
-//! two components takes one of two paths. When the lower and the
-//! lift are both synchronous, the adapter calls the enter and exit
-//! intrinsics and nothing else. When either is asynchronous, the
-//! adapter calls this intrinsic and then one of the two start
-//! intrinsics.
+//! With the fused adapter compiler of Wasmtime 50, a call between
+//! two components takes one of two paths. When the lower, the lift,
+//! and the function type are all sync, the adapter calls the enter
+//! and exit intrinsics and nothing else, or nothing at all for a
+//! thread-transparent adapter. Otherwise the adapter calls this
+//! intrinsic and then the start intrinsic.
 //!
 //! Prepare creates the records the call runs on and returns nothing.
 //! It creates the callee's task, with the lift options the adapter

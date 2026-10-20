@@ -10,7 +10,7 @@ use core::ops::{BitOr, BitOrAssign};
 
 /// The set of flags the `imports` and `exports` options give one
 /// function: Wasmtime's six (`crates/wit-bindgen/src/config.rs` at
-/// `v49.0.0-rc.1`).
+/// `v50.0.0`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FunctionFlags(u8);
 

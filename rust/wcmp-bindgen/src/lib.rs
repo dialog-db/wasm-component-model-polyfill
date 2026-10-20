@@ -13,7 +13,7 @@
 //! is the polyfill's own generator over `wit-parser`, and it runs at
 //! compile time on the build machine, so no browser binary contains
 //! the parser. Wasmtime's generator, `crates/wit-bindgen` at
-//! `v49.0.0-rc.1`, is the reference for its structure and its names.
+//! `v50.0.0`, is the reference for its structure and its names.
 //!
 //! See the polyfill's documentation of `wcmp::bindgen!` for the
 //! invocation forms, the options, and the code the macro writes.
@@ -173,7 +173,7 @@ pub fn bindgen(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 fn expand(input: TokenStream, root: &Path) -> syn::Result<TokenStream> {
     let options: Options = syn::parse2(input)?;
     let config = Config::new(options, root)?;
-    let code = Generator::new(&config).generate()?;
+    let code = Generator::new(&config)?.generate()?;
 
     if config.options.stringify {
         let text = code.to_string();

@@ -24,18 +24,12 @@
 //!   caller drops the subtask.
 //! - A started callee's task becomes pending-cancel, and learns of
 //!   the request once, at the next point its callback loop consults
-//!   it, as [`CallbackTask`](crate::executor::CallbackTask) states, or
-//!   at the next built-in it calls that carries the `cancellable`
-//!   immediate. A thread that can take the request at once is woken,
-//!   and the built-in gives way to it, from inside its own frame, as
-//!   Wasmtime wakes the first thread that can take the request: a
-//!   callback task waiting in its loop, or, among the task's threads
-//!   suspended in the provider, one in a cancellable
-//!   `waitable-set.wait` or a cancellable yield. A thread in a
-//!   cancellable suspension is not woken, and neither is a cancellable
-//!   wait whose set already holds an event, which runs in its turn. A
-//!   stackful task that calls no cancellable built-in is never told,
-//!   and the cancel waits until it resolves on its own.
+//!   it, as [`CallbackTask`](crate::executor::CallbackTask) states. A
+//!   callback task waiting in its loop takes the request at once: it
+//!   is woken, and the built-in gives way to it from inside its own
+//!   frame, as Wasmtime wakes it. No built-in takes a request, so a
+//!   stackful task is never told, and the cancel waits until it
+//!   resolves on its own.
 //!
 //! When the callee has not resolved by then, an asynchronous cancel
 //! answers `BLOCKED`, and the caller waits for the subtask event. It
@@ -100,7 +94,7 @@ use anyhow::anyhow;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::concurrency::{
     BlockStep, BlockingBuiltin, InstanceId, LowerKind, Readiness, SubtaskId, SuspendSeam, TaskId,
-    TaskState, ThreadId,
+    TaskState,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, TaskCause, WaitableCause};
 use crate::executor::intrinsics::core_func_type;
@@ -233,9 +227,8 @@ fn begin_subtask_cancel<T: 'static>(
     };
 
     // The callee took the request at once, so the cancel gives way to
-    // it here: the woken callback, or the thread resumed from its
-    // cancellable wait or yield, runs above this frame, and the cancel
-    // goes on once it returns or suspends.
+    // it here: the woken callback runs above this frame, and the
+    // cancel goes on once it returns or suspends.
     let lower = if async_ {
         LowerKind::Async
     } else {
@@ -326,28 +319,16 @@ fn claim(
 /// subtask resolves to `CANCELLED_BEFORE_STARTED`. A started task
 /// becomes pending-cancel. A task that resolved is left alone.
 ///
-/// The thread woken is the first of the task's threads that can take
-/// the request, in the order Wasmtime tries them: a callback task
-/// waiting in its loop on a set that holds no event yet, then a thread
-/// suspended in the provider in a cancellable `waitable-set.wait`
-/// whose set holds no event yet, or in a cancellable yield. A thread
-/// that blocks on the real stack lies below this frame and cannot run
-/// from here; a request ends its cancellable wait all the same once
-/// control goes back to it.
-///
-/// Wasmtime takes a waiter out of the cancel's reach for good when an
-/// event of its set is handed to it (`mark_ready`, which clears the
-/// thread's `wake_on_cancel`, in
+/// The task wakes when it is a callback task waiting in its loop on a
+/// set that holds no event yet. Wasmtime takes a waiter out of the
+/// cancel's reach for good when an event of its set is handed to it
+/// (`mark_ready`, which clears the thread's `wake_on_cancel`, in
 /// `crates/wasmtime/src/runtime/component/concurrent.rs` at
-/// `v49.0.0-rc.1`). The polyfill reads the same thing off the set at
-/// the moment of the cancel: a waiter whose set holds an event is out
-/// of reach. The two differ in two cases, which the polyfill leaves
-/// as departures. When two threads wait cancellably on one set and
-/// an event arrives, Wasmtime hands it to the first and can still wake
-/// the second, where the polyfill wakes neither while the event is
-/// pending. When the event leaves the set before the waiter runs,
+/// `v50.0.0`). The polyfill reads the same thing off the set at the
+/// moment of the cancel: a waiter whose set holds an event is out of
+/// reach. When the event leaves the set before the waiter runs,
 /// Wasmtime keeps the waiter out of reach, where the polyfill can wake
-/// it again. Matching them needs a mark per waiter, set as the wait
+/// it again. Matching that needs a mark per waiter, set as the wait
 /// begins and cleared when a turn hands it an event.
 fn request_cancellation<T: 'static>(
     store: &mut StoreContext<'_, T>,
@@ -355,21 +336,14 @@ fn request_cancellation<T: 'static>(
     task: TaskId,
 ) -> crate::error::Result<Option<InstanceId>> {
     let tables = store.internal().tables_handle();
-    let (state, thread, threads, instance) = {
+    let (state, thread, instance) = {
         let mut guard = lock(&tables)?;
         let state = guard.tasks.request_cancellation(task);
         let record = guard
             .tasks
             .task(task)
             .ok_or_else(|| Error::internal("a subtask's callee task is not in the store"))?;
-        let (thread, instance) = (record.implicit_thread, record.instance);
-        let threads: Vec<ThreadId> = record
-            .threads
-            .iter()
-            .copied()
-            .filter(|thread| guard.tasks.takes_cancel_at_once(*thread))
-            .collect();
-        (state, thread, threads, instance)
+        (state, record.implicit_thread, record.instance)
     };
     match state {
         Some(TaskState::Initial) => {
@@ -400,15 +374,6 @@ fn request_cancellation<T: 'static>(
                 None
             };
             let Some((set, slot, item)) = taken else {
-                // A thread in a cancellable wait or yield, suspended in
-                // the provider, resumes next. Its wait's condition
-                // holds now that a request is pending, and the
-                // built-in takes the request as the thread resumes.
-                for thread in threads {
-                    if store.internal().switch_to_parked_thread(thread)? {
-                        return Ok(instance);
-                    }
-                }
                 return Ok(None);
             };
             {

@@ -25,7 +25,7 @@ pub enum Entry {
     Refused(&'static str),
 }
 
-/// Each option Wasmtime's macro parses at `v49.0.0-rc.1`
+/// Each option Wasmtime's macro parses at `v50.0.0`
 /// (`crates/component-macro/src/bindgen.rs`), by its keyword.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const OPTIONS: &[(&str, Entry)] = &[
@@ -56,7 +56,7 @@ pub const OPTIONS: &[(&str, Entry)] = &[
 ];
 
 /// Each flag Wasmtime's `imports` and `exports` options give a function
-/// at `v49.0.0-rc.1` (`crates/wit-bindgen/src/config.rs`), by its
+/// at `v50.0.0` (`crates/wit-bindgen/src/config.rs`), by its
 /// constant, with its entry on imports and on exports.
 ///
 /// A flag's entry depends on what the function is too: `async` on a

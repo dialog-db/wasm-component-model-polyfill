@@ -348,17 +348,12 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 instance: instance.as_u32() as usize,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The two that deliver an event keep the `cancellable`
-            // immediate their canon options carry, as the thread
-            // built-ins below keep theirs.
             Trampoline::WaitableSetWait { options, .. } => TrampolineSpec::WaitableSetWait {
                 options: trampoline_options(&translation, *options)?,
-                cancellable: trampoline_cancellable(&translation, *options)?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             Trampoline::WaitableSetPoll { options, .. } => TrampolineSpec::WaitableSetPoll {
                 options: trampoline_options(&translation, *options)?,
-                cancellable: trampoline_cancellable(&translation, *options)?,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             Trampoline::WaitableSetDrop { instance } => TrampolineSpec::WaitableSetDrop {
@@ -502,40 +497,21 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 memory: memory.map(|slot| slot.as_u32() as usize),
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // A synchronous start reaches an asynchronously lifted
-            // callee alone. The callback is what the callee's status
-            // word is handed to. A lift that named none is the
-            // stackful form, whose core function returns nothing.
-            Trampoline::SyncStartCall { callback } => TrampolineSpec::SyncStartCall {
-                callback: callback.map(|slot| slot.as_u32() as usize),
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            // An asynchronous start reaches all three lifts, and the
+            // The start reaches every caller and every lift, and the
             // adapter says which at the call rather than here: a
-            // callback slot alone does not tell a synchronous lift
-            // from the stackful form, since neither names one.
-            Trampoline::AsyncStartCall {
+            // callback slot alone does not tell a sync lift from the
+            // stackful form, since neither names one.
+            Trampoline::StartCall {
                 callback,
                 post_return,
-            } => TrampolineSpec::AsyncStartCall {
+            } => TrampolineSpec::StartCall {
                 callback: callback.map(|slot| slot.as_u32() as usize),
                 post_return: post_return.map(|slot| slot.as_u32() as usize),
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            // The `thread.yield` built-in. It keeps the `cancellable`
-            // field of the trampoline IR, and so do the five thread
-            // built-ins that suspend or switch below. The reference
-            // removed the immediate, and the release after this one
-            // drops the field, but Wasmtime 49 honors it and the C
-            // generator of wit-bindgen still emits it, so one guest
-            // binary behaves the same in both: a cancellable built-in
-            // takes a pending cancellation request and answers 1.
-            Trampoline::ThreadYield {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadYield {
+            // The `thread.yield` built-in.
+            Trampoline::ThreadYield { instance } => TrampolineSpec::ThreadYield {
                 instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // The three thread built-ins that never switch stacks.
@@ -565,49 +541,35 @@ pub async fn translate(engine: &Engine, bytes: &[u8]) -> Result<Translation> {
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
             // The five thread built-ins that suspend or switch. Each
-            // names the instance whose thread table it works on, and
-            // keeps its `cancellable` field, for the reason the
-            // `thread.yield` arm gives.
-            Trampoline::ThreadSuspend {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadSuspend {
+            // names the instance whose thread table it works on.
+            Trampoline::ThreadSuspend { instance } => TrampolineSpec::ThreadSuspend {
                 instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
                 signature: core_signature(&component_types, &translation, trampoline_idx)?,
             },
-            Trampoline::ThreadSuspendThenResume {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadSuspendThenResume {
-                instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::ThreadYieldThenResume {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadYieldThenResume {
-                instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::ThreadSuspendThenPromote {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadSuspendThenPromote {
-                instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
-            Trampoline::ThreadYieldThenPromote {
-                instance,
-                cancellable,
-            } => TrampolineSpec::ThreadYieldThenPromote {
-                instance: instance.as_u32() as usize,
-                cancellable: *cancellable,
-                signature: core_signature(&component_types, &translation, trampoline_idx)?,
-            },
+            Trampoline::ThreadSuspendThenResume { instance } => {
+                TrampolineSpec::ThreadSuspendThenResume {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadYieldThenResume { instance } => {
+                TrampolineSpec::ThreadYieldThenResume {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadSuspendThenPromote { instance } => {
+                TrampolineSpec::ThreadSuspendThenPromote {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
+            Trampoline::ThreadYieldThenPromote { instance } => {
+                TrampolineSpec::ThreadYieldThenPromote {
+                    instance: instance.as_u32() as usize,
+                    signature: core_signature(&component_types, &translation, trampoline_idx)?,
+                }
+            }
             // The three error-context built-ins. The validator admits
             // them only under the engine's error-context gate, so a
             // component that reaches these arms opted in. The two
@@ -1322,21 +1284,6 @@ fn trampoline_options(
         .get(options)
         .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))?;
     lift_canon_options(canon)
-}
-
-/// The `cancellable` immediate of the built-in whose canon options
-/// `options` names, which is where Wasmtime 49 carries the immediate
-/// of `waitable-set.wait` and `waitable-set.poll`.
-fn trampoline_cancellable(
-    translation: &ComponentTranslation,
-    options: OptionsIndex,
-) -> Result<bool> {
-    translation
-        .component
-        .options
-        .get(options)
-        .map(|canon| canon.cancellable)
-        .ok_or_else(|| Error::internal("Trampoline OptionsIndex out of bounds"))
 }
 
 /// Project one canon-options bundle onto the polyfill's own.

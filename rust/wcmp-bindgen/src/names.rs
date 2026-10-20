@@ -5,7 +5,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! The Rust names of WIT names, as Wasmtime's macro spells them
-//! (`crates/wit-bindgen/src/rust.rs` and `lib.rs` at `v49.0.0-rc.1`).
+//! (`crates/wit-bindgen/src/rust.rs` and `lib.rs` at `v50.0.0`).
 
 use heck::{ToSnakeCase, ToUpperCamelCase};
 use proc_macro2::{Ident, Span};
@@ -69,6 +69,14 @@ pub fn func_field_name(resolve: &Resolve, func: &Function) -> String {
         FunctionKind::Static(id) | FunctionKind::AsyncStatic(id) => resource("static", id),
         FunctionKind::Constructor(id) => resource("constructor", id),
         FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => {}
+        FunctionKind::Getter
+        | FunctionKind::Setter
+        | FunctionKind::MethodGetter(_)
+        | FunctionKind::MethodSetter(_)
+        | FunctionKind::StaticGetter(_)
+        | FunctionKind::StaticSetter(_) => {
+            unreachable!("the generator refuses a getter or a setter before it names one")
+        }
     }
     name.push_str(func.item_name());
     name.to_snake_case()
