@@ -138,6 +138,8 @@ documents.
   Component Model runtime.
 - [Feature support](notes/feature-support.md): the Component Model feature by
   feature, with status and settings.
+- [Host bindings with `bindgen!`](notes/bindgen.md): how to use
+  `wcmp::bindgen!`, and how it differs from Wasmtime's `bindgen!`.
 - [Differences from Wasmtime](notes/differences-from-wasmtime.md): what a host
   can notice when it moves from Wasmtime.
 - [Suspend providers](notes/suspend-providers.md): how a guest blocks on each
