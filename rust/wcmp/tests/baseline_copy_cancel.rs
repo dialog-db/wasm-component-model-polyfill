@@ -404,7 +404,8 @@ async fn it_turns_an_undelivered_completion_into_a_drop_once_the_cancelled_write
     );
     let message = call_trap(&mut store, &instance, "read", &[readable, 100, 2]).await;
     assert!(
-        message.contains("cannot read after being notified that the writable end dropped"),
+        message
+            .contains("cannot read from stream after being notified that the writable end dropped"),
         "{message}"
     );
 }

@@ -57,13 +57,6 @@ pub struct CopyEnd {
     ///
     /// [`TaskTables::held_by_host`]: super::TaskTables::held_by_host
     pub held_by_host: bool,
-    /// Whether the end has delivered a dropped result: it was told
-    /// that the other end dropped, and so is done. Wasmtime keeps the
-    /// same flag on the end's handle-table entry. A later copy on a
-    /// future end traps with a message that says which way the end
-    /// became done, and only this flag tells a writable future end
-    /// that wrote its value from one whose reader dropped first.
-    pub notified_dropped: bool,
     /// Whether this end itself was dropped while the other end lives
     /// on: its entry left a guest's table, or the host let go of it.
     /// The record stays in the store until the other end drops too,
@@ -86,7 +79,6 @@ impl CopyEnd {
             buffer: None,
             handle: None,
             held_by_host: false,
-            notified_dropped: false,
             dropped: false,
         }
     }

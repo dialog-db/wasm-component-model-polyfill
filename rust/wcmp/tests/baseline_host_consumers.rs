@@ -815,7 +815,8 @@ async fn it_completes_the_write_dropped_when_the_consumer_is_over() {
         .await
         .expect_err("the writer was told the reader dropped");
     assert!(
-        failure.contains("cannot write after being notified that the readable end dropped"),
+        failure
+            .contains("cannot write to stream after being notified that the readable end dropped"),
         "{failure}"
     );
 }

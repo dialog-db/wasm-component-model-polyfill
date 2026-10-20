@@ -861,7 +861,8 @@ async fn it_completes_a_pending_read_with_the_dropped_result_and_its_progress() 
     );
     let message = call_trap(&mut store, &instance, "read", &[readable, 100, 8]).await;
     assert!(
-        message.contains("cannot read after being notified that the writable end dropped"),
+        message
+            .contains("cannot read from stream after being notified that the writable end dropped"),
         "a readable end that reported the drop can read no more: {message}"
     );
 }
@@ -880,7 +881,8 @@ async fn it_gives_an_idle_readable_end_the_dropped_result_when_the_writable_end_
     );
     let message = call_trap(&mut store, &instance, "read", &[readable, 100, 1]).await;
     assert!(
-        message.contains("cannot read after being notified that the writable end dropped"),
+        message
+            .contains("cannot read from stream after being notified that the writable end dropped"),
         "{message}"
     );
 
@@ -909,7 +911,8 @@ async fn it_gives_an_idle_writable_end_the_dropped_result_when_the_readable_end_
     );
     let message = call_trap(&mut store, &instance, "write", &[writable, 200, 1]).await;
     assert!(
-        message.contains("cannot write after being notified that the readable end dropped"),
+        message
+            .contains("cannot write to stream after being notified that the readable end dropped"),
         "{message}"
     );
 }
@@ -996,7 +999,8 @@ async fn it_turns_an_undelivered_completion_into_the_dropped_result_with_its_pro
     call_ok(&mut store, &instance, "join", &[writable, 0]).await;
     let message = call_trap(&mut store, &instance, "write", &[writable, 200, 1]).await;
     assert!(
-        message.contains("cannot write after being notified that the readable end dropped"),
+        message
+            .contains("cannot write to stream after being notified that the readable end dropped"),
         "{message}"
     );
 }

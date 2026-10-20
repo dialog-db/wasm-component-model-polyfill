@@ -1607,22 +1607,26 @@ pub enum CopyCause {
         kind: EndKind,
     },
 
-    /// A guest read from a readable end after the end reported that
-    /// the writable end dropped. The message is the one Wasmtime's
-    /// read raises for a stream or a future.
-    #[error("cannot read after being notified that the writable end dropped")]
+    /// A guest read from a readable stream end after the end reported
+    /// that the writable end dropped. The message is the one of
+    /// Wasmtime's `Trap::ReadFromDroppedStream`. A future end that is
+    /// done gives [`FutureReadAfterDone`](Self::FutureReadAfterDone)
+    /// instead, however it became done.
+    #[error("cannot read from stream after being notified that the writable end dropped")]
     ReadAfterDropped,
 
-    /// A guest wrote to a writable end after the end reported that
-    /// the readable end dropped. The message is the one Wasmtime's
-    /// write raises for a stream or a future.
-    #[error("cannot write after being notified that the readable end dropped")]
+    /// A guest wrote to a writable stream end after the end reported
+    /// that the readable end dropped. The message is the one of
+    /// Wasmtime's `Trap::WriteToDroppedStream`. A future end that is
+    /// done gives [`FutureWriteAfterDone`](Self::FutureWriteAfterDone)
+    /// instead, however it became done.
+    #[error("cannot write to stream after being notified that the readable end dropped")]
     WriteAfterDropped,
 
-    /// A guest wrote to a writable future end that already wrote its
-    /// one value. The message is the one Wasmtime's write to a future
-    /// raises, which also names the readable end's drop because
-    /// Wasmtime marks a future done that way too.
+    /// A guest wrote to a writable future end that is done: it wrote
+    /// its one value, or it learned that the readable end dropped. The
+    /// message is the one of Wasmtime's `Trap::WriteToDroppedFuture`,
+    /// which names both.
     #[error("cannot write to future after previous write succeeded or readable end dropped")]
     FutureWriteAfterDone,
 
@@ -2371,11 +2375,13 @@ mod tests {
             ),
             (
                 CopyCause::ReadAfterDropped,
-                "copy error: cannot read after being notified that the writable end dropped",
+                "copy error: cannot read from stream after being notified that the writable end \
+                 dropped",
             ),
             (
                 CopyCause::WriteAfterDropped,
-                "copy error: cannot write after being notified that the readable end dropped",
+                "copy error: cannot write to stream after being notified that the readable end \
+                 dropped",
             ),
             (
                 CopyCause::FutureWriteAfterDone,
@@ -2416,6 +2422,25 @@ mod tests {
                 CopyCause::ConcurrentOperation.to_string(),
             ),
             (Trap::StreamOpTooBig, CopyCause::CountTooLarge.to_string()),
+            (
+                Trap::ReadFromDroppedStream,
+                CopyCause::ReadAfterDropped.to_string(),
+            ),
+            (
+                Trap::WriteToDroppedStream,
+                CopyCause::WriteAfterDropped.to_string(),
+            ),
+            (
+                Trap::WriteToDroppedFuture,
+                CopyCause::FutureWriteAfterDone.to_string(),
+            ),
+            (
+                Trap::LiftDroppedStream,
+                CopyCause::LiftAfterDone {
+                    kind: EndKind::StreamReadable,
+                }
+                .to_string(),
+            ),
         ] {
             let rendered = trap.to_string();
             assert!(

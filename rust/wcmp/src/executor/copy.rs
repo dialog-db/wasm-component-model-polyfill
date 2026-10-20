@@ -478,15 +478,12 @@ impl Builtin {
             return Err(trap(Error::Copy(CopyCause::ConcurrentOperation)));
         }
         if record.state == CopyState::Done {
-            // Wasmtime asks first whether the end was told the other
-            // end dropped, and only then whether a future's one copy
-            // is over, so a future end that learned of the drop gets
-            // the stream's wording too.
+            // Wasmtime 50 words the trap by the kind of end alone: a
+            // done future end gets the future's wording whether its one
+            // copy is over or it learned that the other end dropped.
             return Err(trap(Error::Copy(match kind {
                 EndKind::StreamWritable => CopyCause::WriteAfterDropped,
                 EndKind::StreamReadable => CopyCause::ReadAfterDropped,
-                EndKind::FutureWritable if record.notified_dropped => CopyCause::WriteAfterDropped,
-                EndKind::FutureReadable if record.notified_dropped => CopyCause::ReadAfterDropped,
                 EndKind::FutureWritable => CopyCause::FutureWriteAfterDone,
                 EndKind::FutureReadable => CopyCause::FutureReadAfterDone,
             })));

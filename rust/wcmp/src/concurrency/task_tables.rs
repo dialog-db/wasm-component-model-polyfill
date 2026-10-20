@@ -2793,9 +2793,6 @@ impl TaskTables {
             Some(CopyResult::Completed) if is_future(kind) => CopyState::Done,
             _ => CopyState::Idle,
         };
-        if result == Some(CopyResult::Dropped) {
-            record.notified_dropped = true;
-        }
         let index = record.handle.unwrap_or(index);
         let (shared, direction) = (record.shared, record.direction);
         if let Some(record) = self.shared_records.get_mut(shared)

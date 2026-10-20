@@ -459,7 +459,9 @@ async fn it_completes_a_write_with_the_dropped_result_once_the_reader_dropped() 
     // The end was told of the drop, and Wasmtime asks that before it
     // asks whether the future's one write is over.
     assert!(
-        message.contains("cannot write after being notified that the readable end dropped"),
+        message.contains(
+            "cannot write to future after previous write succeeded or readable end dropped"
+        ),
         "{message}"
     );
 }
