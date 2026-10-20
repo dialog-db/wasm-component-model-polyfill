@@ -50,6 +50,7 @@ mod sync_lower;
 mod tasks;
 mod thread_builtins;
 mod thread_switch;
+mod thread_transparency;
 mod thread_yield;
 mod typed_values;
 mod waitable_builtins;
