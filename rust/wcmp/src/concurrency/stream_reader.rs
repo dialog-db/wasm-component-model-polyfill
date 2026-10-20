@@ -86,7 +86,7 @@ use super::stream_result::StreamResult;
 ///
 /// The reader is moved when it is lowered or piped, but it is not the
 /// only value that can name its end: each reader decoded from the
-/// same [`Val`], or converted from the same untyped value, names it
+/// same [`Val`](crate::Val), or converted from the same untyped value, names it
 /// too, as Wasmtime's copies of an id do. Once one of them lowers,
 /// pipes, or closes the end, the others are refused those uses, as
 /// [`CopyCause::NotHeldByHost`] states, except that a close of an end

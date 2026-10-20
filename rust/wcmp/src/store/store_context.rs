@@ -55,7 +55,7 @@ pub mod internal;
 /// This type is what both of them can produce. It wraps the core
 /// store's context — owned by [`Store`], borrowed by a trampoline —
 /// and the polyfill's own state rides in that store's data, as
-/// [`StoreData`] says. A turn therefore runs the same way from a
+/// `StoreData` says. A turn therefore runs the same way from a
 /// driver's poll and from inside a trampoline, and the suspend seam
 /// and the host tasks, which both run turns, are reachable from
 /// either. PDD018 asks for exactly that: a suspended guest thread
@@ -71,7 +71,7 @@ pub mod internal;
 ///
 /// What a host function holding one of these reaches is the store's
 /// host data, and the bookkeeping behind it is reached through
-/// [`StoreContextInternalExt`], which `lib.rs` does not re-export.
+/// `StoreContextInternalExt`, which `lib.rs` does not re-export.
 /// The trait's entries are therefore entries only the crate can name.
 /// The public face of the type imports and resolves:
 ///
@@ -93,7 +93,6 @@ pub mod internal;
 /// ```
 ///
 /// [`Store`]: super::Store
-/// [`StoreContextInternalExt`]: internal::StoreContextInternalExt
 pub struct StoreContext<'a, T: 'static> {
     runtime: RuntimeContextMut<'a, StoreData<T>>,
 }

@@ -55,7 +55,7 @@ use super::poll_scope::PollScope;
 ///   data type fails with the store-not-in-poll cause too. The
 ///   token names a store this thread is not polling: no store has
 ///   that identity and that host data. Such a token is buildable,
-///   because [`Accessor::new`] takes a store's identity and a
+///   because `Accessor::new` takes a store's identity and a
 ///   store's identity is a value anyone holding the store can
 ///   read, so the reach checks the type rather than trusting it.
 /// - A reach made from inside another reach's closure fails with

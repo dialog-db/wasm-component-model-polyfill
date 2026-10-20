@@ -73,7 +73,7 @@ pub struct ExportedModule {
 ///
 /// `Instance` is produced by
 /// [`Linker::instantiate`](crate::Linker::instantiate); its lifetime
-/// is logically bound to the [`Store`] it was created in. Multiple
+/// is logically bound to the [`Store`](crate::Store) it was created in. Multiple
 /// instances of the same component can coexist in a single store
 /// and remain isolated — each carries its own substrate-level
 /// instance state. The store is the unit of isolation.

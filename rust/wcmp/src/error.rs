@@ -1850,7 +1850,7 @@ pub enum ErrorContextCause {
     ReferenceCountOverflow,
 }
 
-/// A `Result` whose error variant is the polyfill's [`Error`].
+/// A `Result` whose error variant is the polyfill's [`Error`](enum@Error).
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[cfg(test)]

@@ -38,7 +38,7 @@ pub mod internal;
 /// The store is the unit of isolation between independent component
 /// instances: the polyfill's analogue to `wasmtime::Store`. It owns
 /// the core store the runtime layer gives it, and that store carries
-/// [`StoreData`]: the host's data, the handle tables the
+/// `StoreData`: the host's data, the handle tables the
 /// canonical-ABI runtime-state rules require — one per component
 /// instance, shared by every handle kind that instance uses, plus
 /// one per resource type for the host's own handles — the scheduler,
@@ -139,7 +139,7 @@ pub mod internal;
 /// ```
 ///
 /// And the seam the crate reaches all three through. That one is not
-/// a private method but a method of [`StoreInternalExt`], so a block
+/// a private method but a method of `StoreInternalExt`, so a block
 /// that calls it has to import the trait, and the import is what has
 /// to fail: a caller outside the crate has no name for it, because
 /// `lib.rs` re-exports the store and not its seam. Importing a name
@@ -178,8 +178,6 @@ pub mod internal;
 /// public, and the seam block compiles the moment `lib.rs` re-exports
 /// the trait, so each one is a standing check that neither has
 /// happened.
-///
-/// [`StoreInternalExt`]: super::StoreInternalExt
 pub struct Store<T: 'static> {
     inner: crate::runtime_layer::Store<StoreData<T>>,
     /// The store's identity, kept beside the core store so that a check

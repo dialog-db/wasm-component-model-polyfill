@@ -56,7 +56,7 @@ use crate::internal::LinkerInstanceInternal;
 ///   with statically-typed Rust arguments and return, and derive the
 ///   declared signature as [`Self::func_wrap`] does.
 ///
-/// Every mode converges on a single [`HostFunc<T>`] that the linker
+/// Every mode converges on a single `HostFunc<T>` that the linker
 /// stores against the item's name, then the resolver's link-time
 /// type check consults when matching the registration against the
 /// component's declared import. The registration records which of
@@ -153,7 +153,7 @@ impl<'a, T: 'static> LinkerInstance<'a, T> {
     /// signature declares a result, zero otherwise.
     ///
     /// The registration is stored against the given item-name on
-    /// the underlying [`InstanceRegistration`]; the linker's
+    /// the underlying `InstanceRegistration`; the linker's
     /// resolver checks the declared signature against the
     /// component's import at link time.
     ///
