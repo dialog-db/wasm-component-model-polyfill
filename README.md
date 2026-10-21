@@ -51,13 +51,13 @@ A host depends on the polyfill and on one backend per target, as the crate
 
 ```toml
 [dependencies]
-wcmp = "0.1.0"
+wcmp = "0.1.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wcmp-wasm-core-wasmtime = "0.1.0"
+wcmp-wasm-core-wasmtime = "0.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wcmp-wasm-core-web = "0.1.0"
+wcmp-wasm-core-web = "0.1.1"
 ```
 
 The host below loads a component, lends it one host function, and calls a typed

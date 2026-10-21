@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bindgen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "heck",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tracing",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "js-sys",

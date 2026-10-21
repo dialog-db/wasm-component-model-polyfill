@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bench"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "js-sys",
  "thiserror 2.0.18",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bindgen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "heck",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-bindgen-tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "js-sys",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-demo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures",
  "js-sys",
@@ -2333,14 +2333,14 @@ dependencies = [
 
 [[package]]
 name = "wcmp-demo-lane"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "wcmp-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-scenario"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "sha2",
  "thiserror 2.0.18",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-scenario-wasmtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-smoke"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "js-sys",
  "tokio",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "thiserror 2.0.18",
@@ -2400,7 +2400,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-contract"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "wcmp-macros",
@@ -2409,7 +2409,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-fidelity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tokio",
@@ -2422,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-wasmi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tokio",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-wasmtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tokio",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "wcmp-wasm-core-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "js-sys",
