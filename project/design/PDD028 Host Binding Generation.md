@@ -97,7 +97,7 @@ Eighteen terms recur:
 ## Facts This Design Rests On
 
 Each fact below was read from the cited source. Wasmtime facts are from
-`v50.0.0`, the version that the polyfill pins.
+`v50.0.0`, the release that the polyfill builds against.
 
 - Wasmtime's macro accepts five invocation forms: `bindgen!()`,
   `bindgen!("world")`, `bindgen!(in "path")`, `bindgen!("world" in "path")`, and

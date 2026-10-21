@@ -267,7 +267,8 @@ Every matrix row has a reference. Each feature in the compatibility matrix links
 to the section of the specification that defines it, and the link resolves.
 
 Every matrix row has a Wasmtime status. Each feature records whether Wasmtime
-implements it, and the record matches the Wasmtime release the polyfill pins.
+implements it, and the record matches the Wasmtime release the polyfill builds
+against.
 
 The conformance corpora cover the matrix. Every settled feature in the matrix
 has at least one directive in the vendored corpora that exercises it.
