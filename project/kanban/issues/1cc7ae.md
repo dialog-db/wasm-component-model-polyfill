@@ -5,6 +5,8 @@ type: feature
 blocked_by: [5290bd, acefba, 39c0c7, e3d75d, c79ad4]
 labels: [PDD028, bindgen]
 created: 2026-10-17T02:55:52Z
+disposition: accepted
+disposition_at: 2026-10-21T06:27:09Z
 ---
 
 ## What to build
