@@ -5,6 +5,8 @@ type: docs
 blocked_by: [90d64c, 0137e0, 643072, fdb910, 9debd3]
 labels: [crates-io, wasmtime-50, PDD]
 created: 2026-10-20T19:11:39Z
+disposition: accepted
+disposition_at: 2026-10-21T06:06:00Z
 ---
 
 ## What to build
@@ -21,7 +23,7 @@ humanizer skill.
 ## Acceptance criteria
 
 - [x] No PDD states a rule that the polyfill no longer follows.
-- [x] Each revised PDD is marked for the owner's re-acceptance.
+- [x] Each revised PDD is listed on this card for the owner's re-acceptance.
 - [x] `markdown` passes.
 
 ## Review notes
@@ -37,3 +39,10 @@ humanizer skill.
   no `forward` row, which needs a target such as Deferred. PDD022 does not
   state that a call's first thread is counted but never refused at the handle
   cap. That departure is only in `notes/differences-from-wasmtime.md`.
+- 2026-10-20: Review round 1. PDD003 no longer lists `may_enter`. PDD016 now
+  states the expected-failure rule as the harness applies it, and says that
+  Wasmtime's runner ignores only rejection messages in the spec suite.
+  PDD020 now names every built-in that makes an adapter opaque. PDD021 cites
+  `lower_stream` at `2f1e56f`. PDD023 now gives the full reason for the
+  host-call record. The gate emoji and the `forward` row in PDD003 stay with
+  the owner.

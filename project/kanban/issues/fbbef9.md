@@ -5,6 +5,8 @@ type: bug
 blocked_by: []
 labels: [webgpu-spike, webkitgtk, memory64]
 created: 2026-10-18T16:52:15Z
+disposition: accepted
+disposition_at: 2026-10-21T06:05:59Z
 ---
 
 ## What to build
