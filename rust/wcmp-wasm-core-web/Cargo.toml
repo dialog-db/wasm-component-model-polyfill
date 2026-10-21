@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["wasm", "webassembly", "browser", "wasm-bindgen"]
+categories = ["wasm", "web-programming"]
 
 # The library is empty except on `wasm32`, so docs.rs builds that target and
 # no other. docs.rs builds the native target by default.

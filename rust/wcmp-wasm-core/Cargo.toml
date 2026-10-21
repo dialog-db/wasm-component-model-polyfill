@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["wasm", "webassembly", "runtime", "abstraction"]
+categories = ["wasm", "virtualization"]
 
 # The same on every target, so docs.rs builds one.
 [package.metadata.docs.rs]

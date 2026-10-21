@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["wasm", "webassembly", "wasmtime", "runtime"]
+categories = ["wasm", "virtualization"]
 
 # The library is empty except on a native target.
 [package.metadata.docs.rs]

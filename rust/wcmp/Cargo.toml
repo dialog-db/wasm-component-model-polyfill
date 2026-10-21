@@ -6,6 +6,11 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+# The project's README is the crate's README too. Cargo copies it into the
+# package.
+readme = "../../README.md"
+keywords = ["wasm", "component-model", "wasip3", "polyfill", "browser"]
+categories = ["wasm", "web-programming"]
 # The tests and their corpus are most of the crate's size, and a consumer
 # runs none of them, so the package leaves them out, except the backend choice
 # under `tests/support`, which the crate's own unit tests include. The backends

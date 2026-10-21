@@ -1086,8 +1086,9 @@
         # menu command (`format` / `lint` subcommands) and the check below.
         # Scoped to the top-level README and its notes, CLAUDE.md, the design
         # corpus, the research notes, the board README, the benchmark README,
-        # and the Zena README; the board file itself is machine-managed and
-        # stays out of the gate.
+        # the Zena README, and the README of each published crate other than
+        # `wcmp`, which takes the top-level one; the board file itself is
+        # machine-managed and stays out of the gate.
         markdown = katsuobushi.lib.markdown {
           inherit pkgs;
           workspaceRoot = ./.;
@@ -1100,7 +1101,10 @@
             "project/kanban/README.md"
             "rust/wcmp-bench/README.md"
             "rust/wcmp/tests/zena/README.md"
-          ];
+          ]
+          ++ map (crate: "rust/${crate}/README.md") (
+            builtins.filter (crate: crate != "wcmp") publishedCrates
+          );
           exclude = project.markdownExclude;
         };
 
@@ -1346,9 +1350,11 @@
           version = publishedVersion;
           src = katsuobushi.inputs.nix-filter.lib {
             root = ./.;
+            # `wcmp` takes the project's README as its own.
             include = [
               "Cargo.lock"
               "Cargo.toml"
+              "README.md"
               "rust"
             ];
           };

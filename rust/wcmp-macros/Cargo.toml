@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["wasm", "component-model", "wat", "derive"]
+categories = ["wasm", "development-tools::procedural-macro-helpers"]
 
 # Procedural macros, the same on every target.
 [package.metadata.docs.rs]
