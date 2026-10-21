@@ -318,8 +318,12 @@ impl<T: 'static> Store<T> {
     /// starts from the whole of it, and each lift charges it before
     /// reserving anything: a list or a fixed-length list 32 bytes per
     /// element, a map 64 bytes per entry, a string the byte length of
-    /// its range, and a typed vector of numbers its own bytes. The
-    /// lift that would pass it fails with
+    /// its range, and a typed vector of numbers its own bytes. A lift
+    /// into a [`Val`](crate::Val) also charges a record 32 bytes per
+    /// field, a tuple 32 bytes per element, the payload of a variant,
+    /// an option, or a result 32 bytes, and each field, case, and flag
+    /// name its byte length, as Wasmtime 50 does. The lift that would
+    /// pass it fails with
     /// [`AbiCause::CopyBudgetSpent`]. The per-element costs are fixed
     /// rather than the size of a host value on the target, so a
     /// guest's value is accepted or refused alike natively and in a
