@@ -20,9 +20,15 @@ records it.
 
 ## Acceptance criteria
 
-- [ ] A test runs an opaque, then a transparent, then an opaque callee on both
+- [x] A test runs an opaque, then a transparent, then an opaque callee on both
       targets, and the task records show no task for the middle call.
-- [ ] A `context.get` in the innermost callee sees a fresh thread.
+- [x] A `context.get` in the innermost callee sees a fresh thread.
 
 ## Review notes
 
+- 2026-10-20: `test: A thread-transparent adapter runs its callee with no
+  task`. `baseline/thread_transparency.rs` runs three chains that end in a
+  host probe: through a transparent instance the task count equals the direct
+  chain's, and through an opaque one it is one more. The innermost callee reads
+  context slot 0 as zero in all three. Both targets pass. The PDD text waits
+  for 7daabe.
