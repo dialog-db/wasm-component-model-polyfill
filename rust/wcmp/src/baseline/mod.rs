@@ -25,6 +25,7 @@ mod canonical_abi;
 mod destructor_task;
 mod error_context;
 mod error_context_transfer;
+mod handle_limit;
 mod host_end_lifecycle;
 mod host_suspension_switch_module;
 mod instantiation;

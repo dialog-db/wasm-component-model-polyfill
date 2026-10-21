@@ -6,6 +6,9 @@
 
 //! The table of one component instance's threads.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::thread_id::ThreadId;
 
 /// The table of one component instance's threads: the index space
@@ -24,6 +27,10 @@ pub struct ThreadTable {
     slots: Vec<Option<ThreadId>>,
     /// The freed indices, the one freed last at the end.
     free: Vec<u32>,
+    /// The store's count of its live handles, which every thread table
+    /// and handle table of the store shares. Each thread is one handle,
+    /// as in Wasmtime.
+    store_live: Arc<AtomicUsize>,
 }
 
 impl ThreadTable {
@@ -31,11 +38,18 @@ impl ThreadTable {
     /// `Table.MAX_LENGTH`.
     const MAX_INDEX: u32 = (1 << 28) - 1;
 
-    /// Construct an empty table.
+    /// Construct an empty table that counts its threads alone.
     pub fn new() -> Self {
+        Self::counted(Arc::default())
+    }
+
+    /// Construct an empty table that counts its threads in
+    /// `store_live`, the count the store's other tables share.
+    pub fn counted(store_live: Arc<AtomicUsize>) -> Self {
         Self {
             slots: vec![None],
             free: Vec::new(),
+            store_live,
         }
     }
 
@@ -44,6 +58,7 @@ impl ThreadTable {
     pub fn insert(&mut self, thread: ThreadId) -> Option<u32> {
         if let Some(index) = self.free.pop() {
             self.slots[index as usize] = Some(thread);
+            self.store_live.fetch_add(1, Ordering::Relaxed);
             return Some(index);
         }
         let index = u32::try_from(self.slots.len()).ok()?;
@@ -51,6 +66,7 @@ impl ThreadTable {
             return None;
         }
         self.slots.push(Some(thread));
+        self.store_live.fetch_add(1, Ordering::Relaxed);
         Some(index)
     }
 
@@ -73,7 +89,15 @@ impl ThreadTable {
         if self.get(index) == Some(thread) {
             self.slots[index as usize] = None;
             self.free.push(index);
+            self.store_live.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+}
+
+impl Drop for ThreadTable {
+    /// Take the threads the table still holds off the store's count.
+    fn drop(&mut self) {
+        self.store_live.fetch_sub(self.live(), Ordering::Relaxed);
     }
 }
 

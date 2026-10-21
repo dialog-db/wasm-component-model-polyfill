@@ -35,6 +35,9 @@
 //!
 //! [`Store`]: crate::Store
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::handle_kind::HandleKind;
 
 /// One entry in the slab.
@@ -80,18 +83,28 @@ enum Slot {
 pub struct HandleTable {
     slots: Vec<Slot>,
     free_head: Option<u32>,
-    /// How many entries the table holds, which the store's cap on its
-    /// live handles counts.
+    /// How many entries the table holds.
     live: usize,
+    /// The store's count of its live handles, which every handle table
+    /// and thread table of the store shares and keeps as it changes,
+    /// as Wasmtime's `HandleCounter` is kept.
+    store_live: Arc<AtomicUsize>,
 }
 
 impl HandleTable {
-    /// Construct an empty handle table.
+    /// Construct an empty handle table that counts its entries alone.
     pub fn new() -> Self {
+        Self::counted(Arc::default())
+    }
+
+    /// Construct an empty handle table that counts its entries in
+    /// `store_live`, the count the store's other tables share.
+    pub fn counted(store_live: Arc<AtomicUsize>) -> Self {
         Self {
             slots: vec![Slot::Reserved],
             free_head: None,
             live: 0,
+            store_live,
         }
     }
 
@@ -107,6 +120,7 @@ impl HandleTable {
 
     fn insert(&mut self, entry: HandleKind) -> u32 {
         self.live += 1;
+        self.store_live.fetch_add(1, Ordering::Relaxed);
         if let Some(idx) = self.free_head {
             let (next, generation) = match self.slots[idx as usize] {
                 Slot::Free { next, generation } => (next, generation),
@@ -171,7 +185,15 @@ impl HandleTable {
         };
         self.free_head = Some(index);
         self.live -= 1;
+        self.store_live.fetch_sub(1, Ordering::Relaxed);
         Some(entry)
+    }
+}
+
+impl Drop for HandleTable {
+    /// Take the entries the table still holds off the store's count.
+    fn drop(&mut self) {
+        self.store_live.fetch_sub(self.live, Ordering::Relaxed);
     }
 }
 

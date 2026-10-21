@@ -202,6 +202,9 @@ fn build_new<T: 'static>(
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
+            // Both handles are admitted before the records are made, so
+            // a store at its cap is left as it was.
+            guard.admit_handles(2).map_err(|e| anyhow!("{e}"))?;
             let (readable, writable) = guard
                 .tasks
                 .insert_ends(EndPayload::Declared(payload.clone()))

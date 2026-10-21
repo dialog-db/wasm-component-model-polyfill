@@ -456,10 +456,13 @@ impl<T: 'static> SeamWait<T> {
     }
 
     /// A wait of `record`, `condition`, `turns`, and `call`, held to
-    /// the current task's own instance when that task must not block.
-    /// The instance is read once: what the turns are allowed to run
-    /// cannot change under the wait, because the flag is set for the
-    /// length of the call the thread is inside.
+    /// the instance that
+    /// [`nested_turn_instance`](crate::store::StoreData::nested_turn_instance)
+    /// names: the current task's own instance when that task must not
+    /// block, and otherwise the instance of a waiting caller below that
+    /// must not suspend. The instance is read once: what the turns are
+    /// allowed to run cannot change under the wait, because the flags
+    /// are set for the length of the calls the threads are inside.
     fn new(
         store: &mut StoreContext<'_, T>,
         record: Record,

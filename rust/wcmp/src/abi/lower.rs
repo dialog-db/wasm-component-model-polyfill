@@ -263,6 +263,9 @@ pub fn lower_error_context<T: 'static>(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    guard
+        .admit_handle()
+        .map_err(|e| invalid_handle(e.to_string(), ty, position))?;
     guard.tasks.retain_error_context(context.context())?;
     guard
         .insert_error_context(table, context.context())

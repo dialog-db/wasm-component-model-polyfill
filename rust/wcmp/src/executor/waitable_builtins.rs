@@ -85,6 +85,7 @@ pub fn build_waitable_set_new<T: 'static>(
             let (id, table) = calling_instance(&abi_state, instance)?;
             trap_if_cannot_leave(&abi_state, id, &mut store_ctx)?;
             let mut guard = lock_tables(&tables)?;
+            guard.admit_handle().map_err(|e| anyhow!("{e}"))?;
             let set = guard.tasks.insert_waitable_set().map_err(trap)?;
             let index = guard
                 .insert_waitable_set(table, set)

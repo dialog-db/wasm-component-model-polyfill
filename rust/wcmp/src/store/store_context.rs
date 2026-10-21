@@ -58,7 +58,7 @@ pub mod internal;
 /// `StoreData` says. A turn therefore runs the same way from a
 /// driver's poll and from inside a trampoline, and the suspend seam
 /// and the host tasks, which both run turns, are reachable from
-/// either. PDD018 asks for exactly that: a suspended guest thread
+/// either. The scheduler needs exactly that: a suspended guest thread
 /// resumes outside any poll of a driver, so the scheduler's state
 /// has to be reachable from a trampoline with no driver on the
 /// stack.
@@ -748,15 +748,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     }
                     Ok(index)
                 })();
-                // The task never joins the entry the reserve made for it
-                // when the tables cannot be locked, so the entry goes too,
-                // and the cap on live records no longer counts it.
+                // A call whose subtask takes no entry, because the tables
+                // cannot be locked or the store is at its cap on handles,
+                // fails as one whose body failed.
                 let index = match started {
                     Ok(index) => index,
-                    Err(error) => {
-                        self.scheduler_mut().complete_host_task(key);
-                        return Err(error);
-                    }
+                    Err(error) => return Err(self.fail_pending_host_call(subtask, key, error)),
                 };
                 task.started_in(caller);
                 self.scheduler_mut().restore_host_task(key, task);
@@ -769,11 +766,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// cap on its live records, because the call's first poll left it
     /// pending. The record did not count while that poll ran.
     ///
-    /// Wasmtime 50 makes the `HostTask` of a call only once the call
-    /// outlives its first poll (`materialize_host_task` in
+    /// Wasmtime 50 makes the `HostTask` of a call lazily
+    /// (`materialize_host_task` in
     /// `crates/wasmtime/src/runtime/component/concurrent.rs` at
-    /// `v50.0.0`). A call that answers on its first poll takes no
-    /// record, so it runs even when the store is full. A call that
+    /// `v50.0.0`), and a call that outlives its first poll makes it. A
+    /// call that answers on its first poll takes no record, so it runs
+    /// even when the store is full. A call that
     /// stays pending in a full store fails here, after its first poll,
     /// as one whose body failed would: its subtask resolves as a
     /// cancellation, and the failure poisons the store and travels out
@@ -783,15 +781,22 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let counted = self
             .lock_tables()
             .and_then(|mut guard| guard.tasks.count_host_subtask(subtask));
-        if let Err(error) = counted {
-            self.scheduler_mut().complete_host_task(key);
-            if let Ok(mut guard) = self.lock_tables() {
-                guard.abandon_subtask(subtask);
-            }
-            self.poison();
-            return Err(error);
+        counted.map_err(|error| self.fail_pending_host_call(subtask, key, error))
+    }
+
+    /// Fail the host call `subtask`, whose first poll left it pending,
+    /// with `error`, and answer the error. The entry `key` of its host
+    /// task goes, and the task with it. The subtask resolves as a
+    /// cancellation, which gives back the handles the guest lent and
+    /// takes its scope off the stack, and the store is poisoned, as for
+    /// a call whose body failed.
+    fn fail_pending_host_call(&mut self, subtask: SubtaskId, key: u64, error: Error) -> Error {
+        self.scheduler_mut().complete_host_task(key);
+        if let Ok(mut guard) = self.lock_tables() {
+            guard.abandon_subtask(subtask);
         }
-        Ok(())
+        self.poison();
+        error
     }
 
     /// Make the entry of a host task that is about to take its first

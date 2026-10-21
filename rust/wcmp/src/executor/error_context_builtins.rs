@@ -167,6 +167,7 @@ pub fn build_error_context_transfer<T: 'static>(
             let destination = error_context_table(&instances, &abi_state, arg_u32(args, 2)?)?;
             let mut guard = lock_tables(&tables)?;
             let context = error_context_at(&guard, source, index)?;
+            guard.admit_handle().map_err(|e| anyhow!("{e}"))?;
             guard.tasks.retain_error_context(context).map_err(trap)?;
             let out = guard
                 .insert_error_context(destination, context)
@@ -234,6 +235,7 @@ fn error_context_new<T: 'static>(
     };
 
     let mut guard = lock_tables(tables)?;
+    guard.admit_handle().map_err(|e| anyhow!("{e}"))?;
     let context = guard
         .tasks
         .insert_error_context(debug_message)

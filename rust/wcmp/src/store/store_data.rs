@@ -41,8 +41,8 @@ use super::store_id::StoreId;
 /// type and a host task's body need not be `Send` in the browser.
 /// A trampoline reaches all of this through the context it is
 /// handed, capturing none of it, which is what makes the scheduler
-/// and its suspend seam reachable from inside a guest call. PDD018
-/// asks for exactly that: a suspended guest thread resumes outside
+/// and its suspend seam reachable from inside a guest call. The
+/// scheduler needs exactly that: a suspended guest thread resumes outside
 /// any poll of a driver, so the scheduler's state has to be
 /// reachable with no driver on the stack. Wasmtime's `StoreInner<T>`
 /// is the same arrangement for the same reason.
@@ -463,9 +463,9 @@ impl<T: 'static> StoreData<T> {
     }
 
     /// Why a nested turn held to `instance` went idle with its
-    /// condition unmet: the blocked thread's own instance must not
-    /// suspend, and the turn ran every ready thread of that instance
-    /// it could reach.
+    /// condition unmet: `instance`, the blocked thread's own or that of
+    /// a caller below that waits for it, must not suspend, and the turn
+    /// ran every ready thread of that instance it could reach.
     ///
     /// The cannot-block cause is read from that instance alone. It
     /// holds when no other thread of the instance is ready, which is

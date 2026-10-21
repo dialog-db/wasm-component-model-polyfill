@@ -10,6 +10,7 @@
 
 use core::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use crate::abi::signature::Signature;
 use crate::error::{
@@ -50,6 +51,7 @@ use super::task_state::TaskState;
 use super::thread::Thread;
 use super::thread_id::ThreadId;
 use super::thread_start::ThreadStart;
+use super::thread_table::ThreadTable;
 use super::waitable_id::WaitableId;
 use super::waitable_set::WaitableSet;
 use super::waitable_set_id::WaitableSetId;
@@ -96,7 +98,7 @@ use super::waitable_state::WaitableState;
 /// records of streams and futures, and error-context records. The
 /// subtask of a call into the host counts only once the call's first
 /// poll leaves it pending, as Wasmtime 50 makes the record of a host
-/// call only then. A record that would take the count past the cap is
+/// call lazily. A record that would take the count past the cap is
 /// not created, and its creation fails with Wasmtime's full-table
 /// cause. Lowering the cap below the count removes nothing. Only the
 /// records created after it fail.
@@ -119,6 +121,9 @@ pub struct TaskTables {
     /// How many subtask records are host calls that do not count
     /// against the cap yet.
     uncounted_subtasks: usize,
+    /// The store's count of its live handles, which the thread table
+    /// of every instance shares with the store's handle tables.
+    handle_count: Arc<AtomicUsize>,
 }
 
 /// The cap on the store's live records unless it is set to another:
@@ -145,7 +150,14 @@ impl TaskTables {
             ready: Vec::new(),
             max_records: DEFAULT_MAX_RECORDS,
             uncounted_subtasks: 0,
+            handle_count: Arc::default(),
         }
+    }
+
+    /// The store's count of its live handles, which the thread table of
+    /// every instance keeps. The store's handle tables share it.
+    pub fn handle_count(&self) -> Arc<AtomicUsize> {
+        self.handle_count.clone()
     }
 
     /// The most records the store holds live before a new one fails.
@@ -206,7 +218,9 @@ impl TaskTables {
     /// identity. One instantiation calls this once per component
     /// instance it creates.
     pub fn insert_instance(&mut self) -> InstanceId {
-        self.instances.push(InstanceRecord::new());
+        let mut record = InstanceRecord::new();
+        record.threads = ThreadTable::counted(self.handle_count.clone());
+        self.instances.push(record);
         InstanceId::from_index((self.instances.len() - 1) as u32)
     }
 
@@ -218,16 +232,6 @@ impl TaskTables {
     /// The record of one component instance, mutably.
     pub fn instance_mut(&mut self, instance: InstanceId) -> Option<&mut InstanceRecord> {
         self.instances.get_mut(instance.index() as usize)
-    }
-
-    /// How many thread indices the thread tables of every instance hand
-    /// out, which the store's cap on its live handles counts, as
-    /// Wasmtime counts a guest thread's handle.
-    pub fn live_thread_indices(&self) -> usize {
-        self.instances
-            .iter()
-            .map(|record| record.threads.live())
-            .sum()
     }
 
     /// Every component instance record in the store, in the order
@@ -416,12 +420,14 @@ impl TaskTables {
     /// until [`count_host_subtask`](Self::count_host_subtask) admits it,
     /// so a full store does not refuse the call.
     ///
-    /// Wasmtime 50 makes the `HostTask` of a host call only when the
-    /// call needs a record that outlives its first poll
+    /// Wasmtime 50 makes the `HostTask` of a host call lazily
     /// (`materialize_host_task` in
     /// `crates/wasmtime/src/runtime/component/concurrent.rs` at
-    /// `v50.0.0`). A host function that answers on its first poll then
-    /// takes no record, and runs even when the store's table is full.
+    /// `v50.0.0`): when the call stays pending past its first poll,
+    /// lends a borrow, or calls back into a guest. A host function that
+    /// does none of these takes no record, and runs even when the
+    /// store's table is full. The polyfill counts the record in the
+    /// first case only.
     pub fn push_host_subtask(&mut self) -> SubtaskId {
         let mut record = Subtask::new();
         record.uncounted = true;
@@ -868,8 +874,9 @@ impl TaskTables {
     }
 
     /// The instance of the nearest caller below the blocked thread that
-    /// waits for the block and whose instance must not suspend, or
-    /// `None` when no such caller waits.
+    /// waits for the block and whose instance must not suspend, while
+    /// no other thread of that instance is ready. `None` when no such
+    /// caller waits.
     ///
     /// A nested turn for a block with no provider runs on top of the
     /// frames below it, so it stands in for every one of them at once.
@@ -883,6 +890,11 @@ impl TaskTables {
     /// thread's own task may block. Without the hold, the turn would
     /// run a thread that the caller's rule keeps waiting, such as a
     /// thread that reenters the caller's instance.
+    ///
+    /// A caller whose instance has another thread ready gives way to
+    /// that thread instead of trapping, as in Wasmtime, and the turn is
+    /// not held then. Once that thread runs, the store runs every ready
+    /// item, so the nested turn runs every one.
     ///
     /// The walk reads the frames as [`cause_below`](Self::cause_below)
     /// reads them. It stops at a frame below which no caller waits for
@@ -903,7 +915,7 @@ impl TaskTables {
                             .instance(instance)
                             .is_some_and(|record| record.may_not_suspend)
                     {
-                        return Some(instance);
+                        return (!self.other_thread_ready_in(instance)).then_some(instance);
                     }
                 }
                 Scope::NestedStart {
@@ -3018,6 +3030,112 @@ mod tests {
                 Scope::Task(callee)
             ]
         );
+    }
+
+    /// Tables where a thread of a caller in an instance that must not
+    /// suspend made a synchronous lower into a callee in another
+    /// instance, whose thread is the one that blocks. Answers the
+    /// tables, the caller's instance, and the lower's subtask.
+    fn caller_waits_below() -> (TaskTables, InstanceId, SubtaskId) {
+        let mut tables = TaskTables::new();
+        let caller_instance = tables.insert_instance();
+        let callee_instance = tables.insert_instance();
+        let caller = tables
+            .push_task(None, None, caller_instance)
+            .expect("room under the record cap");
+        tables.start_task(caller);
+        tables.set_may_not_suspend(caller_instance, true);
+        let subtask = tables.insert_subtask().expect("room under the record cap");
+        tables.begin_nested_start(subtask, LowerKind::Sync);
+        let callee = tables
+            .push_task(None, None, callee_instance)
+            .expect("room under the record cap");
+        tables.start_task(callee);
+        (tables, caller_instance, subtask)
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_a_nested_turn_to_a_waiting_caller_that_must_not_suspend() {
+        let (tables, caller_instance, _) = caller_waits_below();
+        assert_eq!(tables.held_instance_below(), Some(caller_instance));
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_no_nested_turn_when_the_callers_instance_may_suspend() {
+        let (mut tables, caller_instance, _) = caller_waits_below();
+        tables.set_may_not_suspend(caller_instance, false);
+        assert_eq!(tables.held_instance_below(), None);
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_no_nested_turn_when_the_caller_has_another_thread_ready() {
+        // The caller gives way to its own ready thread, as Wasmtime's
+        // `switch_or_trap_if_may_not_suspend` does, and everything runs
+        // after it.
+        let mut tables = TaskTables::new();
+        let caller_instance = tables.insert_instance();
+        let other = tables
+            .push_task(None, None, caller_instance)
+            .expect("room under the record cap");
+        tables.start_task(other);
+        let other_thread = tables.current_thread().expect("the other task's thread");
+        tables
+            .start_waiting(other_thread, Readiness::Yielded)
+            .expect("the thread waits");
+        tables.pop_scope();
+
+        let callee_instance = tables.insert_instance();
+        let caller = tables
+            .push_task(None, None, caller_instance)
+            .expect("room under the record cap");
+        tables.start_task(caller);
+        tables.set_may_not_suspend(caller_instance, true);
+        let subtask = tables.insert_subtask().expect("room under the record cap");
+        tables.begin_nested_start(subtask, LowerKind::Sync);
+        let callee = tables
+            .push_task(None, None, callee_instance)
+            .expect("room under the record cap");
+        tables.start_task(callee);
+
+        assert!(tables.other_thread_ready_in(caller_instance));
+        assert_eq!(tables.held_instance_below(), None);
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_no_nested_turn_past_a_synchronous_lower_whose_callee_resolved() {
+        let (mut tables, _, subtask) = caller_waits_below();
+        tables
+            .subtask_returned(subtask)
+            .expect("the callee returns");
+        assert_eq!(tables.held_instance_below(), None);
+    }
+
+    #[wcmp_macros::test]
+    fn it_holds_no_nested_turn_past_an_asynchronous_lower_a_thread_switch_or_a_host_call() {
+        // Each frame stops the walk: below it, no caller waits for the
+        // block above.
+        for frame in ["async lower", "thread switch", "host call"] {
+            let (mut tables, _, _) = caller_waits_below();
+            let instance = tables.insert_instance();
+            match frame {
+                "async lower" => {
+                    let subtask = tables.insert_subtask().expect("room under the record cap");
+                    tables.begin_nested_start(subtask, LowerKind::Async);
+                }
+                "thread switch" => {
+                    let thread = tables.current_thread().expect("the callee's thread");
+                    tables.begin_thread_switch(thread);
+                }
+                _ => {
+                    tables.push_host_subtask();
+                }
+            }
+            let blocked = tables
+                .push_task(None, None, instance)
+                .expect("room under the record cap");
+            tables.start_task(blocked);
+            assert_eq!(tables.held_instance_below(), None, "past a {frame}");
+        }
     }
 
     #[wcmp_macros::test]

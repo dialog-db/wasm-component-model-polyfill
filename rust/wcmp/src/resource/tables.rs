@@ -35,6 +35,8 @@
 //! [`Val`]: crate::Val
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::concurrency::{
     EndId, EndKind, ErrorContextId, Event, SchedulerState, Scope, SubtaskId, SubtaskState, TaskId,
@@ -76,6 +78,9 @@ pub struct HandleTables {
     /// thread table. A new handle past it is refused with
     /// [`HandleLookupError::LimitExceeded`].
     handle_limit: usize,
+    /// The store's count of its live handles, which every handle table
+    /// here and every thread table of `tasks` keeps as it changes.
+    handle_count: Arc<AtomicUsize>,
 }
 
 /// The cap on a store's live handles unless the host sets another, as
@@ -85,12 +90,15 @@ pub const DEFAULT_HANDLE_LIMIT: usize = 100_000;
 impl HandleTables {
     /// Construct an empty collection.
     pub fn new() -> Self {
+        let tasks = TaskTables::new();
+        let handle_count = tasks.handle_count();
         Self {
             tables: HashMap::new(),
             host_tables: HashMap::new(),
-            tasks: TaskTables::new(),
+            tasks,
             scheduler: SchedulerState::new(),
             handle_limit: DEFAULT_HANDLE_LIMIT,
+            handle_count,
         }
     }
 
@@ -109,14 +117,20 @@ impl HandleTables {
     /// How many handles the store holds: the entries of every handle
     /// table and the threads of every thread table.
     pub fn live_handles(&self) -> usize {
-        let entries: usize = self.tables.values().map(HandleTable::live).sum();
-        entries + self.tasks.live_thread_indices()
+        self.handle_count.load(Ordering::Relaxed)
     }
 
     /// Refuse a new handle that would take the store past its cap, as
     /// Wasmtime's handle table refuses one before it allocates.
     pub fn admit_handle(&self) -> Result<(), HandleLookupError> {
-        if self.live_handles() >= self.handle_limit {
+        self.admit_handles(1)
+    }
+
+    /// Refuse `count` new handles unless all of them fit under the cap.
+    /// A built-in that makes records for its handles asks this first,
+    /// so a refusal leaves no record behind.
+    pub fn admit_handles(&self, count: usize) -> Result<(), HandleLookupError> {
+        if self.live_handles().saturating_add(count) > self.handle_limit {
             return Err(HandleLookupError::LimitExceeded);
         }
         Ok(())
@@ -1130,7 +1144,10 @@ impl HandleTables {
     /// Borrow the table with the given identity, creating it on first
     /// access.
     pub fn for_table_mut(&mut self, table: TableId) -> &mut HandleTable {
-        self.tables.entry(table).or_default()
+        let handle_count = &self.handle_count;
+        self.tables
+            .entry(table)
+            .or_insert_with(|| HandleTable::counted(handle_count.clone()))
     }
 
     /// Borrow the table with the given identity, or `None` if nothing
