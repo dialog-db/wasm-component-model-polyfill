@@ -1195,8 +1195,10 @@ pub fn wcmp::Store<T>::as_context_mut(&mut self) -> wcmp::StoreContext<'_, T>
 pub fn wcmp::Store<T>::data(&self) -> &T
 pub fn wcmp::Store<T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::Store<T>::hostcall_fuel(&self) -> usize
+pub fn wcmp::Store<T>::max_component_handles(&self) -> usize
 pub async fn wcmp::Store<T>::run_concurrent<R, F>(&mut self, F) -> wcmp::Result<R> where F: core::ops::async_function::AsyncFnOnce(&wcmp::Accessor<T>) -> R
 pub fn wcmp::Store<T>::set_hostcall_fuel(&mut self, usize)
+pub fn wcmp::Store<T>::set_max_component_handles(&mut self, usize)
 impl<T: core::marker::Send + 'static> wcmp::Store<T>
 pub fn wcmp::Store<T>::new(&wcmp::Engine, T) -> wcmp::Result<Self>
 impl<T: 'static> core::ops::drop::Drop for wcmp::Store<T>
@@ -1206,7 +1208,9 @@ impl<'a, T: 'static> wcmp::StoreContext<'a, T>
 pub fn wcmp::StoreContext<'a, T>::data(&self) -> &T
 pub fn wcmp::StoreContext<'a, T>::data_mut(&mut self) -> &mut T
 pub fn wcmp::StoreContext<'a, T>::hostcall_fuel(&self) -> usize
+pub fn wcmp::StoreContext<'a, T>::max_component_handles(&self) -> usize
 pub fn wcmp::StoreContext<'a, T>::set_hostcall_fuel(&mut self, usize)
+pub fn wcmp::StoreContext<'a, T>::set_max_component_handles(&mut self, usize)
 pub struct wcmp::StoreId(_)
 impl core::clone::Clone for wcmp::StoreId
 pub fn wcmp::StoreId::clone(&self) -> wcmp::StoreId

@@ -389,7 +389,9 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
         .insert_subtask()
         .expect("room under the record cap");
     let waitable = guard.tasks.subtask_waitable(subtask);
-    let subtask_index = guard.insert_subtask(table, subtask);
+    let subtask_index = guard
+        .insert_subtask(table, subtask)
+        .expect("room for a handle");
     guard
         .tasks
         .join_waitable_set(waitable, Some(set))
@@ -416,7 +418,9 @@ fn subtask_not_in_a_set(store: &mut Store<()>, instance: &Instance) -> u32 {
         .tasks
         .insert_subtask()
         .expect("room under the record cap");
-    guard.insert_subtask(table, subtask)
+    guard
+        .insert_subtask(table, subtask)
+        .expect("room for a handle")
 }
 
 /// Every message in an error's source chain, joined so that a trap

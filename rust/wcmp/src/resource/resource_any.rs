@@ -225,7 +225,9 @@ impl ResourceAnyInternal for ResourceAny {
             // lowered, as Wasmtime 50 defers it (`4ac4c8cbf`).
             HostHandleState::Borrow => (SYNTHETIC, 0, false),
             HostHandleState::NotInTable => {
-                let (index, generation) = guard.insert_host_own(identity, false, rep);
+                let (index, generation) = guard
+                    .insert_host_own(identity, false, rep)
+                    .map_err(|e| refuse(e.to_string()))?;
                 (index, generation, true)
             }
             HostHandleState::Taken => return Err(refuse(CONSUMED.to_owned())),

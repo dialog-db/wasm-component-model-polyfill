@@ -168,7 +168,9 @@ pub fn build_error_context_transfer<T: 'static>(
             let mut guard = lock_tables(&tables)?;
             let context = error_context_at(&guard, source, index)?;
             guard.tasks.retain_error_context(context).map_err(trap)?;
-            let out = guard.insert_error_context(destination, context);
+            let out = guard
+                .insert_error_context(destination, context)
+                .map_err(|e| anyhow!("{e}"))?;
             results[0] = RuntimeVal::I32(out as i32);
             Ok(())
         },
@@ -236,7 +238,9 @@ fn error_context_new<T: 'static>(
         .tasks
         .insert_error_context(debug_message)
         .map_err(trap)?;
-    Ok(guard.insert_error_context(table, context))
+    guard
+        .insert_error_context(table, context)
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// The body of the `error-context.debug-message` built-in.

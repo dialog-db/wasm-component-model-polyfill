@@ -206,8 +206,12 @@ fn build_new<T: 'static>(
                 .tasks
                 .insert_ends(EndPayload::Declared(payload.clone()))
                 .map_err(trap)?;
-            let readable = guard.insert_end(table, kinds[0], readable);
-            let writable = guard.insert_end(table, kinds[1], writable);
+            let readable = guard
+                .insert_end(table, kinds[0], readable)
+                .map_err(|e| anyhow!("{e}"))?;
+            let writable = guard
+                .insert_end(table, kinds[1], writable)
+                .map_err(|e| anyhow!("{e}"))?;
             results[0] = RuntimeVal::I64(pack_indices(readable, writable));
             Ok(())
         },

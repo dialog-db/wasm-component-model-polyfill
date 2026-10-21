@@ -89,6 +89,12 @@ pub enum HandleLookupError {
     /// the caller named has already ended. Nothing gives the lend
     /// back in either case, so the lend is refused instead of made.
     NoCallInFlight,
+    /// A new handle would take the store past its cap on live handles,
+    /// which [`Store::set_max_component_handles`] sets. The message is
+    /// Wasmtime's (`src/runtime/vm/component/handle_table.rs`).
+    ///
+    /// [`Store::set_max_component_handles`]: crate::Store::set_max_component_handles
+    LimitExceeded,
 }
 
 impl HandleLookupError {
@@ -153,6 +159,12 @@ impl fmt::Display for HandleLookupError {
             }
             Self::NoCallInFlight => {
                 write!(f, "a borrow can only be lifted out during a call")
+            }
+            Self::LimitExceeded => {
+                write!(
+                    f,
+                    "cannot allocate another handle: store handle limit exceeded"
+                )
             }
         }
     }

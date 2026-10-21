@@ -182,6 +182,30 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         self.store_data_mut().set_hostcall_fuel(fuel);
     }
 
+    /// The most handles the store holds at once. See
+    /// [`Store::max_component_handles`].
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](StoreContext::data) does.
+    ///
+    /// [`Store::max_component_handles`]: super::Store::max_component_handles
+    pub fn max_component_handles(&self) -> usize {
+        self.store_data().max_component_handles()
+    }
+
+    /// Set the most handles the store holds at once. See
+    /// [`Store::set_max_component_handles`].
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](StoreContext::data) does.
+    ///
+    /// [`Store::set_max_component_handles`]: super::Store::set_max_component_handles
+    pub fn set_max_component_handles(&mut self, limit: usize) {
+        self.store_data().set_max_component_handles(limit);
+    }
+
     /// The store's process-unique identity. Workspace-internal.
     fn id(&self) -> StoreId {
         self.store_data().id()
@@ -710,7 +734,9 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                     // which is the callee the entry gate held and not
                     // this call.
                     guard.tasks.start_subtask(subtask);
-                    let index = guard.insert_subtask(caller, subtask);
+                    let index = guard
+                        .insert_subtask(caller, subtask)
+                        .map_err(|e| Error::Trap(anyhow::Error::from(e)))?;
                     // The guest runs on while the host side does, so
                     // the subtask is no longer the scope the guest's
                     // work counts against. Its record stays, and with

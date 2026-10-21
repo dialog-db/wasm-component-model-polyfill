@@ -389,7 +389,9 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, new_set: &st
         .insert_subtask()
         .expect("room under the record cap");
     let waitable = guard.tasks.subtask_waitable(subtask);
-    let subtask_index = guard.insert_subtask(table, subtask);
+    let subtask_index = guard
+        .insert_subtask(table, subtask)
+        .expect("room for a handle");
     guard
         .tasks
         .join_waitable_set(waitable, Some(set))

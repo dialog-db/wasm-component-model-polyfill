@@ -273,9 +273,11 @@ impl<T: 'static> Store<T> {
     /// host forgot the future that waited for that call. Every method
     /// of the store that returns a [`Result`] fails with
     /// [`Error::StoreRefused`] there instead, and only this method,
-    /// [`data_mut`](Store::data_mut), [`hostcall_fuel`](Store::hostcall_fuel)
-    /// and [`set_hostcall_fuel`](Store::set_hostcall_fuel), which cannot
-    /// fail, panic. The context a host function is handed is never
+    /// [`data_mut`](Store::data_mut), [`hostcall_fuel`](Store::hostcall_fuel),
+    /// [`set_hostcall_fuel`](Store::set_hostcall_fuel),
+    /// [`max_component_handles`](Store::max_component_handles), and
+    /// [`set_max_component_handles`](Store::set_max_component_handles),
+    /// which cannot fail, panic. The context a host function is handed is never
     /// refused.
     ///
     /// [`Error::StoreRefused`]: crate::Error::StoreRefused
@@ -337,6 +339,42 @@ impl<T: 'static> Store<T> {
     /// [`AbiCause::CopyBudgetSpent`]: crate::AbiCause::CopyBudgetSpent
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.store_data_mut().set_hostcall_fuel(fuel);
+    }
+
+    /// The most handles this store holds at once: the default of
+    /// 100,000, or the last value passed to
+    /// [`Store::set_max_component_handles`].
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
+    pub fn max_component_handles(&self) -> usize {
+        self.store_data().max_component_handles()
+    }
+
+    /// Set the most handles this store holds at once to `limit`.
+    ///
+    /// A guest can make handles with no host code involved, for
+    /// example with `resource.new`, in as many instances as it has.
+    /// The cap stops a guest from filling the host's memory that way.
+    /// It counts every live entry of every handle table in the store,
+    /// the host's table included, and every guest thread. A built-in
+    /// or a crossing that would make one more handle past the cap
+    /// traps with "cannot allocate another handle: store handle limit
+    /// exceeded".
+    ///
+    /// The cap counts live handles only, so a dropped handle gives its
+    /// place back. A cap below the count that is live now removes no
+    /// handle. It refuses new handles until the count falls under it.
+    ///
+    /// The default is 100,000, as in Wasmtime, whose
+    /// `Store::set_max_component_handles` this mirrors.
+    ///
+    /// # Panics
+    ///
+    /// Where [`data`](Store::data) does.
+    pub fn set_max_component_handles(&mut self, limit: usize) {
+        self.store_data().set_max_component_handles(limit);
     }
 
     /// What the boundary counters counted for this store since they were

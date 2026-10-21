@@ -153,10 +153,11 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
         use crate::internal::ResourceAnyInternal;
 
         let guest_defined = self.context.store_data().is_guest_defined(type_id);
-        let (index, generation) =
-            self.context
-                .lock_tables()?
-                .insert_host_own(type_id, guest_defined, rep);
+        let (index, generation) = self
+            .context
+            .lock_tables()?
+            .insert_host_own(type_id, guest_defined, rep)
+            .map_err(|e| crate::Error::Trap(anyhow::Error::from(e)))?;
         Ok(ResourceAny::new(type_id, index, rep, generation, true))
     }
 

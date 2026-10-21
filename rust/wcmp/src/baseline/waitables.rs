@@ -465,7 +465,9 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
     // stands in for the caller instance's table.
     let ty = ResourceType::fresh_guest();
     let table = tables.host_table(ty);
-    let owned = tables.insert_own(table, ty, false, 11);
+    let owned = tables
+        .insert_own(table, ty, false, 11)
+        .expect("room for a handle");
 
     // The call lends the owned handle while it lifts its parameters,
     // and then leaves the stack: an asynchronous call outlives the
@@ -494,7 +496,9 @@ async fn it_decrements_the_lenders_of_a_subtask_when_its_resolution_is_delivered
         .tasks
         .subtask_returned(subtask)
         .expect("the call returns");
-    let handle_index = tables.insert_subtask(table, subtask);
+    let handle_index = tables
+        .insert_subtask(table, subtask)
+        .expect("room for a handle");
     tables
         .tasks
         .record_subtask_event(subtask, handle_index)
@@ -529,8 +533,12 @@ async fn it_finds_a_waitable_and_a_waitable_set_through_their_handles() {
         .tasks
         .insert_waitable_set()
         .expect("room under the record cap");
-    let subtask_handle = tables.insert_subtask(table, subtask);
-    let set_handle = tables.insert_waitable_set(table, set);
+    let subtask_handle = tables
+        .insert_subtask(table, subtask)
+        .expect("room for a handle");
+    let set_handle = tables
+        .insert_waitable_set(table, set)
+        .expect("room for a handle");
 
     assert_eq!(
         tables

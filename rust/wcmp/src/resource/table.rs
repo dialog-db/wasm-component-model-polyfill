@@ -80,6 +80,9 @@ enum Slot {
 pub struct HandleTable {
     slots: Vec<Slot>,
     free_head: Option<u32>,
+    /// How many entries the table holds, which the store's cap on its
+    /// live handles counts.
+    live: usize,
 }
 
 impl HandleTable {
@@ -88,7 +91,13 @@ impl HandleTable {
         Self {
             slots: vec![Slot::Reserved],
             free_head: None,
+            live: 0,
         }
+    }
+
+    /// How many entries the table holds.
+    pub fn live(&self) -> usize {
+        self.live
     }
 
     /// Insert an entry, of any kind, and return its index.
@@ -97,6 +106,7 @@ impl HandleTable {
     }
 
     fn insert(&mut self, entry: HandleKind) -> u32 {
+        self.live += 1;
         if let Some(idx) = self.free_head {
             let (next, generation) = match self.slots[idx as usize] {
                 Slot::Free { next, generation } => (next, generation),
@@ -160,6 +170,7 @@ impl HandleTable {
             generation: next_generation(generation),
         };
         self.free_head = Some(index);
+        self.live -= 1;
         Some(entry)
     }
 }

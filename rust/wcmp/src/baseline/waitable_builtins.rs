@@ -237,7 +237,9 @@ fn subtask_in_table(store: &mut Store<()>, instance: &Instance) -> u32 {
         .tasks
         .insert_subtask()
         .expect("room under the record cap");
-    guard.insert_subtask(table, subtask)
+    guard
+        .insert_subtask(table, subtask)
+        .expect("room for a handle")
 }
 
 /// Put a returned subtask in the instance's own table, joined to the
@@ -258,7 +260,9 @@ fn ready_subtask_in_set(store: &mut Store<()>, instance: &Instance, set_index: u
         .insert_subtask()
         .expect("room under the record cap");
     let waitable = guard.tasks.subtask_waitable(subtask);
-    let subtask_index = guard.insert_subtask(table, subtask);
+    let subtask_index = guard
+        .insert_subtask(table, subtask)
+        .expect("room for a handle");
     guard
         .tasks
         .join_waitable_set(waitable, Some(set))
@@ -496,7 +500,9 @@ async fn it_removes_a_waitable_from_its_set_when_the_set_index_is_zero() {
             .tasks
             .insert_subtask()
             .expect("room under the record cap");
-        guard.insert_subtask(table, subtask)
+        guard
+            .insert_subtask(table, subtask)
+            .expect("room for a handle")
     };
 
     call(
@@ -698,7 +704,9 @@ async fn it_traps_a_join_of_a_waitable_that_has_a_synchronous_waiter() {
             .insert_subtask()
             .expect("room under the record cap");
         let waitable = guard.tasks.subtask_waitable(subtask);
-        let index = guard.insert_subtask(table, subtask);
+        let index = guard
+            .insert_subtask(table, subtask)
+            .expect("room for a handle");
         guard
             .tasks
             .begin_synchronous_wait(waitable)

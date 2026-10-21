@@ -995,7 +995,9 @@ pub fn lift_resource_any<T: 'static>(
         let rep = guard
             .remove_own(table.table, index, table.type_id, table.guest_defined)
             .map_err(|e| invalid(e.to_string()))?;
-        let (index, generation) = guard.insert_host_own(table.type_id, table.guest_defined, rep);
+        let (index, generation) = guard
+            .insert_host_own(table.type_id, table.guest_defined, rep)
+            .map_err(|e| invalid(e.to_string()))?;
         return Ok(ResourceAny::new(
             table.type_id,
             index,
@@ -1011,7 +1013,7 @@ pub fn lift_resource_any<T: 'static>(
     // afterwards.
     let (index, generation) = guard
         .insert_host_borrow(scope, table.type_id, table.guest_defined, rep)
-        .ok_or_else(|| invalid(HandleLookupError::NoCallInFlight.to_string()))?;
+        .map_err(|e| invalid(e.to_string()))?;
     Ok(ResourceAny::new(
         table.type_id,
         index,

@@ -400,7 +400,9 @@ fn status_word(
         guard.tasks.remove_subtask(subtask);
         return Ok(CallStatus::returned());
     }
-    let index = guard.insert_subtask(caller_table, subtask);
+    let index = guard
+        .insert_subtask(caller_table, subtask)
+        .map_err(|e| Error::Trap(anyhow::Error::from(e)))?;
     Ok(CallStatus::in_progress(state, index))
 }
 

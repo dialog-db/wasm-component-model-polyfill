@@ -71,7 +71,16 @@ pub struct HandleTables {
     /// the collection from inside a runtime-layer closure, where the
     /// store itself is unreachable. Workspace-internal.
     pub scheduler: SchedulerState,
+    /// The store's cap on its live handles: the entries of every
+    /// handle table, the host's included, and the threads of every
+    /// thread table. A new handle past it is refused with
+    /// [`HandleLookupError::LimitExceeded`].
+    handle_limit: usize,
 }
+
+/// The cap on a store's live handles unless the host sets another, as
+/// in Wasmtime.
+pub const DEFAULT_HANDLE_LIMIT: usize = 100_000;
 
 impl HandleTables {
     /// Construct an empty collection.
@@ -81,7 +90,36 @@ impl HandleTables {
             host_tables: HashMap::new(),
             tasks: TaskTables::new(),
             scheduler: SchedulerState::new(),
+            handle_limit: DEFAULT_HANDLE_LIMIT,
         }
+    }
+
+    /// The store's cap on its live handles.
+    pub fn handle_limit(&self) -> usize {
+        self.handle_limit
+    }
+
+    /// Set the store's cap on its live handles. A cap below the handles
+    /// already live removes none of them: only new handles are refused
+    /// until the count falls back under it, as in Wasmtime.
+    pub fn set_handle_limit(&mut self, limit: usize) {
+        self.handle_limit = limit;
+    }
+
+    /// How many handles the store holds: the entries of every handle
+    /// table and the threads of every thread table.
+    pub fn live_handles(&self) -> usize {
+        let entries: usize = self.tables.values().map(HandleTable::live).sum();
+        entries + self.tasks.live_thread_indices()
+    }
+
+    /// Refuse a new handle that would take the store past its cap, as
+    /// Wasmtime's handle table refuses one before it allocates.
+    pub fn admit_handle(&self) -> Result<(), HandleLookupError> {
+        if self.live_handles() >= self.handle_limit {
+            return Err(HandleLookupError::LimitExceeded);
+        }
+        Ok(())
     }
 
     /// End the task `task` on its success path: every borrow lowered
@@ -765,13 +803,14 @@ impl HandleTables {
         type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
-    ) -> u32 {
-        self.for_table_mut(table).insert_entry(HandleKind::Own {
+    ) -> Result<u32, HandleLookupError> {
+        self.admit_handle()?;
+        Ok(self.for_table_mut(table).insert_entry(HandleKind::Own {
             type_id,
             guest_defined,
             rep,
             lend_count: 0,
-        })
+        }))
     }
 
     /// Insert an owning entry for `rep` into the host's table for
@@ -782,22 +821,22 @@ impl HandleTables {
         type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
-    ) -> (u32, u32) {
+    ) -> Result<(u32, u32), HandleLookupError> {
         let table = self.host_table(type_id);
-        let index = self.insert_own(table, type_id, guest_defined, rep);
-        (index, self.generation(table, index).unwrap_or_default())
+        let index = self.insert_own(table, type_id, guest_defined, rep)?;
+        Ok((index, self.generation(table, index).unwrap_or_default()))
     }
 
     /// Insert a borrow of `rep` of resource type `type_id` into
     /// `table`, owed to the current task. Returns the new index, or
-    /// `None` when no task is in flight.
+    /// [`HandleLookupError::NoCallInFlight`] when no task is in flight.
     pub fn insert_borrow(
         &mut self,
         table: TableId,
         type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
-    ) -> Option<u32> {
+    ) -> Result<u32, HandleLookupError> {
         self.insert_borrow_for(None, table, type_id, guest_defined, rep)
     }
 
@@ -821,11 +860,13 @@ impl HandleTables {
         type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
-    ) -> Option<u32> {
-        let scope = self.tasks.counting_scope(scope)?;
-        let task = self.tasks.borrow_task(scope)?;
-        self.tasks.task_mut(task)?.num_borrows += 1;
-        Some(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
+    ) -> Result<u32, HandleLookupError> {
+        let no_call = HandleLookupError::NoCallInFlight;
+        let scope = self.tasks.counting_scope(scope).ok_or(no_call)?;
+        let task = self.tasks.borrow_task(scope).ok_or(no_call)?;
+        self.admit_handle()?;
+        self.tasks.task_mut(task).ok_or(no_call)?.num_borrows += 1;
+        Ok(self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,
             guest_defined,
             rep,
@@ -839,33 +880,56 @@ impl HandleTables {
     /// The record is told where it landed. The index is the first
     /// payload of every event the subtask delivers, and its presence
     /// is what says the caller has an entry to be told about at all.
-    pub fn insert_subtask(&mut self, table: TableId, subtask: SubtaskId) -> u32 {
+    pub fn insert_subtask(
+        &mut self,
+        table: TableId,
+        subtask: SubtaskId,
+    ) -> Result<u32, HandleLookupError> {
+        self.admit_handle()?;
         let index = self
             .for_table_mut(table)
             .insert_entry(HandleKind::Subtask { subtask });
         self.tasks.set_subtask_handle(subtask, index);
-        index
+        Ok(index)
     }
 
     /// Insert a waitable-set entry that names the waitable set `set`,
     /// and return the handle-table index.
-    pub fn insert_waitable_set(&mut self, table: TableId, set: WaitableSetId) -> u32 {
-        self.for_table_mut(table)
-            .insert_entry(HandleKind::WaitableSet { set })
+    pub fn insert_waitable_set(
+        &mut self,
+        table: TableId,
+        set: WaitableSetId,
+    ) -> Result<u32, HandleLookupError> {
+        self.admit_handle()?;
+        Ok(self
+            .for_table_mut(table)
+            .insert_entry(HandleKind::WaitableSet { set }))
     }
 
     /// Insert an error-context entry that names the error-context
     /// record `context`, and return the handle-table index.
-    pub fn insert_error_context(&mut self, table: TableId, context: ErrorContextId) -> u32 {
-        self.for_table_mut(table)
-            .insert_entry(HandleKind::ErrorContext { context })
+    pub fn insert_error_context(
+        &mut self,
+        table: TableId,
+        context: ErrorContextId,
+    ) -> Result<u32, HandleLookupError> {
+        self.admit_handle()?;
+        Ok(self
+            .for_table_mut(table)
+            .insert_entry(HandleKind::ErrorContext { context }))
     }
 
     /// Insert an entry of kind `kind` that names the end record
     /// `end`, and return the handle-table index. The end record
     /// learns the index too, because the events it delivers carry it,
     /// and an end the host held is the guest's now.
-    pub fn insert_end(&mut self, table: TableId, kind: EndKind, end: EndId) -> u32 {
+    pub fn insert_end(
+        &mut self,
+        table: TableId,
+        kind: EndKind,
+        end: EndId,
+    ) -> Result<u32, HandleLookupError> {
+        self.admit_handle()?;
         let index = self
             .for_table_mut(table)
             .insert_entry(HandleKind::end(kind, end));
@@ -873,7 +937,7 @@ impl HandleTables {
             record.handle = Some(index);
             record.held_by_host = false;
         }
-        index
+        Ok(index)
     }
 
     /// Read the entry at `index` of `table`, of any kind, with no
@@ -955,9 +1019,11 @@ impl HandleTables {
         type_id: ResourceType,
         guest_defined: bool,
         rep: u32,
-    ) -> Option<(u32, u32)> {
-        let scope = self.tasks.counting_scope(scope)?;
-        let task = self.tasks.borrow_task(scope)?;
+    ) -> Result<(u32, u32), HandleLookupError> {
+        let no_call = HandleLookupError::NoCallInFlight;
+        let scope = self.tasks.counting_scope(scope).ok_or(no_call)?;
+        let task = self.tasks.borrow_task(scope).ok_or(no_call)?;
+        self.admit_handle()?;
         let table = self.host_table(type_id);
         let index = self.for_table_mut(table).insert_entry(HandleKind::Borrow {
             type_id,
@@ -967,10 +1033,10 @@ impl HandleTables {
         });
         if !self.tasks.add_lender(scope, (table, index)) {
             self.for_table_mut(table).remove(index);
-            return None;
+            return Err(no_call);
         }
-        let generation = self.generation(table, index)?;
-        Some((index, generation))
+        let generation = self.generation(table, index).ok_or(no_call)?;
+        Ok((index, generation))
     }
 
     /// The generation of the live entry at `index` of `table`.
@@ -1383,7 +1449,9 @@ mod tests {
         let table = TableId::fresh();
         let first = ResourceType::fresh_guest();
         let second = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, first, true, 7);
+        let index = tables
+            .insert_own(table, first, true, 7)
+            .expect("room for a handle");
         assert_eq!(
             tables.lookup(table, index, second, true),
             Err(HandleLookupError::WrongType {
@@ -1411,8 +1479,12 @@ mod tests {
         let table = TableId::fresh();
         let first = ResourceType::fresh_guest();
         let second = ResourceType::fresh_guest();
-        let a = tables.insert_own(table, first, true, 1);
-        let b = tables.insert_own(table, second, true, 2);
+        let a = tables
+            .insert_own(table, first, true, 1)
+            .expect("room for a handle");
+        let b = tables
+            .insert_own(table, second, true, 2)
+            .expect("room for a handle");
         assert_eq!(b, a + 1, "one allocator serves every resource type");
     }
 
@@ -1428,8 +1500,12 @@ mod tests {
             .tasks
             .insert_waitable_set()
             .expect("room under the record cap");
-        let subtask_index = tables.insert_subtask(table, subtask);
-        let set_index = tables.insert_waitable_set(table, set);
+        let subtask_index = tables
+            .insert_subtask(table, subtask)
+            .expect("room for a handle");
+        let set_index = tables
+            .insert_waitable_set(table, set)
+            .expect("room for a handle");
         assert_ne!(subtask_index, set_index);
         assert_eq!(
             tables.entry(table, subtask_index),
@@ -1469,7 +1545,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 3);
+        let index = tables
+            .insert_own(table, ty, false, 3)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1550,7 +1628,10 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        assert_eq!(tables.insert_borrow(table, ty, false, 1), None);
+        assert_eq!(
+            tables.insert_borrow(table, ty, false, 1),
+            Err(HandleLookupError::NoCallInFlight)
+        );
     }
 
     #[wcmp_macros::test]
@@ -1562,7 +1643,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 4);
+        let index = tables
+            .insert_own(table, ty, false, 4)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1715,7 +1798,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 4);
+        let index = tables
+            .insert_own(table, ty, false, 4)
+            .expect("room for a handle");
 
         let failed = tables
             .tasks
@@ -1758,7 +1843,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 5);
+        let index = tables
+            .insert_own(table, ty, false, 5)
+            .expect("room for a handle");
 
         assert_eq!(
             tables.lend(table, index),
@@ -1781,7 +1868,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 6);
+        let index = tables
+            .insert_own(table, ty, false, 6)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1812,7 +1901,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let owned = tables.insert_own(table, ty, false, 4);
+        let owned = tables
+            .insert_own(table, ty, false, 4)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let caller = tables
             .tasks
@@ -1901,7 +1992,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 8);
+        let index = tables
+            .insert_own(table, ty, false, 8)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1955,7 +2048,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 8);
+        let index = tables
+            .insert_own(table, ty, false, 8)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -1994,7 +2089,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 4);
+        let index = tables
+            .insert_own(table, ty, false, 4)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks
@@ -2041,7 +2138,9 @@ mod tests {
         let mut tables = HandleTables::new();
         let table = TableId::fresh();
         let ty = ResourceType::fresh_guest();
-        let index = tables.insert_own(table, ty, false, 8);
+        let index = tables
+            .insert_own(table, ty, false, 8)
+            .expect("room for a handle");
         let instance = tables.tasks.insert_instance();
         let task = tables
             .tasks

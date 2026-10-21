@@ -406,7 +406,9 @@ pub fn insert_handle(
     let mut guard = tables
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
-    Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
+    guard
+        .insert_own(table.table, table.type_id, table.guest_defined, rep)
+        .map_err(|e| Error::Trap(anyhow::Error::from(e)))
 }
 
 fn read_handle(

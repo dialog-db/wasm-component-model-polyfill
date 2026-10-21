@@ -264,7 +264,9 @@ pub fn lower_error_context<T: 'static>(
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     guard.tasks.retain_error_context(context.context())?;
-    Ok(guard.insert_error_context(table, context.context()))
+    guard
+        .insert_error_context(table, context.context())
+        .map_err(|e| invalid_handle(e.to_string(), ty, position))
 }
 
 /// Lower the readable end `end` into `table` for a crossing of type
@@ -289,7 +291,9 @@ pub fn lower_readable_end(
             ));
         }
     };
-    Ok(tables.insert_end(table, kind, end))
+    tables
+        .insert_end(table, kind, end)
+        .map_err(|e| Error::Trap(anyhow::Error::from(e)))
 }
 
 /// Lower `end`, a readable end the host holds, into the guest's
@@ -699,7 +703,9 @@ pub fn lower_resource_any<T: 'static>(
             table.guest_defined,
         )
         .map_err(|e| invalid_host_handle(e, ty, position))?;
-    Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
+    guard
+        .insert_own(table.table, table.type_id, table.guest_defined, rep)
+        .map_err(|e| invalid_host_handle(e, ty, position))
 }
 
 /// Lower the typed host handle `handle`, of the resource type
@@ -740,7 +746,9 @@ pub fn lower_host_resource<T: 'static>(
             HostHandleState::Borrow => rep,
             HostHandleState::Taken => return Err(invalid_handle(CONSUMED, ty, position)),
             HostHandleState::NotInTable => {
-                let (index, generation) = guard.insert_host_own(identity, false, rep);
+                let (index, generation) = guard
+                    .insert_host_own(identity, false, rep)
+                    .map_err(|e| invalid_host_handle(e, ty, position))?;
                 handle.set(HostHandleState::Index { index, generation });
                 guard
                     .lend_to(ctx.scope(), host_table, index)
@@ -772,7 +780,9 @@ pub fn lower_host_resource<T: 'static>(
                 .map_err(|e| invalid_host_handle(e, ty, position))?;
         }
     }
-    Ok(guard.insert_own(table.table, table.type_id, table.guest_defined, rep))
+    guard
+        .insert_own(table.table, table.type_id, table.guest_defined, rep)
+        .map_err(|e| invalid_host_handle(e, ty, position))
 }
 
 /// Wasmtime's refusal of a borrow lowered where the component
@@ -801,7 +811,12 @@ fn lower_borrowed_rep<T: 'static>(
             table.guest_defined,
             rep,
         )
-        .ok_or_else(|| invalid_handle("a borrow can only be lowered during a call", ty, position))
+        .map_err(|e| match e {
+            HandleLookupError::NoCallInFlight => {
+                invalid_handle("a borrow can only be lowered during a call", ty, position)
+            }
+            other => invalid_handle(other.to_string(), ty, position),
+        })
 }
 
 /// The handle tables of the store and the instance's table that the

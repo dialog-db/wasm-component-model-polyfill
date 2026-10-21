@@ -54,6 +54,11 @@ impl ThreadTable {
         Some(index)
     }
 
+    /// How many threads the table holds an index for.
+    pub fn live(&self) -> usize {
+        self.slots.len() - 1 - self.free.len()
+    }
+
     /// The thread at `index`, or `None` when the index is free or out
     /// of range.
     pub fn get(&self, index: u32) -> Option<ThreadId> {

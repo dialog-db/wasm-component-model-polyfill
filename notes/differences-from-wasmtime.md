@@ -40,3 +40,12 @@ The Component Model makes every NaN that a lift produces the one canonical NaN
 follows it, so a host reads those bits whatever NaN a guest gave it. Wasmtime
 keeps the guest's payload. A guest sees no difference, since a lower may hand it
 any NaN.
+
+## The first thread of a call is never refused
+
+A store caps the handles it holds at once, as in Wasmtime 50, and each guest
+thread counts as one handle. When the store is at its cap, Wasmtime refuses the
+thread that a new call starts on, so the call traps. The polyfill counts that
+thread but does not refuse it, so the call starts. Every other new handle is
+refused at the cap, as in Wasmtime, and that includes a thread that
+`thread.new-indirect` makes.

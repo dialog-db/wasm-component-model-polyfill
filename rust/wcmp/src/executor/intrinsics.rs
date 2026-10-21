@@ -69,7 +69,7 @@ use crate::concurrency::{InstanceId, Scope, ThreadId};
 use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreParameter, CoreSignature, EndTableSpec, TranscodeOp};
 use crate::internal::ErrorInternal;
-use crate::resource::{HandleKind, HandleTables, ResourceTableRuntime, TableId};
+use crate::resource::{HandleKind, HandleLookupError, HandleTables, ResourceTableRuntime, TableId};
 use crate::runtime_layer::host_func;
 use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType};
 use crate::store::StoreContext;
@@ -460,7 +460,9 @@ fn transfer_own(
     let rep = guard
         .remove_own(src.table, index, src.type_id, src.guest_defined)
         .map_err(|e| anyhow!("{e}"))?;
-    Ok(guard.insert_own(dst.table, dst.type_id, dst.guest_defined, rep))
+    guard
+        .insert_own(dst.table, dst.type_id, dst.guest_defined, rep)
+        .map_err(|e| anyhow!("{e}"))
 }
 
 fn transfer_borrow(
@@ -495,7 +497,12 @@ fn transfer_borrow(
     } else {
         guard
             .insert_borrow(dst.table, dst.type_id, dst.guest_defined, rep)
-            .ok_or_else(|| anyhow!("wasm trap: a borrow can only be transferred during a call"))
+            .map_err(|e| match e {
+                HandleLookupError::NoCallInFlight => {
+                    anyhow!("wasm trap: a borrow can only be transferred during a call")
+                }
+                other => anyhow!("{other}"),
+            })
     }
 }
 
@@ -675,8 +682,12 @@ mod tests {
             let mut guard = tables.lock().unwrap();
             // Seed the destination first, so the index it allocates
             // for the transferred entry cannot be the source's index.
-            let seeded = guard.insert_own(dst_table, type_id, true, 99);
-            let index = guard.insert_own(src_table, type_id, true, 42);
+            let seeded = guard
+                .insert_own(dst_table, type_id, true, 99)
+                .expect("room for a handle");
+            let index = guard
+                .insert_own(src_table, type_id, true, 42)
+                .expect("room for a handle");
             (index, seeded)
         };
         assert_eq!(index, seeded, "each fresh table starts at the same index");
@@ -720,7 +731,9 @@ mod tests {
         let dst = runtime(dst_table, type_id);
         let (index, task) = {
             let mut guard = tables.lock().unwrap();
-            let index = guard.insert_own(src_table, type_id, true, 7);
+            let index = guard
+                .insert_own(src_table, type_id, true, 7)
+                .expect("room for a handle");
             let instance = guard.tasks.insert_instance();
             let task = guard
                 .tasks
@@ -780,7 +793,9 @@ mod tests {
         let dst = runtime(TableId::fresh(), type_id);
         let index = {
             let mut guard = tables.lock().unwrap();
-            let index = guard.insert_own(src_table, type_id, true, 7);
+            let index = guard
+                .insert_own(src_table, type_id, true, 7)
+                .expect("room for a handle");
             let instance = guard.tasks.insert_instance();
             guard
                 .tasks
@@ -817,7 +832,11 @@ mod tests {
         let held = ResourceType::fresh_guest();
         let src = runtime(src_table, ResourceType::fresh_guest());
         let dst = runtime(TableId::fresh(), held);
-        let index = tables.lock().unwrap().insert_own(src_table, held, true, 7);
+        let index = tables
+            .lock()
+            .unwrap()
+            .insert_own(src_table, held, true, 7)
+            .expect("room for a handle");
 
         let err = transfer_borrow(&tables, src, dst, index).unwrap_err();
 

@@ -228,6 +228,7 @@ pub fn build_thread_new_indirect<T: 'static>(
                 .tasks
                 .current_task()
                 .ok_or_else(|| anyhow!("`thread.new-indirect` ran with no task on the stack"))?;
+            guard.admit_handle().map_err(|e| anyhow!("{e}"))?;
             let (_, index) = guard
                 .tasks
                 .create_thread(task, ThreadStart { function, context })

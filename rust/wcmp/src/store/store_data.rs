@@ -9,7 +9,7 @@
 
 use core::task::Waker;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::boundary::BoundarySink;
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
@@ -144,6 +144,25 @@ impl<T: 'static> StoreData<T> {
     /// with. Workspace-internal.
     pub fn set_hostcall_fuel(&mut self, fuel: usize) {
         self.hostcall_fuel = fuel;
+    }
+
+    /// The store's cap on its live handles. A poisoned lock still
+    /// holds a whole number, so the cap is read through it.
+    /// Workspace-internal.
+    pub fn max_component_handles(&self) -> usize {
+        self.tables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .handle_limit()
+    }
+
+    /// Set the store's cap on its live handles, through a poisoned
+    /// lock too. Workspace-internal.
+    pub fn set_max_component_handles(&self, limit: usize) {
+        self.tables
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_handle_limit(limit);
     }
 
     /// The store's process-unique identity. Workspace-internal.

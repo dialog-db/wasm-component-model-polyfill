@@ -226,6 +226,16 @@ impl TaskTables {
         self.instances.get_mut(instance.index() as usize)
     }
 
+    /// How many thread indices the thread tables of every instance hand
+    /// out, which the store's cap on its live handles counts, as
+    /// Wasmtime counts a guest thread's handle.
+    pub fn live_thread_indices(&self) -> usize {
+        self.instances
+            .iter()
+            .map(|record| record.threads.live())
+            .sum()
+    }
+
     /// Every component instance record in the store, in the order
     /// the instances were created.
     pub fn instances(&self) -> &[InstanceRecord] {
