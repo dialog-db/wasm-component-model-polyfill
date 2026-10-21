@@ -12,8 +12,8 @@
 //! `v50.0.0`). Such an adapter is sync on both sides, has no handle in
 //! its signature, and calls into an instance that declares nothing that
 //! can read or write thread state: no host import, no `context.get` or
-//! `context.set`, and no task, waitable, stream, future, thread,
-//! resource, or backpressure built-in. The callee then runs on the
+//! `context.set`, and no task, subtask, waitable, stream, future,
+//! error-context, thread, resource, or backpressure built-in. The callee then runs on the
 //! caller's task and thread, and no task is created for the call. No
 //! guest can tell the difference, because the callee has no built-in
 //! that could see it.
@@ -178,7 +178,7 @@ async fn it_runs_a_thread_transparent_callee_with_no_task_of_its_own() {
 }
 
 #[wcmp_macros::test]
-async fn it_gives_the_callee_behind_a_transparent_adapter_a_fresh_thread() {
+async fn it_runs_the_last_callee_of_every_chain_on_a_fresh_thread() {
     for name in ["direct", "through-transparent", "through-opaque"] {
         let (_, slot) = run_chain(name).await;
         assert_eq!(

@@ -456,8 +456,9 @@ async fn it_completes_a_write_with_the_dropped_result_once_the_reader_dropped() 
     );
     let message = call_trap(&mut store, &instance, "write", &[writable, 200]).await;
 
-    // The end was told of the drop, and Wasmtime asks that before it
-    // asks whether the future's one write is over.
+    // A writable end of a future that is done traps with the future's
+    // own text, whether the readable end dropped or the one write
+    // already succeeded, as Wasmtime 50 words it.
     assert!(
         message.contains(
             "cannot write to future after previous write succeeded or readable end dropped"

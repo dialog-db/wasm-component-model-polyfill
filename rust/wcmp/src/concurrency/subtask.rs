@@ -67,7 +67,7 @@ pub struct Subtask {
     /// Whether the record does not count against the store's cap on
     /// its live records yet. A call into a host function starts this
     /// way, and counts once its first poll leaves it pending, because
-    /// Wasmtime makes the record of a host call only then.
+    /// Wasmtime makes the record of a host call lazily.
     pub uncounted: bool,
 }
 

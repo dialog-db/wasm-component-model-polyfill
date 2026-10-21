@@ -1348,10 +1348,13 @@ fn boxed_equal(a: Option<&Val>, b: Option<&Val>) -> bool {
 /// `v49.0.0-rc.1`). Wasmtime 50 names the stream or the future in those
 /// traps and dropped the rule, and the harness dropped it with Wasmtime.
 ///
-/// Wasmtime's runner ignores the text of a trap in the Component Model's
-/// own suite (`tests/wast.rs` at `v50.0.0`). The harness holds that
-/// suite to the text, as it holds Wasmtime's own, so that a trap of the
-/// wrong cause does not pass.
+/// Wasmtime's runner matches an `assert_trap` by substring in every
+/// suite (`assert_trap` in `crates/wast/src/wast.rs` at `v50.0.0`). It
+/// ignores only the text of a rejected module in the Component Model's
+/// own suite (`tests/wast.rs`, and `match_error_message` in
+/// `crates/wast/src/wast.rs`). The harness holds that text in both
+/// suites, so that a component rejected for another reason does not
+/// pass.
 fn trap_matches(message: &str, actual: &str) -> bool {
     actual.contains(message)
 }

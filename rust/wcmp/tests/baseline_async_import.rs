@@ -378,7 +378,7 @@ async fn it_refuses_an_asynchronous_lower_without_memory_when_the_parameters_spi
 ///
 /// The refusal is validation's, and the message is the one
 /// `wasmparser` gives it: `ComponentFuncType::lower` in
-/// `src/validator/component_types.rs` at `0.258.0` requires the
+/// `src/validator/component_types.rs` at `0.261.0` requires the
 /// option for a parameter that transitively contains a pointer, for
 /// a parameter tuple that spills, and for a result. The polyfill
 /// adds no check of its own, so what a host reads is that text with

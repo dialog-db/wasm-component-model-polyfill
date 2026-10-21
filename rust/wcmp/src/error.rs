@@ -1230,9 +1230,8 @@ pub enum ResourceTableError {
     /// threads, waitable sets, error contexts, and the shared records
     /// of streams and futures. The subtask of a call into the host
     /// counts once the call's first poll leaves it pending, as
-    /// Wasmtime 50 makes the record of a host call only then, so a
-    /// host call that stays pending in a full store fails after that
-    /// poll. The cap is 1,000,000
+    /// Wasmtime 50 makes the record of a host call lazily, so a host
+    /// call that stays pending in a full store fails after that poll. The cap is 1,000,000
     /// records unless it was lowered, and a cap lowered below the
     /// records already live removes none of them: only the records
     /// created after it fail. The message is that of Wasmtime's
@@ -1276,8 +1275,6 @@ impl SchedulerCause {
 ///
 /// Carried by [`Error::Waitable`]. Each cause is a trap in the
 /// reference, so a built-in that meets one fails the guest's call.
-/// Nothing produces these yet; the built-ins of the concurrency
-/// features produce them once they land.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum WaitableCause {
@@ -1331,9 +1328,7 @@ pub enum WaitableCause {
 /// The structured reason a task operation failed.
 ///
 /// Carried by [`Error::Task`]. Each cause is a trap in the reference,
-/// so a built-in that meets one fails the guest's call. Nothing
-/// produces these yet; the task built-ins produce them once they
-/// land.
+/// so a built-in that meets one fails the guest's call.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TaskCause {

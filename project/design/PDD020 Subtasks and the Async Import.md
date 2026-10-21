@@ -293,11 +293,11 @@ A thread-transparent adapter calls neither the enter nor the exit intrinsic. An
 adapter is thread transparent when three things hold. It is synchronous on both
 sides, and its function is sync-typed. Its signature carries no handle. Its
 callee instance declares nothing that can read or write thread state: no host
-import, no context built-in, no other built-in of tasks, waitables, threads,
-resources, or backpressure, and no call into an async-typed export. The callee
-then runs on the caller's task and thread, and the store makes no task for the
-call. No guest can observe the difference, because the callee has no built-in
-that can see it.
+import, no context built-in, no built-in of tasks, subtasks, waitables, streams,
+futures, error contexts, threads, resources, or backpressure, and no call into
+an async-typed export. The callee then runs on the caller's task and thread, and
+the store makes no task for the call. No guest can observe the difference,
+because the callee has no built-in that can see it.
 
 The start intrinsic takes the callee's core function as a `funcref`, its counts
 of flat parameters and flat results, and a flag word. The flag

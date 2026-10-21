@@ -322,8 +322,9 @@ fn claim(
 /// subtask resolves to `CANCELLED_BEFORE_STARTED`. A started task
 /// becomes pending-cancel. A task that resolved is left alone.
 ///
-/// The task wakes when it is a callback task waiting in its loop on a
-/// set that holds no event yet. Wasmtime takes a waiter out of the
+/// The task wakes when it is a callback task whose callback returned
+/// the yield code, or one waiting in its loop on a set that holds no
+/// event yet. Wasmtime takes a waiter out of the
 /// cancel's reach for good when an event of its set is handed to it
 /// (`mark_ready`, which clears the thread's `wake_on_cancel`, in
 /// `crates/wasmtime/src/runtime/component/concurrent.rs` at

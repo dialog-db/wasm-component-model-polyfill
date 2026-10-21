@@ -14,8 +14,8 @@ suites part of the polyfill's test regime.
   rest of the suite.
 - Both upstream corpora run against the polyfill. An expected-failure list
   records each case that the polyfill does not pass yet, with a reason.
-- A case that passes and is not in the list, or a case in the list that fails
-  for a different reason, fails the run. Stale expectations do not accumulate.
+- A case that fails and is not in the list, or a case in the list that passes,
+  fails the run. Stale expectations do not accumulate.
 - The polyfill reports a trap with the message Wasmtime uses, so that the
   `assert_trap` directives of both corpora match it by substring.
 - A small set of real guest components, built with `wasm-tools` and composed
@@ -58,9 +58,11 @@ comes from the release tag of the Wasmtime version that the polyfill follows,
 `v50.0.0`. The Component Model corpus comes from the specification commit that
 the polyfill follows, `2f1e56f`.
 
-[Wasmtime's own runner][Wasmtime runner] does not compare the trap message in
-the Component Model corpus. The harness compares it in both corpora, so that a
-trap with the wrong cause does not pass.
+[Wasmtime's own runner][Wasmtime runner] matches the message of an `assert_trap`
+by substring in both corpora, as the harness does. In the Component Model
+corpus, Wasmtime's runner ignores the message of an `assert_invalid` or an
+`assert_malformed` rejection. The harness compares that message in both corpora,
+so that a component rejected for another reason does not pass.
 
 ## Expected Failures
 
@@ -148,7 +150,7 @@ byte-for-byte from their sources and recorded commands.
 - [PDD015], component composition.
 - The [Component Model test corpus] and its `nyi.txt`.
 - The [Wasmtime component tests], and [Wasmtime's runner][Wasmtime runner],
-  which ignores trap messages in the Component Model corpus.
+  which ignores the rejection messages of the Component Model corpus.
 - [`wast`], the crate that parses the script format.
 - [`wasm-tools`] and [`wac`], the toolchain that builds the fixtures.
 

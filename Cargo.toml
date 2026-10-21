@@ -71,9 +71,9 @@ web-sys = "0.3"
 # Encodes the switch module the polyfill generates for each store. The
 # version is the one `wasmtime-environ` already links, so the graph keeps one.
 wasm-encoder = { version = "0.261", default-features = false, features = ["std"] }
-# Reads the canonical section of a test fixture to set the vestigial byte the
-# text format no longer spells. The version is the one `wasmtime-environ`
-# already links, so the graph keeps one.
+# The parser that the runtime layer and the translator read core and
+# component binaries with. The version is the one `wasmtime-environ` already
+# links, so the graph keeps one.
 wasmparser = { version = "0.261", default-features = false, features = ["std", "component-model"] }
 wast = "262"
 # The engine of the Wasmi backend of the runtime layer, at the current
@@ -84,7 +84,7 @@ wasmi = { version = "2", default-features = false }
 # The polyfill takes its fused adapters, its trampolines, and the start-call
 # protocol from Wasmtime 50, so the floor is 50. The requirements are
 # carets. Wasmtime pins its own crates to each other exactly, so an exact
-# `wasmtime-environ` here keeps a consumer on that one patch release of
+# `wasmtime-environ` here would keep a consumer on that one patch release of
 # `wasmtime`.
 wasmtime = "50.0.0"
 wasmtime-environ = { version = "50.0.0", default-features = false, features = ["component-model"] }

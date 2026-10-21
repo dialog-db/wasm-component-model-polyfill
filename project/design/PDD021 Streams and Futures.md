@@ -586,10 +586,11 @@ holds the identity of the end. Cloning a `StreamAny` or a `FutureAny` copies the
 identity. Converting a value into a typed reader, or a reader into a value,
 copies it too. Two readers decoded from one `Val` name one end as well. The
 specification is silent on host values. Its `lower_stream` and `lower_future`
-(`definitions.py` at commit `e5ee0af`, lines 1770 to 1778) assert only the
-value's type and add a new readable end, and what the host holds is the host's
-to define. Wasmtime's values are copies of one identifier, so the polyfill
-follows Wasmtime wherever Wasmtime reaches a state its own code treats as sound.
+(`definitions.py` at commit `2f1e56f`, lines 1738 to 1751) take the readable end
+itself. They assert its type and that it is idle, and add it to the receiving
+instance's table. What the host holds is the host's to define. Wasmtime's values
+are copies of one identifier, so the polyfill follows Wasmtime wherever Wasmtime
+reaches a state its own code treats as sound.
 
 The host holds an end until one value that names it lowers it into a guest,
 pipes it, or closes it. Every value that names the end then sees that use. An

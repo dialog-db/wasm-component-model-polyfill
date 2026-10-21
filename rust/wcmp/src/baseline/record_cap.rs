@@ -12,8 +12,9 @@
 //! count past the cap is not created, and its creation fails with
 //! Wasmtime's full-table message. A cap set below the count removes
 //! nothing. The subtask of a call into the host counts only once the
-//! call's first poll leaves it pending, as Wasmtime 50 makes the record
-//! of a host call only then.
+//! call's first poll leaves it pending. Wasmtime 50 makes the record of
+//! a host call lazily, then and also when the call lends a borrow or
+//! calls back into a guest.
 //!
 //! The component here makes a waitable set on each call of its one
 //! synchronous export and never drops it, so each call leaves one
@@ -336,9 +337,9 @@ async fn run(store: &mut Store<()>, instance: &Instance) -> Result<Box<[Val]>, S
 
 #[wcmp_macros::test]
 async fn it_takes_no_record_for_a_host_call_that_answers_on_its_first_poll() {
-    // Wasmtime 50 makes the record of a host call only when the call
-    // outlives its first poll. While the body first runs, only the
-    // caller's task and thread count.
+    // Wasmtime 50 makes the record of a host call lazily, and this
+    // body neither stays pending nor lends a borrow nor calls a guest.
+    // While it first runs, only the caller's task and thread count.
     let seen = Seen::default();
     let (mut store, instance) = calling_the_host(CALLS_A_HOST_ASYNC_FUNCTION, &seen, false).await;
     let live = record_count(&mut store);

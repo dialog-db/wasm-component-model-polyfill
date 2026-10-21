@@ -108,8 +108,7 @@ fn prepare_call(
         // The adapter calls the callee's `cabi_realloc` itself, from
         // the start and return functions it generated, and a
         // synchronously lifted callee's post-return comes with the
-        // asynchronous start intrinsic rather than with the
-        // preparation. Neither slot is the polyfill's to fill here.
+        // start intrinsic rather than with the preparation. Neither slot is the polyfill's to fill here.
         realloc: None,
         post_return: None,
         // Whether the callee's lift is asynchronous is not known

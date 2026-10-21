@@ -25,7 +25,7 @@
 //! it. It is what a turn, a queued item, a host task's lowering, and
 //! a blocking built-in all run against, so each of them runs the
 //! same way from a driver's poll and from inside a trampoline.
-//! PDD018 asks for that: a suspended guest thread resumes outside
+//! The scheduler needs that: a suspended guest thread resumes outside
 //! any poll of a driver, so the scheduler's state has to be
 //! reachable with no driver on the stack.
 //!

@@ -28,10 +28,11 @@ ways:
 A call into a component can wait in a queue before it starts, for example while
 the callee instance has backpressure set. If the host drops the future of such a
 call, Wasmtime 50 makes the call trap when it starts, and the trap poisons the
-store. Wasmtime's own source calls this a stopgap. The polyfill starts the call
-when its turn comes, because the call owns its arguments and needs nothing from
-the dropped future. A trap in that call still poisons the store, and the next
-driver of the store reports it.
+store. A `TODO` in Wasmtime's source asks to skip such a call instead
+(`host_future_dropped` in `concurrent.rs` at `v50.0.0`). The polyfill starts the
+call when its turn comes, because the call owns its arguments and needs nothing
+from the dropped future. A trap in that call still poisons the store, and the
+next driver of the store reports it.
 
 ## A lifted NaN is canonical
 

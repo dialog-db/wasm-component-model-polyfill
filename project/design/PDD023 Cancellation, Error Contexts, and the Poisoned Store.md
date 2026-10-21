@@ -490,10 +490,12 @@ The store can cap the number of its live records. The records it counts are
 tasks, subtasks, threads, waitable sets, the shared records of streams and
 futures, and error-context records. The subtask of a call into the host counts
 only when the call's first poll leaves it pending. Wasmtime makes the record of
-a host call only then ([Wasmtime host task]), so a host function that answers on
-its first poll takes no record. A new record past the cap fails with Wasmtime's
-"resource table has no free keys". A cap lower than the current count evicts
-nothing, and only new records fail.
+a host call lazily ([Wasmtime host task]). It makes the record when the call
+stays pending, lends a borrow, or calls back into a guest. A host function that
+answers on its first poll takes no record. The polyfill counts the record only
+in the first case. A new record past the cap fails with Wasmtime's "resource
+table has no free keys". A cap lower than the current count evicts nothing, and
+only new records fail.
 
 The default cap is 1,000,000 records, which is Wasmtime's default. Only the
 store's internal API changes the cap. No public method does. The conformance

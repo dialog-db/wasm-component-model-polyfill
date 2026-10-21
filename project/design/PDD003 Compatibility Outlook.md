@@ -138,7 +138,7 @@ must do, the status in Wasmtime (✅ implemented, ⚠️ gated behind a feature 
 | Asynchronous `canon lower`                                                                           | Implement                                                                                  | ✅       | [Concurrency – async import ABI]  |
 | Per-task lift and lower context                                                                      | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
 | One handle table per component instance for resources, waitables, streams, and futures               | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
-| Component instance flags (`may_leave`, `may_enter`, backpressure)                                    | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
+| Component instance flags (`may_leave`, backpressure)                                                 | Implement                                                                                  | ✅       | [CanonicalABI – runtime state]    |
 
 ### Concurrency Runtime
 

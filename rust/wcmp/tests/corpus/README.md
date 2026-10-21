@@ -295,9 +295,10 @@ in Wasmtime's runner. Up to Wasmtime 49, that runner also accepted any trap that
 contained `cannot write` or `cannot read` where the expected text did
 (`crates/wast/src/wast.rs:551-554` at `v49.0.0-rc.1`). Wasmtime 50 names the
 stream or the future in those traps and dropped the rule, and the harness
-dropped it too. Wasmtime's runner ignores the text of every trap in the
-Component Model's own suite. The harness holds that suite to the text, as it
-holds Wasmtime's suite, so that a trap with the wrong cause does not pass.
+dropped it too. In the Component Model's own suite, Wasmtime's runner ignores
+the message of an `assert_invalid` or an `assert_malformed` rejection. The
+harness compares that message in both suites, so that a component rejected for
+another reason does not pass.
 
 The test `it_reports_conformance_progress` runs every file in one
 process and prints a summary per corpus directory: directives, passes,
