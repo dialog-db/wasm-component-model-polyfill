@@ -44,6 +44,11 @@ use super::yield_wake::YieldWake;
 /// - Dropping the store drops every task, host task, and suspended
 ///   thread, and no destructor runs.
 ///
+/// A driver that has run [`MAX_TURNS_WITHOUT_YIELD`] turns in a row
+/// without giving way gives way once, as after a yield: it wakes itself
+/// and returns pending, so the host executor gets a turn. The work it
+/// would have run next runs in its next poll.
+///
 /// This type is the driver of a call into an export. An instantiation
 /// runs its plan inside one turn it awaits. The store's
 /// `run_concurrent` entry is a driver too, and it keeps every rule but
@@ -54,6 +59,15 @@ use super::yield_wake::YieldWake;
 /// turn that started or resumed such a thread ends there, and the
 /// driver awaits the thread, the store's flight, before its next turn.
 pub struct Driver;
+
+/// How many turns in a row a driver runs without giving way before it
+/// hands control back to the host executor, as Wasmtime 50's event loop
+/// does (`MAX_TURNS_WITHOUT_YIELD` in
+/// `crates/wasmtime/src/runtime/component/concurrent.rs` at `v50.0.0`).
+/// A long run of progress, such as a callback that keeps cancelling host
+/// calls, would otherwise hold the executor: natively it starves the
+/// executor's other tasks, and in the browser it holds the page.
+const MAX_TURNS_WITHOUT_YIELD: usize = 128;
 
 /// What one run of a driver's turns came to.
 enum Step<R> {
@@ -132,6 +146,7 @@ where
         return Poll::Pending;
     }
 
+    let mut turns_without_yield = 0;
     loop {
         // A turn that stopped for a thread the driver awaits is not
         // over, and the condition waits until it is: a turn runs with
@@ -146,7 +161,16 @@ where
             Err(error) => return Poll::Ready(Step::Done(Err(error))),
         };
         match outcome {
-            Outcome::Progress => continue,
+            // Past the budget the driver gives way as a yield does: it
+            // wakes itself and returns pending, and in the browser the
+            // wake crosses a macrotask, so the page runs first.
+            Outcome::Progress => {
+                turns_without_yield += 1;
+                if turns_without_yield == MAX_TURNS_WITHOUT_YIELD {
+                    yield_wake.after_yield(waker);
+                    return Poll::Pending;
+                }
+            }
             Outcome::Yield => {
                 yield_wake.after_yield(waker);
                 return Poll::Pending;
