@@ -1227,8 +1227,12 @@ pub enum SchedulerCause {
 pub enum ResourceTableError {
     /// A new record would have taken the store past the cap on its
     /// live records. The records that count are tasks, subtasks,
-    /// threads, host tasks, waitable sets, error contexts, and the
-    /// shared records of streams and futures. The cap is 1,000,000
+    /// threads, waitable sets, error contexts, and the shared records
+    /// of streams and futures. The subtask of a call into the host
+    /// counts once the call's first poll leaves it pending, as
+    /// Wasmtime 50 makes the record of a host call only then, so a
+    /// host call that stays pending in a full store fails after that
+    /// poll. The cap is 1,000,000
     /// records unless it was lowered, and a cap lowered below the
     /// records already live removes none of them: only the records
     /// created after it fail. The message is that of Wasmtime's
