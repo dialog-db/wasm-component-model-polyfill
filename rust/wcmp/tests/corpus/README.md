@@ -74,9 +74,10 @@ waits on, the result crosses back when the future completes, and
 `subtask.drop` takes the subtask's entry away once the guest has taken
 delivery of it. A guest that lowers one synchronously reaches it as
 well: the call blocks the guest thread where it stands until the future
-resolves. No call traps for reentrance; the instance's entry gate is
-the only serialization, and a callee the gate holds starts when the
-gate opens. A call that blocks where nothing can make progress fails
+resolves. Only a call into the caller's own instance traps for
+reentrance, because Wasmtime compiles its adapter to a trap. For every
+other call, the instance's entry gate is the only serialization, and a
+callee the gate holds starts when the gate opens. A call that blocks where nothing can make progress fails
 with the message the reference gives it: the cannot-block message when
 a synchronous call into the blocked thread's own instance is in
 progress, or into the instance of a caller below that waits for it,

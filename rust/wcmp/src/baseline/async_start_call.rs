@@ -44,9 +44,9 @@
 //!
 //! The other half of the gate is here too: a callee the gate holds
 //! reads `STARTING`, and the call is served rather than refused
-//! once the gate opens. Nothing traps for reentrance — the gate is
-//! the only serialization — so the whole of a held call is the wait
-//! and the `RETURNED` that ends it.
+//! once the gate opens. A call between two instances does not trap
+//! for reentrance, and the gate is the only serialization, so the
+//! whole of a held call is the wait and the `RETURNED` that ends it.
 
 #![cfg(test)]
 
@@ -981,8 +981,8 @@ async fn it_crosses_the_results_of_a_synchronously_lifted_callee_and_runs_its_po
 
 #[wcmp_macros::test]
 async fn it_runs_a_held_callee_when_the_gate_opens_and_delivers_returned() {
-    // The gate is the only serialization there is, and a reentrant
-    // or back-pressured call meets it rather than a trap. The caller
+    // Between two instances the gate is the only serialization, and
+    // a reentrant or back-pressured call meets it rather than a trap. The caller
     // reads `STARTING`, which says the callee has not run at all,
     // opens the gate again through a sync-typed export that ignores
     // it, and waits. The callee then runs and resolves, and 43 says

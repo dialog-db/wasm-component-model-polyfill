@@ -1338,7 +1338,7 @@ pub enum WaitableCause {
 #[non_exhaustive]
 pub enum TaskCause {
     /// The implicit thread of a task exited and the task had not
-    /// returned. The message is Wasmtime 48's trap,
+    /// returned. The message is Wasmtime's trap,
     /// `Trap::NoAsyncResult` in `wasmtime-environ`'s
     /// `src/trap_encoding.rs`, so the conformance corpus can match it
     /// by substring.
@@ -1346,7 +1346,7 @@ pub enum TaskCause {
     NoResult,
 
     /// A guest ran `task.return` on a task that was already resolved.
-    /// The message is Wasmtime 48's trap,
+    /// The message is Wasmtime's trap,
     /// `Trap::TaskCancelOrReturnTwice`, under the same rule as
     /// [`TaskCause::NoResult`].
     #[error("`task.return` or `task.cancel` called more than once for current task")]
@@ -1362,7 +1362,7 @@ pub enum TaskCause {
 
     /// The result type or the options of a `task.return` differ from
     /// the ones the task's function was lifted with. The message
-    /// opens with Wasmtime 48's trap, `Trap::TaskReturnInvalid`,
+    /// opens with Wasmtime's trap, `Trap::TaskReturnInvalid`,
     /// under the same rule as [`TaskCause::NoResult`], and names the
     /// comparison that failed after it: the trap says only that one
     /// of the three did.
@@ -1380,13 +1380,13 @@ pub enum TaskCause {
     ReturnFromSynchronousTask,
 
     /// A callback returned a status word whose code is above two. The
-    /// message is Wasmtime 48's trap, `Trap::UnsupportedCallbackCode`,
+    /// message is Wasmtime's trap, `Trap::UnsupportedCallbackCode`,
     /// under the same rule as [`TaskCause::NoResult`].
     #[error("unsupported callback code")]
     UnsupportedCallbackCode,
 
     /// A backpressure built-in took the counter out of its range, in
-    /// either direction. The message is Wasmtime 48's trap,
+    /// either direction. The message is Wasmtime's trap,
     /// `Trap::BackpressureOverflow`, under the same rule as
     /// [`TaskCause::NoResult`].
     #[error("backpressure counter overflow")]
@@ -1394,7 +1394,7 @@ pub enum TaskCause {
 
     /// A built-in that reads the may-leave flag ran while the flag
     /// was clear, from a realloc or a post-return. The message is
-    /// Wasmtime 48's trap, `Trap::CannotLeaveComponent`, under the
+    /// Wasmtime's trap, `Trap::CannotLeaveComponent`, under the
     /// same rule as [`TaskCause::NoResult`].
     #[error("cannot leave component instance")]
     CannotLeave,

@@ -896,8 +896,9 @@ impl<T: 'static> Scheduler<T> {
     /// task, so it never reaches the gate. The five rules the gate
     /// carries:
     ///
-    /// - A sync-typed callee can be entered at any depth — from a
-    ///   child, a parent, a sibling, a destructor, or the host. Its
+    /// - A sync-typed callee in another instance can be entered at
+    ///   any depth: from a child, a parent, a sibling, a destructor,
+    ///   or the host. Its
     ///   task ignores the gate, and the synchronous baseline serves
     ///   the call as a nested call on the real stack.
     /// - An async-typed callee lifted synchronously or with a
