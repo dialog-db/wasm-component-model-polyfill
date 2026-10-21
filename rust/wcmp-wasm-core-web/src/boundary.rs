@@ -64,7 +64,11 @@ impl Boundary {
         let mut spaces = Spaces::default();
         let mut imports = Vec::new();
         let mut exports = Vec::new();
-        let mut atomic_wait = false;
+        // The bodies are kept as they come, undecoded, and read for a wait
+        // only after the last section: the custom section that says which
+        // features the module was built with comes after the code.
+        let mut bodies = Vec::new();
+        let mut atomics = None;
         for payload in Parser::new(0).parse_all(bytes) {
             match payload.map_err(compile)? {
                 Payload::TypeSection(reader) => {
@@ -119,13 +123,22 @@ impl Boundary {
                 // A function body tells only whether it waits or
                 // notifies, which a module without a memory cannot.
                 Payload::CodeSectionStart { .. } if spaces.memories.is_empty() => break,
-                Payload::CodeSectionEntry(body) if waits(&body)? => {
-                    atomic_wait = true;
-                    break;
+                Payload::CodeSectionEntry(body) => bodies.push(body),
+                Payload::CustomSection(section) if section.name() == TARGET_FEATURES => {
+                    atomics = uses_atomics(section.data());
                 }
                 _ => {}
             }
         }
+        // A module that its compiler says it built without atomics has no
+        // wait or notify: decoding each of its bodies, which is most of the
+        // cost of reading a large module, tells nothing more.
+        let atomic_wait = match atomics {
+            Some(false) => false,
+            _ => bodies
+                .iter()
+                .try_fold(false, |found, body| Ok::<_, Error>(found || waits(body)?))?,
+        };
         let shared_memory = spaces.memories.iter().any(|memory| memory.shared);
         Ok(Self {
             imports,
@@ -134,6 +147,29 @@ impl Boundary {
             atomic_wait,
         })
     }
+}
+
+/// The custom section in which a compiler lists the features it built a
+/// module with, as LLVM writes it: see the tool conventions of WebAssembly,
+/// "Target Features Section".
+const TARGET_FEATURES: &str = "target_features";
+
+/// Whether the `target_features` section `data` says the module uses
+/// atomics: `Some(true)` where it names `atomics` as used or required,
+/// `Some(false)` where it does not, and `None` where it cannot be read, so
+/// that the bodies are read instead.
+fn uses_atomics(data: &[u8]) -> Option<bool> {
+    let mut reader = wasmparser::BinaryReader::new(data, 0);
+    let count = reader.read_var_u32().ok()?;
+    let mut used = false;
+    for _ in 0..count {
+        let prefix = reader.read_u8().ok()?;
+        let name = reader.read_string().ok()?;
+        if name == "atomics" && (prefix == b'+' || prefix == b'=') {
+            used = true;
+        }
+    }
+    Some(used)
 }
 
 /// Whether the function `body` waits or notifies on a memory.
@@ -370,6 +406,55 @@ mod tests {
         assert!(
             !atomic_wait(wasm!(r#"(module (func (export "f")))"#)),
             "a module without a memory cannot wait"
+        );
+    }
+
+    /// A module whose compiler lists the features it built it with is
+    /// taken at its word: one built with atomics is read as before, and one
+    /// built without them is not decoded, so a wait it holds anyway is not
+    /// seen.
+    #[wcmp_macros::test]
+    fn it_takes_the_features_a_module_was_built_with_at_their_word() {
+        assert!(
+            atomic_wait(wasm!(
+                r#"
+                (module
+                  (@custom "target_features" "\01\2b\07atomics")
+                  (memory 1)
+                  (func (export "f") (result i32)
+                    i32.const 0
+                    i32.const 0
+                    i64.const 0
+                    memory.atomic.wait32))
+                "#
+            )),
+            "a module built with atomics is read for a wait"
+        );
+        assert!(
+            !atomic_wait(wasm!(
+                r#"
+                (module
+                  (@custom "target_features" "\01\2b\0bbulk-memory")
+                  (memory 1)
+                  (func (export "f") (result i32)
+                    i32.const 0
+                    i32.const 0
+                    i64.const 0
+                    memory.atomic.wait32))
+                "#
+            )),
+            "a module built without atomics is not decoded"
+        );
+        assert!(
+            !atomic_wait(wasm!(
+                r#"
+                (module
+                  (@custom "target_features" "\00")
+                  (memory 1)
+                  (func (export "f")))
+                "#
+            )),
+            "an empty list of features names no atomics"
         );
     }
 }
