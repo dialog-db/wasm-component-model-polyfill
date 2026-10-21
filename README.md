@@ -159,11 +159,11 @@ documents.
 
 ## Acknowledgements
 
-The runtime layer keeps the shape of the runtime-layer crates by Douglas Dwyer,
-which the polyfill ran on, with local patches, until it wrote its own: one trait
-over core WebAssembly, and one backend for each engine. That work is prior art,
-licensed under either of the Apache License, Version 2.0 or the MIT license. No
-code from it remains in this repository.
+This project's runtime layer crates were inspired by the [`wasm_runtime_layer`]
+crates by Douglas Dwyer, which are licensed under either the Apache License,
+Version 2.0 or the MIT license. We prototyped the polyfill on those crates. To
+meet the project's goals, we then wrote our own runtime layer crates from
+scratch. No code from `wasm_runtime_layer` remains in this repository.
 
 ## License
 
@@ -183,3 +183,4 @@ License 2.0, and `wasmtime/` comes from Wasmtime and is under the Apache License
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [`wac`]: https://github.com/bytecodealliance/wac
 [live demo]: http://dialog-db.github.io/wasm-component-model-polyfill/
+[`wasm_runtime_layer`]: https://github.com/DouglasDwyer/wasm_runtime_layer
