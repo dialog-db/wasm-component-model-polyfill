@@ -8,8 +8,6 @@
 
 use core::task::Waker;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 
 use super::SuspendSeam;
 use super::deferred_work::DeferredWork;
@@ -623,13 +621,6 @@ impl<T: 'static> Scheduler<T> {
     /// serve.
     pub fn suspend_seam_mut(&mut self) -> &mut SuspendSeam<T> {
         &mut self.suspend_seam
-    }
-
-    /// The number of host tasks of calls the store holds, kept as it
-    /// changes, which the store's record tables count against the cap
-    /// on live records.
-    pub fn shared_host_call_count(&self) -> Arc<AtomicUsize> {
-        self.host_tasks.call_count()
     }
 
     /// Give `task` to the store. A host task that joined since the

@@ -99,10 +99,7 @@ impl<T: 'static> StoreData<T> {
     /// `lib.rs`.
     pub fn new(data: T) -> Self {
         let scheduler = Scheduler::new();
-        let mut tables = HandleTables::new();
-        tables
-            .tasks
-            .count_host_tasks(scheduler.shared_host_call_count());
+        let tables = HandleTables::new();
         Self {
             data,
             id: StoreId::fresh(),

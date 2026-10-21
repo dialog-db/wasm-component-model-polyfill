@@ -10,7 +10,6 @@
 
 use core::any::Any;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi::signature::Signature;
 use crate::error::{
@@ -94,13 +93,13 @@ use super::waitable_state::WaitableState;
 ///
 /// The tables cap how many records the store holds live. The records
 /// that count are tasks, subtasks, threads, waitable sets, the shared
-/// records of streams and futures, error-context records, and the
-/// host tasks of calls the scheduler holds, whose number the
-/// scheduler shares with the tables. A record
-/// that would take the count past the cap is not created, and its
-/// creation fails with Wasmtime's full-table cause. Lowering the cap
-/// below the count removes nothing; only the records created after
-/// it fail.
+/// records of streams and futures, and error-context records. The
+/// subtask of a call into the host counts only once the call's first
+/// poll leaves it pending, as Wasmtime 50 makes the record of a host
+/// call only then. A record that would take the count past the cap is
+/// not created, and its creation fails with Wasmtime's full-table
+/// cause. Lowering the cap below the count removes nothing. Only the
+/// records created after it fail.
 pub struct TaskTables {
     tasks: RecordTable<Task>,
     subtasks: RecordTable<Subtask>,
@@ -117,7 +116,9 @@ pub struct TaskTables {
     waiting: Vec<ThreadId>,
     ready: Vec<ThreadId>,
     max_records: usize,
-    host_tasks: Arc<AtomicUsize>,
+    /// How many subtask records are host calls that do not count
+    /// against the cap yet.
+    uncounted_subtasks: usize,
 }
 
 /// The cap on the store's live records unless it is set to another:
@@ -143,15 +144,8 @@ impl TaskTables {
             waiting: Vec::new(),
             ready: Vec::new(),
             max_records: DEFAULT_MAX_RECORDS,
-            host_tasks: Arc::new(AtomicUsize::new(0)),
+            uncounted_subtasks: 0,
         }
-    }
-
-    /// Count the host tasks of calls whose number `host_tasks` holds
-    /// against the cap. The scheduler keeps the number as its set of
-    /// host tasks changes.
-    pub fn count_host_tasks(&mut self, host_tasks: Arc<AtomicUsize>) {
-        self.host_tasks = host_tasks;
     }
 
     /// The most records the store holds live before a new one fails.
@@ -175,7 +169,7 @@ impl TaskTables {
             + self.waitable_sets.len()
             + self.shared_records.len()
             + self.error_contexts.len()
-            + self.host_tasks.load(Ordering::Acquire)
+            - self.uncounted_subtasks
     }
 
     /// Fail with Wasmtime's full-table cause unless `count` more
@@ -415,6 +409,44 @@ impl TaskTables {
         let subtask = self.insert_subtask()?;
         self.scopes.push(Scope::Subtask(subtask));
         Ok(subtask)
+    }
+
+    /// Create a subtask for a call into a host function and push it as
+    /// the current scope. The record does not count against the cap
+    /// until [`count_host_subtask`](Self::count_host_subtask) admits it,
+    /// so a full store does not refuse the call.
+    ///
+    /// Wasmtime 50 makes the `HostTask` of a host call only when the
+    /// call needs a record that outlives its first poll
+    /// (`materialize_host_task` in
+    /// `crates/wasmtime/src/runtime/component/concurrent.rs` at
+    /// `v50.0.0`). A host function that answers on its first poll then
+    /// takes no record, and runs even when the store's table is full.
+    pub fn push_host_subtask(&mut self) -> SubtaskId {
+        let mut record = Subtask::new();
+        record.uncounted = true;
+        let (index, generation) = self.subtasks.insert_with_generation(record);
+        let subtask = SubtaskId::new(index, generation);
+        self.uncounted_subtasks += 1;
+        self.scopes.push(Scope::Subtask(subtask));
+        subtask
+    }
+
+    /// Count the record of the host call `subtask` against the cap,
+    /// because its first poll left it pending. Fails with Wasmtime's
+    /// full-table cause when the record does not fit, and leaves it
+    /// uncounted then. A record that already counts is left alone.
+    pub fn count_host_subtask(&mut self, subtask: SubtaskId) -> Result<()> {
+        let uncounted = self.subtask(subtask).is_some_and(|record| record.uncounted);
+        if !uncounted {
+            return Ok(());
+        }
+        self.admit_records(1)?;
+        if let Some(record) = self.subtask_mut(subtask) {
+            record.uncounted = false;
+        }
+        self.uncounted_subtasks -= 1;
+        Ok(())
     }
 
     /// Move a task to its started state: its thread is running.
@@ -1277,6 +1309,9 @@ impl TaskTables {
         let index = self.subtask_index(subtask)?;
         self.leave_waitable_set(WaitableId::Subtask(subtask));
         let record = self.subtasks.remove(index)?;
+        if record.uncounted {
+            self.uncounted_subtasks -= 1;
+        }
         if let Some(callee) = record.callee
             && self.task(callee).is_some_and(|callee| callee.thread_exited)
             && let Some(index) = self.task_index(callee)

@@ -64,6 +64,11 @@ pub struct Subtask {
     /// into a host function, where the polyfill lifts and lowers the
     /// values itself.
     pub bridge: Option<CallBridge>,
+    /// Whether the record does not count against the store's cap on
+    /// its live records yet. A call into a host function starts this
+    /// way, and counts once its first poll leaves it pending, because
+    /// Wasmtime makes the record of a host call only then.
+    pub uncounted: bool,
 }
 
 impl Subtask {
@@ -79,6 +84,7 @@ impl Subtask {
             handle: None,
             callee: None,
             bridge: None,
+            uncounted: false,
         }
     }
 }

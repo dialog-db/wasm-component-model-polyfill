@@ -8,7 +8,7 @@
 
 use core::task::Waker;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Wake;
 
@@ -43,18 +43,8 @@ use super::subtask_id::SubtaskId;
 /// the turn that takes it next drops it without polling it. The mark
 /// is all the cancel does to the set, so the drop always happens in a
 /// turn.
-///
-/// The task of each call the set holds, out being polled or not, is
-/// a record against the store's cap on its live records, as the host
-/// task of a call is an entry of Wasmtime's table. The task of a copy
-/// is not, as Wasmtime's host side of a copy is not. The set keeps
-/// how many calls it holds in a number it shares with the store's
-/// record tables, which count it with their own records.
 pub struct HostTaskSet<T: 'static> {
     tasks: BTreeMap<u64, Entry<T>>,
-    /// How many calls the set holds, shared with the store's record
-    /// tables.
-    calls: Arc<AtomicUsize>,
     /// How many entries have their task out being polled.
     out: usize,
     next_key: u64,
@@ -132,7 +122,6 @@ impl<T: 'static> HostTaskSet<T> {
     pub fn new() -> Self {
         Self {
             tasks: BTreeMap::new(),
-            calls: Arc::new(AtomicUsize::new(0)),
             out: 0,
             next_key: 0,
             retired_below: 0,
@@ -154,7 +143,7 @@ impl<T: 'static> HostTaskSet<T> {
     /// resolves when it is a call's.
     ///
     /// The entry is the one a task out being polled has: it holds no
-    /// task, and it counts as a call when `subtask` names one. The
+    /// task. The
     /// task joins it through [`restore`](Self::restore) when the
     /// first poll leaves it pending, and the entry goes through
     /// [`complete`](Self::complete) when it does not. Either way the
@@ -171,9 +160,6 @@ impl<T: 'static> HostTaskSet<T> {
         });
         wake.enqueue();
         let waker = Waker::from(wake.clone());
-        if subtask.is_some() {
-            self.calls.fetch_add(1, Ordering::AcqRel);
-        }
         self.tasks.insert(
             key,
             Entry {
@@ -214,21 +200,6 @@ impl<T: 'static> HostTaskSet<T> {
     /// [`abort`](Self::abort).
     pub fn is_aborted(&self, key: u64) -> bool {
         self.tasks.get(&key).is_some_and(|entry| entry.aborted)
-    }
-
-    /// The number of calls the set holds, out being polled or not,
-    /// which the set keeps as it changes. The store's record tables
-    /// hold it to count the calls against the cap on live records.
-    pub fn call_count(&self) -> Arc<AtomicUsize> {
-        self.calls.clone()
-    }
-
-    /// Take `entry`, which has left the set, off the shared number
-    /// of calls when it is a call's.
-    fn forget(&self, entry: &Entry<T>) {
-        if entry.subtask.is_some() {
-            self.calls.fetch_sub(1, Ordering::AcqRel);
-        }
     }
 
     /// Record `waker` as the waker of the driver that polls the
@@ -312,7 +283,6 @@ impl<T: 'static> HostTaskSet<T> {
         let Some(entry) = self.tasks.remove(&key) else {
             return;
         };
-        self.forget(&entry);
         if entry.task.is_none() {
             self.out = self.out.saturating_sub(1);
         }
@@ -348,7 +318,6 @@ impl<T: 'static> HostTaskSet<T> {
         // it go itself.
         self.tasks.get(&key)?.task.as_ref()?;
         let entry = self.tasks.remove(&key)?;
-        self.forget(&entry);
         entry.task
     }
 
@@ -368,12 +337,8 @@ impl<T: 'static> HostTaskSet<T> {
     /// they joined.
     pub fn take_all(&mut self) -> Vec<HostTask<T>> {
         let mut taken = Vec::with_capacity(self.len());
-        let calls = &self.calls;
         self.tasks.retain(|_, entry| match entry.task.take() {
             Some(task) => {
-                if entry.subtask.is_some() {
-                    calls.fetch_sub(1, Ordering::AcqRel);
-                }
                 taken.push(task);
                 false
             }
@@ -532,11 +497,6 @@ mod tests {
         let mut set = HostTaskSet::new();
         let (key, first) = set.reserve(Some(SubtaskId::new(0, 0)));
         assert_eq!(set.len(), 0, "the task is out for its first poll");
-        assert_eq!(
-            set.call_count().load(Ordering::Acquire),
-            1,
-            "the reserved entry counts as a call from the start"
-        );
         set.restore(key, parked(0));
         assert_eq!(set.len(), 1);
 
@@ -557,7 +517,6 @@ mod tests {
         let (other, _) = set.reserve(None);
         set.complete(other);
         assert_eq!(set.len(), 1, "a completed reservation leaves nothing");
-        assert_eq!(set.call_count().load(Ordering::Acquire), 1);
     }
 
     #[wcmp_macros::test]

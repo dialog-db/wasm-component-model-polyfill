@@ -684,7 +684,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let subtask = task
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
-        let (key, waker) = self.reserve_host_call(subtask)?;
+        let (key, waker) = self.reserve_host_task(Some(subtask));
         // The body reaches the host data through the accessor this
         // poll hands it and through nothing else, for the length of
         // a closure it runs with it.
@@ -724,6 +724,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(CallStatus::returned())
             }
             Poll::Pending => {
+                self.count_pending_host_call(subtask, key)?;
                 let started = (|| -> Result<_> {
                     let mut guard = self.lock_tables()?;
                     // The subtask starts before its entry is made,
@@ -764,36 +765,33 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         }
     }
 
-    /// Admit the host task of the call `subtask` records against the
-    /// store's cap on its live records, and make its entry among the
-    /// store's host tasks, where it counts from then on. Answers the
-    /// entry's key and the task's own waker, which its first poll
-    /// carries as every later poll does. The caller puts the task in
-    /// the entry when that poll leaves it pending, and lets go of the
-    /// entry when it does not.
+    /// Count the record of the host call `subtask` against the store's
+    /// cap on its live records, because the call's first poll left it
+    /// pending. The record did not count while that poll ran.
     ///
-    /// Wasmtime pushes the `HostTask` of a call into its store's table
-    /// before it calls the host function
-    /// (`crates/wasmtime/src/runtime/component/concurrent.rs`, `:1962` at
-    /// `v49.0.0-rc.1`). So a call past the cap fails here, before its
-    /// body runs, as one whose body failed would, and what the body
-    /// creates in its first poll counts after the call's own record. A
-    /// task that stays pending joins the store's host tasks, which count
-    /// it from then on.
-    ///
-    /// Only the host task of an `async` host function is a record here.
-    /// Wasmtime pushes a `HostTask` for a call of a synchronous host
-    /// function too, so at a full table it refuses that call where the
-    /// polyfill runs it.
-    fn reserve_host_call(&mut self, subtask: SubtaskId) -> Result<(u64, Waker)> {
-        {
-            let mut guard = self.lock_tables()?;
-            if let Err(error) = guard.tasks.admit_records(1) {
+    /// Wasmtime 50 makes the `HostTask` of a call only once the call
+    /// outlives its first poll (`materialize_host_task` in
+    /// `crates/wasmtime/src/runtime/component/concurrent.rs` at
+    /// `v50.0.0`). A call that answers on its first poll takes no
+    /// record, so it runs even when the store is full. A call that
+    /// stays pending in a full store fails here, after its first poll,
+    /// as one whose body failed would: its subtask resolves as a
+    /// cancellation, and the failure poisons the store and travels out
+    /// to the guest's call. The entry `key` of the call's host task
+    /// goes too, and the task with it.
+    fn count_pending_host_call(&mut self, subtask: SubtaskId, key: u64) -> Result<()> {
+        let counted = self
+            .lock_tables()
+            .and_then(|mut guard| guard.tasks.count_host_subtask(subtask));
+        if let Err(error) = counted {
+            self.scheduler_mut().complete_host_task(key);
+            if let Ok(mut guard) = self.lock_tables() {
                 guard.abandon_subtask(subtask);
-                return Err(error);
             }
+            self.poison();
+            return Err(error);
         }
-        Ok(self.reserve_host_task(Some(subtask)))
+        Ok(())
     }
 
     /// Make the entry of a host task that is about to take its first
@@ -890,7 +888,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
         let subtask = task
             .subtask()
             .ok_or_else(|| Error::internal("a copy's host task was started as a call"))?;
-        let (key, waker) = self.reserve_host_call(subtask)?;
+        let (key, waker) = self.reserve_host_task(Some(subtask));
         let outcome = self.poll_reserved_host_task(key, &waker, &mut task);
         if !matches!(outcome, Poll::Pending) || self.poisoned() {
             self.scheduler_mut().complete_host_task(key);
@@ -914,6 +912,7 @@ impl<'a, T: 'static> StoreContext<'a, T> {
                 Ok(None)
             }
             Poll::Pending => {
+                self.count_pending_host_call(subtask, key)?;
                 self.scheduler_mut().park_reserved_call(key, task);
                 Ok(Some(subtask))
             }

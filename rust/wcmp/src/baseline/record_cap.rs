@@ -6,13 +6,14 @@
 
 //! Baseline tests for the cap on the store's live records.
 //!
-//! The store counts its tasks, subtasks, threads, host tasks of
-//! calls, waitable sets, and the shared records of streams and
-//! futures against a cap, which is 1,000,000 records unless the
+//! The store counts its tasks, subtasks, threads, waitable sets, and
+//! the shared records of streams and futures against a cap, which is 1,000,000 records unless the
 //! store's internal API sets another. A record that would take the
 //! count past the cap is not created, and its creation fails with
 //! Wasmtime's full-table message. A cap set below the count removes
-//! nothing.
+//! nothing. The subtask of a call into the host counts only once the
+//! call's first poll leaves it pending, as Wasmtime 50 makes the record
+//! of a host call only then.
 //!
 //! The component here makes a waitable set on each call of its one
 //! synchronous export and never drops it, so each call leaves one
@@ -241,17 +242,39 @@ const CALLS_A_HOST_ASYNC_FUNCTION: &[u8] = component!(
     "#
 );
 
+/// A component whose `run` calls the host's `async` function `answer`
+/// through an asynchronous lower, and returns the status word the
+/// lower answered. The result goes to address 0 of its memory.
+const CALLS_A_HOST_ASYNC_FUNCTION_ASYNC: &[u8] = component!(
+    r#"
+    (component
+      (import "answer" (func $answer async (param "x" u32) (result u32)))
+      (core module $libc (memory (export "mem") 1))
+      (core instance $libc (instantiate $libc))
+      (core func $lowered (canon lower (func $answer) async (memory (core memory $libc "mem"))))
+      (core module $m
+        (import "" "answer" (func $answer (param i32 i32) (result i32)))
+        (func (export "run") (result i32)
+          (call $answer (i32.const 7) (i32.const 0))))
+      (core instance $i (instantiate $m
+        (with "" (instance (export "answer" (func $lowered))))))
+      (func (export "run") (result u32) (canon lift (core func $i "run"))))
+    "#
+);
+
+/// The status word of a call that returned before its lower did.
+const RETURNED: u32 = 2;
+
 /// What the host's `answer` saw: the records that counted against the
 /// cap at each poll of its body.
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<usize>>>;
 
-/// A store with [`CALLS_A_HOST_ASYNC_FUNCTION`] instantiated, whose
-/// `answer` records in `seen` the records that count at each poll of
-/// its body, and answers its argument plus one: at once, or on its
-/// second poll where `pend`.
-async fn calling_the_host(seen: &Seen, pend: bool) -> (Store<()>, Instance) {
+/// A store with `component` instantiated, whose `answer` records in
+/// `seen` the records that count at each poll of its body, and answers
+/// its argument plus one: at once, or on its second poll where `pend`.
+async fn calling_the_host(component: &[u8], seen: &Seen, pend: bool) -> (Store<()>, Instance) {
     let engine = Engine::with_backend(crate::runtime_layer::test_backend()).expect("engine");
-    let component = Component::new(&engine, CALLS_A_HOST_ASYNC_FUNCTION)
+    let component = Component::new(&engine, component)
         .await
         .expect("component parses");
     let mut linker: Linker<()> = Linker::new(&engine);
@@ -312,11 +335,12 @@ async fn run(store: &mut Store<()>, instance: &Instance) -> Result<Box<[Val]>, S
 }
 
 #[wcmp_macros::test]
-async fn it_counts_a_host_call_before_its_body_runs_and_releases_it_after() {
-    // The body answers on its first poll, so the call never joins the
-    // store's host tasks: only the admission before the poll counts it.
+async fn it_takes_no_record_for_a_host_call_that_answers_on_its_first_poll() {
+    // Wasmtime 50 makes the record of a host call only when the call
+    // outlives its first poll. While the body first runs, only the
+    // caller's task and thread count.
     let seen = Seen::default();
-    let (mut store, instance) = calling_the_host(&seen, false).await;
+    let (mut store, instance) = calling_the_host(CALLS_A_HOST_ASYNC_FUNCTION, &seen, false).await;
     let live = record_count(&mut store);
     let answered = run(&mut store, &instance).await.expect("the call returns");
     assert_eq!(answered.as_ref(), [Val::U32(8)]);
@@ -326,44 +350,36 @@ async fn it_counts_a_host_call_before_its_body_runs_and_releases_it_after() {
     };
     assert_eq!(
         during,
-        live + 4,
-        "while the body first runs, the caller's task and thread, the call's subtask, and \
-         the call's host task count"
+        live + 2,
+        "while the body first runs, the caller's task and thread count, and the call does not"
     );
     assert_eq!(
         record_count(&mut store),
         live,
-        "the call let go of every record, its host task's among them"
+        "the call let go of every record"
     );
 
-    // A cap one short of what the body saw leaves no room for the host
-    // task, which is admitted last, so the call is refused before the
-    // body runs.
-    let (mut store, instance) = calling_the_host(&seen, false).await;
-    set_max_records(&mut store, during - 1);
-    let message = run(&mut store, &instance)
-        .await
-        .expect_err("the host task does not fit");
-    assert!(message.contains(TABLE_FULL), "{message}");
-    assert!(
-        seen.lock().expect("seen").is_empty(),
-        "the refused call's body never ran"
-    );
-
-    let (mut store, instance) = calling_the_host(&seen, false).await;
-    set_max_records(&mut store, during);
-    run(&mut store, &instance)
-        .await
-        .expect("a cap with room for the host task admits the call");
+    // A store with no room left past the caller's task and thread runs
+    // the call, through either lower.
+    for (component, answer) in [
+        (CALLS_A_HOST_ASYNC_FUNCTION, 8),
+        (CALLS_A_HOST_ASYNC_FUNCTION_ASYNC, RETURNED),
+    ] {
+        let (mut store, instance) = calling_the_host(component, &seen, false).await;
+        set_max_records(&mut store, during);
+        let answered = run(&mut store, &instance)
+            .await
+            .expect("a call that answers at once needs no room");
+        assert_eq!(answered.as_ref(), [Val::U32(answer)]);
+        assert_eq!(seen.lock().expect("seen").len(), 1, "the body ran");
+        seen.lock().expect("seen").clear();
+    }
 }
 
 #[wcmp_macros::test]
-async fn it_counts_a_pending_host_call_once_it_joins_the_host_tasks_and_releases_it_after() {
-    // The body is pending on its first poll, so the call joins the
-    // store's host tasks, which count it by hand from then on, in place
-    // of the admission.
+async fn it_counts_a_host_call_once_its_first_poll_leaves_it_pending() {
     let seen = Seen::default();
-    let (mut store, instance) = calling_the_host(&seen, true).await;
+    let (mut store, instance) = calling_the_host(CALLS_A_HOST_ASYNC_FUNCTION, &seen, true).await;
     let live = record_count(&mut store);
     let answered = run(&mut store, &instance).await.expect("the call returns");
     assert_eq!(answered.as_ref(), [Val::U32(8)]);
@@ -371,16 +387,42 @@ async fn it_counts_a_pending_host_call_once_it_joins_the_host_tasks_and_releases
     let [first, second] = polls[..] else {
         panic!("the body was polled twice: {polls:?}");
     };
-    assert!(first > live, "the call's records count while its body runs");
     assert_eq!(
-        second, first,
-        "the host task counts once, admitted or held, never twice or not at all"
+        first,
+        live + 2,
+        "the call does not count while its first poll runs"
+    );
+    assert_eq!(
+        second,
+        first + 1,
+        "the pending call counts once from then on"
     );
     assert_eq!(
         record_count(&mut store),
         live,
-        "the call let go of every record, its host task's among them"
+        "the call let go of every record"
     );
+
+    // In a store with no room for the call's record, the first poll
+    // runs, and the call that stays pending fails after it, through
+    // either lower.
+    for component in [
+        CALLS_A_HOST_ASYNC_FUNCTION,
+        CALLS_A_HOST_ASYNC_FUNCTION_ASYNC,
+    ] {
+        let (mut store, instance) = calling_the_host(component, &seen, true).await;
+        set_max_records(&mut store, first);
+        let message = run(&mut store, &instance)
+            .await
+            .expect_err("the pending call does not fit");
+        assert!(message.contains(TABLE_FULL), "{message}");
+        assert_eq!(
+            seen.lock().expect("seen").len(),
+            1,
+            "the body's first poll ran, and no later one"
+        );
+        seen.lock().expect("seen").clear();
+    }
 }
 
 /// A component whose `run` calls the export of a second component
