@@ -95,7 +95,7 @@ Fifteen terms recur:
 ## Facts This Design Rests On
 
 Each fact below was read from the cited source. Wasmtime facts are from
-`v49.0.0-rc.1`, the version that the polyfill pins.
+`v50.0.0`, the release that the polyfill builds against.
 
 - Wasmtime's three traits are `ComponentType`, `Lower`, and `Lift` ([Wasmtime
   traits]). Each method and each constant is `#[doc(hidden)]`. The documentation
@@ -135,6 +135,11 @@ Each fact below was read from the cited source. Wasmtime facts are from
 - `ResourceAny` is a handle to a resource of any type. Its type check accepts
   any `own` or `borrow`, and its lowering compares the resource type ([Wasmtime
   resource any]). `Val` holds it as `Val::Resource` ([Wasmtime values]).
+- A borrow `Resource<T>` converts to a `ResourceAny` that holds the rep and no
+  entry of the host table ([Wasmtime synthetic borrow]). Its `resource_drop`
+  does nothing ([Wasmtime synthetic drop]). A lowering of it as an `own` fails
+  with "cannot lower a `borrow` resource into an `own`" ([Wasmtime resource
+  any]).
 - A stale index into the host table fails with "host-owned resource was already
   de-allocated" ([Wasmtime stale]).
 - `ResourceTable` lives in `wasmtime::component`, not in WASI. Its `push` and
@@ -546,8 +551,9 @@ the marker `T`, it carries the `u32` of its type. It has Wasmtime's methods:
 
 `ResourceAny` is a handle to a resource of any type. It is the only form of a
 handle to a guest resource. A host also uses it for a host resource whose type
-it does not know at compile time. It holds an index into the host table and the
-identity of its type. It records whether it is owned or borrowed.
+it does not know at compile time. It holds the identity of its type and records
+whether it is owned or borrowed. Most handles also hold an index into the host
+table. The exception is the synthetic borrow below.
 
 `ResourceAny` has Wasmtime's methods: `ty`, `owned`, `resource_drop`,
 `try_from_resource`, and `try_into_resource`. A host makes one from a typed
@@ -555,6 +561,15 @@ handle with `try_into_resource_any`. A host releases an owned `ResourceAny` with
 `resource_drop`, which runs the destructor once, as [PDD017] designs. A host
 that drops an owned `ResourceAny` without `resource_drop` leaks the resource
 until the store drops, as in Wasmtime.
+
+A synthetic borrow is a `ResourceAny` that the host makes from a borrow
+`Resource<T>` or a borrow `ResourceDynamic`. It holds the rep in place of an
+index, and it takes no entry of the host table. So the conversion needs no call
+in flight. Its `resource_drop` does nothing. A lowering of it as a `borrow`
+gives the guest its rep. A lowering of it as an `own` fails with Wasmtime's
+message, "cannot lower a `borrow` resource into an `own`". `try_into_resource`
+gives back a borrow with the same rep. Wasmtime does the same ([Wasmtime
+synthetic borrow]).
 
 The host table refuses a stale handle. Each slot of the table has a generation,
 and a handle records the generation of its slot. A handle whose slot was freed
@@ -575,6 +590,9 @@ the value. It has Wasmtime's API:
 - `push`, `push_child`, `add_child`, and `remove_child`.
 - `get`, `get_mut`, `get_any_mut`, and `delete`.
 - `iter_entries`, `iter_children`, and `iter_mut`.
+
+`iter_mut` yields each value with the rep of the handle that names it, as
+Wasmtime's does ([Wasmtime iter_mut]).
 
 Its errors are Wasmtime's: `Full`, `NotPresent`, `WrongType`, and `HasChildren`.
 They are cases of the polyfill's `ResourceTableError`. `Full` is also the error
@@ -809,6 +827,13 @@ owned guest resource and releases it with `resource_drop`. The destructor of the
 second resource runs once. A `ResourceAny` of the wrong type fails when the host
 lowers it. `try_into_resource` succeeds for the right `T` and fails for another.
 
+A host borrow converts to a `ResourceAny` with no call in flight. The host makes
+a borrow with `Resource::new_borrow` and converts it outside any call. The
+`ResourceAny` is a borrow of the right type, and it converts back to a borrow
+with the same rep. Two releases of it both succeed and do nothing. A guest
+function that takes a `borrow` receives the rep. A call of a guest function that
+takes an `own` fails with "cannot lower a `borrow` resource into an `own`".
+
 A derived type holds `own` and `borrow` fields. A record has a `Resource<T>`
 field and a `ResourceAny` field. It crosses into a host function with `borrow`
 fields and out of a host function with `own` fields. The host keeps the
@@ -863,7 +888,7 @@ not change.
 - [PDD023], cancellation and the poisoned store, revised in place by this
   design.
 - [PDD025], the runtime layer.
-- [Wasmtime] at `v49.0.0-rc.1`: its [traits][Wasmtime traits], its [type
+- [Wasmtime] at `v50.0.0`: its [traits][Wasmtime traits], its [type
   check][Wasmtime type check], its [`Func::typed`][Wasmtime typed], its
   [derive][Wasmtime derive], its [values][Wasmtime values], its
   [types][Wasmtime types], its [linker][Wasmtime linker] and
@@ -871,8 +896,11 @@ not change.
   [resource registration][Wasmtime resource registration], [resource
   states][Wasmtime resource states] and [consumed handles][Wasmtime consumed],
   [`ResourceDynamic`][Wasmtime resource dynamic],
-  [`ResourceAny`][Wasmtime resource any], [stale handles][Wasmtime stale], and
-  [`ResourceTable`][Wasmtime resource table], and the code that its
+  [`ResourceAny`][Wasmtime resource any], its [synthetic
+  borrows][Wasmtime synthetic borrow] and their
+  [release][Wasmtime synthetic drop], [stale handles][Wasmtime stale], and
+  [`ResourceTable`][Wasmtime resource table] with its
+  [`iter_mut`][Wasmtime iter_mut], and the code that its
   [`bindgen!`][Wasmtime bindgen] emits.
 
 [PDD003]: ./PDD003%20Compatibility%20Outlook.md
@@ -893,36 +921,42 @@ not change.
 [PDD025]: ./PDD025%20Runtime%20Layer.md
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime traits]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func/typed.rs#L498-L736
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func/typed.rs#L504-L742
 [Wasmtime type check]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func/typed.rs#L2205-L2340
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func/typed.rs#L2209-L2344
 [Wasmtime typed]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func.rs#L170-L187
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func.rs#L170-L187
 [Wasmtime derive]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/src/component.rs#L41-L345
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/src/component.rs#L41-L345
 [Wasmtime values]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/values.rs#L92
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/values.rs#L92
 [Wasmtime types]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/types.rs#L781
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/types.rs#L781
 [Wasmtime linker]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/linker.rs#L236-L241
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/linker.rs#L236-L241
 [Wasmtime matching]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/matching.rs#L69-L80
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/matching.rs#L69-L80
 [Wasmtime resource type]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/ty.rs#L44-L62
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/ty.rs#L44-L62
 [Wasmtime resource registration]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/linker.rs#L836-L841
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/linker.rs#L853-L858
 [Wasmtime resource states]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/host.rs#L37-L60
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/host.rs#L37-L60
 [Wasmtime consumed]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/host.rs#L200
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/host.rs#L200
 [Wasmtime resource dynamic]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/host_dynamic.rs#L66-L141
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/host_dynamic.rs#L66-L141
 [Wasmtime resource any]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/any.rs#L240-L298
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/any.rs#L342-L400
+[Wasmtime synthetic borrow]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/host.rs#L295-L299
+[Wasmtime synthetic drop]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/any.rs#L285-L292
 [Wasmtime stale]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/host_tables.rs#L180
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/host_tables.rs#L180
 [Wasmtime resource table]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resource_table.rs#L155-L268
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resource_table.rs#L155-L268
+[Wasmtime iter_mut]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resource_table.rs#L409-L417
 [Wasmtime bindgen]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L2096-L2101
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L2115-L2120

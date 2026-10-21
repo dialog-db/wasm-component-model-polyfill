@@ -96,7 +96,7 @@ Eleven terms recur:
 ## Facts This Design Rests On
 
 Each fact below was read from the cited source. Wasmtime facts are from
-`v49.0.0-rc.1`. Wasmi facts are from its `main` branch at version 2.0.0.
+`v50.0.0`. Wasmi facts are from its `main` branch at version 2.0.0.
 
 - Wasm 3.0 is complete. It adds GC, exception handling, typed function
   references, tail calls, memory64, multi-memory, and relaxed SIMD to Wasm 2.0
@@ -673,13 +673,18 @@ publish them.
 
 The polyfill depends on two Wasmtime crates in two roles:
 
-- `wasmtime-environ` is the translator. The polyfill pins it exactly, because a
-  new translator changes the adapters it emits, and so the behavior of the
-  polyfill. The pin moves only in a deliberate change, gated by the conformance
-  record and the Zena record on every lane.
+- `wasmtime-environ` is the translator. A new major release of the translator
+  changes the adapters it emits, and so the behavior of the polyfill. The
+  polyfill requires one major release of it with a caret requirement. The
+  requirement moves to another major release only in a deliberate change. That
+  change must not regress the conformance record or the Zena record on any lane.
+  The requirement is not exact. Wasmtime pins its own crates to each other
+  exactly, so an exact requirement holds a consumer on one patch release of
+  `wasmtime`.
 - `wasmtime` is the engine of the control. The Wasmtime backend builds against
   the release of the translator, so the control and the translator agree about
-  the Component Model. One workspace dependency holds the version for both.
+  the Component Model. A flake check fails unless the lock file resolves both to
+  one version, in the major release that the workspace requires.
 
 A release candidate of Wasmtime can stay in the tree. It blocks a release,
 because a release needs every dependency to be a stable release on crates.io.
@@ -838,7 +843,7 @@ public API check of the repository holds this.
 - The [feature status] table of the WebAssembly project.
 - [Wasmi], its [resumable calls][Wasmi resumable], and its [trap
   codes][Wasmi traps].
-- [Wasmtime] at `v49.0.0-rc.1`: its [traps][Wasmtime traps], its [exception
+- [Wasmtime] at `v50.0.0`: its [traps][Wasmtime traps], its [exception
   barrier][Wasmtime exception barrier], its [memory data][Wasmtime memory data]
   and [shared memory data][Wasmtime shared memory data], its [shared canonical
   memory][Wasmtime shared canonical memory], its [`WasmStr`][Wasmtime WasmStr]
@@ -868,21 +873,21 @@ public API check of the repository holds this.
   https://github.com/wasmi-labs/wasmi/blob/2970aa8/crates/core/src/trap.rs
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime traps]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs#L111-L180
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs#L111-L180
 [Wasmtime exception barrier]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/fact/trampoline.rs#L3990-L3991
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/fact/trampoline.rs#L3892-L3893
 [Wasmtime memory data]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/memory.rs#L408
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/memory.rs#L408
 [Wasmtime shared memory data]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/memory.rs#L928-L943
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/memory.rs#L928-L943
 [Wasmtime shared canonical memory]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/instance.rs#L947-L952
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/instance.rs#L946-L951
 [Wasmtime WasmStr]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func/typed.rs#L1562
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func/typed.rs#L1566
 [Wasmtime WasmList]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func/typed.rs#L1870
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func/typed.rs#L1874
 [Wasmtime ThrownException]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/exception.rs#L43
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/exception.rs#L43
 [GC JS API]: https://github.com/WebAssembly/gc/blob/main/proposals/gc/MVP-JS.md
 [exception handling]:
   https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/Exceptions.md

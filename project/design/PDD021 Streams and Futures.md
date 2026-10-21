@@ -12,15 +12,15 @@ host reads and writes a guest's stream or future.
 
 The design follows the [Concurrency explainer][Concurrency] and the Python
 reference in [`definitions.py`] at the commit the conformance corpus of [PDD016]
-is vendored from. Where the reference leaves a choice to the host, the design
-makes the choice [Wasmtime] makes at `v49.0.0-rc.1`, and it spells its public
-names as Wasmtime spells them. Where the design departs from the reference or
-from Wasmtime, it states the reason.
+is vendored from, `2f1e56f`. Where the reference leaves a choice to the host,
+the design makes the choice [Wasmtime] makes at `v50.0.0`, and it spells its
+public names as Wasmtime spells them. Where the design departs from the
+reference or from Wasmtime, it states the reason.
 
 Two terms recur. A copy is one read or one write on one end. The reference uses
-the word for both kinds, in `stream_copy`, `future_copy`, and `cancel_copy`. A
-host end is a stream or future end the host holds, as opposed to a guest end,
-which is an entry in a component instance's handle table.
+the word for both kinds, in `copy` and `cancel_copy`. A host end is a stream or
+future end the host holds, as opposed to a guest end, which is an entry in a
+component instance's handle table.
 
 ## Goals
 
@@ -64,6 +64,9 @@ which is an entry in a component instance's handle table.
   cancelled event is never delivered. A copy cancel is not task cancellation.
 - Error contexts, as built-ins and as a value type. They stay refused at
   translation.
+- The forward built-ins, `stream.forward` and `future.forward`. Wasmtime does
+  not implement them either. The validator refuses them, and the corpus files
+  that use them stay deferred with that reason.
 - The stackful form of `canon lift async` and the thread built-ins other than
   `thread.yield`. They stay refused at translation.
 - A synchronous copy that only the caller below it on the stack can release.
@@ -109,7 +112,7 @@ An end record holds:
 - The waitable state of [PDD018]: one pending event slot, the set the end
   joined, and the synchronous-waiter flag.
 - The copy state: `idle`, `copying`, `cancelling`, or `done`. These are the
-  reference's `CopyState`.
+  reference's `End.State`.
 - The direction, readable or writable, and the index of the shared record.
 - The buffer of the copy in progress, when the end is copying. For a guest end
   the buffer is a boundary context, a pointer, a length, and the progress made.
@@ -178,7 +181,7 @@ pointer is not aligned for the payload or if the range leaves the memory. The
 polyfill does the same through the boundary context, and the message names the
 bounds as Wasmtime's copy does.
 
-`pair` is the reference's `SharedStreamImpl.read` and `write`. Its rules:
+`pair` is the reference's `End.copy`. Its rules:
 
 - The first copy on a stream with no pending side makes this end the pending
   side and returns. The copy completes later, when the other end starts a copy.
@@ -186,8 +189,9 @@ bounds as Wasmtime's copy does.
   the smaller of the two remaining lengths. The copy that started later
   completes with that count. The pending copy stays pending, and its buffer
   keeps accepting further copies, until its event is delivered. Its event then
-  reports the total progress. This is the reference's reclaim rule, and it lets
-  several small writes fill one large read before the reader runs again.
+  reports the total progress. The reference's `End.copy` keeps the pending
+  buffer in the same way. The rule lets several small writes fill one large read
+  before the reader runs again.
 - A zero-length copy completes as soon as the other end is pending, with no
   bytes moved. The Concurrency explainer defines it as a readiness probe, and
   states that a later non-zero copy can still block.
@@ -198,15 +202,15 @@ bounds as Wasmtime's copy does.
 
 The completion of a copy fills the end's pending event. The event is the triple
 of [PDD018]: the stream read or write code, the end's index, and the packed
-result. The packed result is the reference's `pack_copy_result`: the low four
-bits hold completed (0), dropped (1), or cancelled (2), and the bits above hold
-the count copied. For a future the count is always zero. The blocked sentinel is
-the value `0xffffffff`, the reference's `BLOCKED`, which no packed result can
-equal. A synchronous copy takes the event before it returns. An asynchronous
-copy leaves it for the waitable set the end joined, or for a later synchronous
-copy cancel. An end in the `done` state accepts only a drop. A read after the
-writable end dropped, or a write after the readable end dropped, traps with
-Wasmtime's message for that direction.
+result. The packed result is the one the reference's `stream_event` builds from
+a `CopyResult`: the low four bits hold completed (0), dropped (1), or cancelled
+(2), and the bits above hold the count copied. For a future the count is always
+zero. The blocked sentinel is the value `0xffffffff`, the reference's `BLOCKED`,
+which no packed result can equal. A synchronous copy takes the event before it
+returns. An asynchronous copy leaves it for the waitable set the end joined, or
+for a later synchronous copy cancel. An end in the `done` state accepts only a
+drop. A copy on a done end traps with Wasmtime's message for that direction and
+kind. The message names the stream or the future.
 
 ### The Copy Itself
 
@@ -244,7 +248,8 @@ partial step. The differences the reference states:
   dropped before it has written. That is the rule under Dropping an End below.
 - A write to a future in the `done` state traps with Wasmtime's message, which
   names both causes: a previous write succeeded, or the readable end dropped. A
-  read in that state traps with the message that names a previous read.
+  read in that state traps with the message that names a previous read. Each
+  message applies however the end became `done`.
 
 ## Cancelling a Copy
 
@@ -292,14 +297,12 @@ The four drop built-ins remove the entry and drop the end.
   the other end. A pending copy there completes with the dropped result. An idle
   end that is not `done` and holds no event receives the dropped result with no
   progress. A stream end that holds an undelivered completion has it replaced by
-  the dropped result with the same progress; a future end keeps the event it
+  the dropped result with the same progress. A future end keeps the event it
   holds. A later copy on the other end completes with the dropped result at once
-  and moves that end to `done`. The reference at the corpus commit notifies only
-  a pending copy. The polyfill follows the reference's current text, which
-  notifies an idle end too (`End.drop` and `stream_event`), and Wasmtime at the
-  corpus commit, which queues the dropped event on an idle reader and rewrites
-  an undelivered stream completion (`futures_and_streams.rs`, `update_event`).
-  No corpus directive depends on the difference.
+  and moves that end to `done`. These are the rules of the reference's
+  `End.drop`, `stream_event`, and `future_event`. Wasmtime's `update_event` in
+  `futures_and_streams.rs` gives the same result. It queues the dropped event on
+  an idle reader and rewrites an undelivered stream completion.
 - Dropping the second end frees the shared record.
 - Every drop traps when the may-leave flag is clear.
 
@@ -339,12 +342,11 @@ first and removes after, so an entry survives a failed lift. The difference is
 not observable in the reference, where every trap is fatal, and it keeps the
 instance's table whole for a host that continues after the error.
 
-Between two components the fused adapters of Wasmtime 49 call the
-`StreamTransfer` and `FutureTransfer` intrinsics, one per value, with the source
-index and the two types. The polyfill serves each as a trampoline that lifts
-from the caller's table and lowers into the callee's table, as the resource
-transfer intrinsics of [PDD015] move an owned handle. The index changes. The end
-record does not.
+Between two components Wasmtime's fused adapters call the `StreamTransfer` and
+`FutureTransfer` intrinsics, one per value, with the source index and the two
+types. The polyfill serves each as a trampoline that lifts from the caller's
+table and lowers into the callee's table, as the resource transfer intrinsics of
+[PDD015] move an owned handle. The index changes. The end record does not.
 
 Between a guest and the host the same lift and lower run inside the boundary
 context of the call. A stream in a result the host reads through `Func::call`
@@ -366,13 +368,17 @@ words copy budget for the concept. The message keeps Wasmtime's wording only so
 the corpus matches it by substring.
 
 The budget applies to every crossing, not only to a copy. A list lift charges 32
-bytes per element, and a map lift charges 64 bytes per entry, on both targets.
-Those are the sizes of Wasmtime's `Val` and of a pair of them on a 64-bit host,
-which Wasmtime charges per element. A fixed cost keeps the budget the same in a
-browser, where the polyfill's own `Val` is smaller. A string charges its byte
-length, and a typed list of a number type charges its length times the size of
-the number, as Wasmtime does. A copy of a number payload moves bytes and builds
-no value, so it charges nothing, as Wasmtime's flat copy charges nothing.
+bytes per element, and a map lift charges 64 bytes per entry, on both targets. A
+record charges 32 bytes per field and a tuple 32 bytes per element. A variant,
+an option, or a result with a payload charges 32 bytes for the payload. Those
+are the sizes of Wasmtime's `Val` and of a pair of them on a 64-bit host, which
+Wasmtime charges for each value it builds. A fixed cost keeps the budget the
+same in a browser, where the polyfill's own `Val` is smaller. A string charges
+its byte length. Each field, case, and flag name that the host receives also
+charges its byte length. A typed list of a number type charges its length times
+the size of the number. Wasmtime charges all of these in the same way. A copy of
+a number payload moves bytes and builds no value, so it charges nothing, as
+Wasmtime's flat copy charges nothing.
 
 The budget replaces the element bound on a list lift that the polyfill had
 before this design. It is the one guard against a guest making the host build a
@@ -620,9 +626,9 @@ uses fall into three groups.
 
 The first group leads Wasmtime into a state that its own code rejects as a bug.
 Wasmtime raises that bug as a panic in a debug build and as a trap in a release
-build. The check a guest read reaches is at `futures_and_streams.rs` line 3785
-at the corpus commit `cb091c33c`. The polyfill does not reproduce a bug as a
-behavior, so it refuses the use first:
+build. The check a guest read reaches is at `futures_and_streams.rs` line 3863
+at `v50.0.0`. The polyfill does not reproduce a bug as a behavior, so it refuses
+the use first:
 
 - A lower after a pipe, a close, or another lower. A later guest read of the new
   entry fails Wasmtime's check that the reading side is open.
@@ -650,8 +656,8 @@ The translator accepts what this design builds and refuses the rest with
 
 - Accepted: `stream.new`, `stream.read`, `stream.write`, `stream.cancel-read`,
   `stream.cancel-write`, `stream.drop-readable`, `stream.drop-writable`, the
-  seven `future.*` built-ins, the `StreamTransfer` and `FutureTransfer`
-  trampolines, and a stream or future type in a function type.
+  seven `future.*` built-ins with the same names, the `StreamTransfer` and
+  `FutureTransfer` trampolines, and a stream or future type in a function type.
 - Accepted with a call-time failure: `task.cancel` and `subtask.cancel`. Each
   trampoline fails with `Error::Unsupported` when a guest calls it, after the
   may-leave check. A guest whose binding layer links either built-in
@@ -662,6 +668,8 @@ The translator accepts what this design builds and refuses the rest with
   `ErrorContextTransfer` trampoline, `canon lift async` without a callback,
   every thread built-in other than `thread.yield`, and the table initializer of
   `thread.new-indirect`.
+- Refused at validation: `stream.forward` and `future.forward`. The validator
+  rejects a component that uses either one, so the translator never sees it.
 
 ## Error Model Growth
 
@@ -675,16 +683,20 @@ it by substring:
 - Buffer out of bounds, and buffer not aligned: the guest buffer leaves the
   memory or its pointer is not aligned for the payload. Wasmtime's messages name
   the pointer of the direction.
-- Read after done, and write after done: a copy on an end that was notified the
-  other end dropped. Wasmtime's message differs per direction and kind, and the
-  future messages also name a previous read or write.
+- Read after done, and write after done: a copy on an end in the `done` state.
+  Wasmtime's message differs per direction and kind. The stream messages are
+  those of Wasmtime's `ReadFromDroppedStream` and `WriteToDroppedStream`. They
+  say that the end was notified that the other end dropped. The future write
+  message is that of `WriteToDroppedFuture`, and the future read message names a
+  previous read.
 - Future write end not written: a writable future end dropped before its write.
 - Busy end: a drop or a lift of an end during a copy, with Wasmtime's message
   per side and kind.
 - Same-instance payload: a read and a write from one instance with a payload
   outside the number types.
 - Lift after done, lift in waitable set, and lift during copy: the three lift
-  traps, with Wasmtime's message per kind.
+  traps, with Wasmtime's message per kind. A stream lifted after done gets the
+  message of Wasmtime's `LiftDroppedStream`.
 - No copy pending: a cancel on an end that is not copying.
 - Not held by host: a pipe or a close of a readable end that the host no longer
   holds, because a value naming the same end lowered, piped, or closed it. The
@@ -713,14 +725,11 @@ natively, absent in the browser, under one declaration.
 ## The Corpus
 
 This feature removes the lines its scope owns from the expected-failure list and
-leaves the rest with their reasons. The harness registers no new host item. It
-gains one matching rule, which mirrors Wasmtime's own test runner
-(`crates/wast/src/wast.rs`, lines 551 to 554, at the corpus commit): in the
-Component Model corpus only, an expected trap that names "cannot read" or
-"cannot write" matches any trap that names the same phrase. The Component Model
-corpus words these traps differently from Wasmtime, the specification fixes no
-wording, and the polyfill raises Wasmtime's. The files and directives this
-design owns, in the Component Model corpus:
+leaves the rest with their reasons. The harness registers no new host item and
+adds no matching rule. In both corpora, a trap matches when its message contains
+the expected text. For the traps of a done end, the Component Model corpus
+expects Wasmtime's texts, which name the stream or the future. The files and
+directives this design owns, in the Component Model corpus:
 
 - `builtin-trap-poisons-instance.wast`, its second component, that component's
   instantiation, and the directive that drops a busy stream. Its two directives
@@ -729,8 +738,7 @@ design owns, in the Component Model corpus:
   `drop-stream.wast`, `empty-wait.wast`, `futures-must-write.wast`,
   `partial-stream-copies.wast`, `same-component-stream-future.wast`,
   `trap-if-done.wast`, `trap-if-transfer-in-waitable-set.wast`,
-  `wait-during-callback.wast`, and `zero-length.wast`, whole. Five lines of
-  `trap-if-done.wast` pass through the matching rule above.
+  `wait-during-callback.wast`, and `zero-length.wast`, whole.
 - `drop-cross-task-borrow.wast`, whole. A borrow lent to a callback task that
   waits on a future is dropped from another task of the same instance. The
   lender's return then traps or succeeds as [PDD014] states.
@@ -774,20 +782,16 @@ In the Wasmtime corpus:
   Its stream and future case needs a stack switch, because a callee reads a
   future synchronously that only its caller writes.
 
-The lines that change without joining this design's scope, because the
-translator now accepts `task.cancel` and `subtask.cancel`:
-
-- Every file deferred for cancellation keeps its reason. A directive that only
-  defines or instantiates a component which links either built-in starts to pass
-  and loses its line. A directive that reaches the call fails with the
-  unsupported error, and its line's reason changes to that failure. The files
-  are `big-interleaving-test.wast`, `cancel-and-exclusive-lock.wast`,
-  `cancel-delivery.wast`, `cancel-subtask.wast`, `cancel-host.wast`,
-  `cancel-sibling-subtask.wast`, `cancel-starting-subtask-does-not-leak.wast`,
-  `yield-when-cancelled.wast`, and the two cancel directives of the Component
-  Model `reentrance.wast`.
-- `cm/values/post-return.wast` was rejected for `task.cancel`. It is now
-  rejected for `thread.index`, and its reason changes to the thread built-ins.
+Some lines change without joining this design's scope, because the translator
+accepts `task.cancel` and `subtask.cancel`. Every file deferred for cancellation
+keeps its reason. A directive that only defines or instantiates a component
+which links either built-in starts to pass and loses its line. A directive that
+reaches the call fails with the unsupported error, and its line's reason changes
+to that failure. The files are `big-interleaving-test.wast`,
+`cancel-and-exclusive-lock.wast`, `cancel-delivery.wast`, `cancel-subtask.wast`,
+`cancel-host.wast`, `cancel-sibling-subtask.wast`,
+`cancel-starting-subtask-does-not-leak.wast`, `yield-when-cancelled.wast`, and
+the two cancel directives of the Component Model `reentrance.wast`.
 
 The files that stay deferred, with the reason:
 
@@ -803,12 +807,17 @@ The files that stay deferred, with the reason:
 - The stackful lift: `sync-barges-in.wast`, `stackful.wast`,
   `drop-waitable-set-stackful.wast`, `task-deletion.wast`, the directive of
   `cm/values/variants.wast` at line 186, four components of
-  `task-return-traps.wast`, and `big-interleaving-test.wast`, which is also
-  cancellation.
+  `task-return-traps.wast`, and `big-interleaving-test.wast`, which also needs
+  cancellation and the forward built-ins.
 - Thread built-ins: `switch-to-ready-callback.wast`,
   `trap-if-block-and-sync.wast`, `trap-if-sync-and-waitable-set.wast`,
-  `join-during-sync-read.wast`, `cm/values/post-return.wast`, two components of
-  `task-return-traps.wast`, and every file [PDD020] lists for that reason.
+  `join-during-sync-read.wast`, two components of `task-return-traps.wast`, and
+  every file [PDD020] lists for that reason.
+- The forward built-ins: `forward.wast`, `big-interleaving-test.wast`, and
+  `cm/values/post-return.wast`. The validator rejects each component that uses
+  `stream.forward` or `future.forward`, and the later directives of the file
+  cascade. Wasmtime does not implement the two built-ins either. Its own test
+  runner lists the same three files as failing.
 - Cancellation: the files named above, except two.
   `cancel-starting-subtask-does-not-leak.wast` stops at link, because it needs a
   host item, `wasmtime.set-max-table-capacity`, and the harness registers none.
@@ -1011,24 +1020,23 @@ repository test.
 - [Concurrency], the Concurrency explainer, and its sections on [streams and
   futures][Streams and Futures] and [stream readiness][Stream Readiness].
 - [CanonicalABI], the Canonical ABI explainer, and its sections on [buffer
-  state][CanonicalABI – buffers], [stream state][CanonicalABI – stream state],
-  [future state][CanonicalABI – future state],
-  [`{stream,future}.new`][CanonicalABI – new],
-  [`stream.{read,write}`][CanonicalABI – stream copy],
-  [`future.{read,write}`][CanonicalABI – future copy],
+  state][CanonicalABI – buffers], [stream and future
+  state][CanonicalABI – ends], [`{stream,future}.new`][CanonicalABI – new],
+  [`{stream,future}.{read,write}`][CanonicalABI – copy],
   [`{stream,future}.cancel-{read,write}`][CanonicalABI – cancel], and
   [`{stream,future}.drop-{readable,writable}`][CanonicalABI – drop].
-- [`definitions.py`], the executable reference for `SharedStreamImpl`,
-  `SharedFutureImpl`, `CopyEnd`, `lift_async_value`, `lower_stream`,
-  `stream_copy`, `future_copy`, `cancel_copy`, and `drop`.
+- [`definitions.py`], the executable reference for `End`, `StreamEnd`,
+  `FutureEnd`, `CopyResult`, `lift_async_value`, `lower_stream`, `copy`,
+  `cancel_copy`, and `drop`.
 - [Explainer – canonical definitions], the fourteen built-ins and their
   validation, and [Explainer – stream and future types], the `borrow` and `char`
   rules.
-- [Wasmtime], the reference implementation at `v49.0.0-rc.1`: its [streams and
+- [Wasmtime], the reference implementation at `v50.0.0`: its [streams and
   futures][Wasmtime streams], its [buffers][Wasmtime buffers], its [untyped
   values][Wasmtime any], its [handle table][Wasmtime handle table], its [copy
-  budget][Wasmtime budget], its [flat payload rule][Wasmtime flat], and its
-  [trap messages][Wasmtime traps].
+  budget][Wasmtime budget], the [budget charges of a value
+  lift][Wasmtime values], its [flat payload rule][Wasmtime flat], and its [trap
+  messages][Wasmtime traps].
 - The Wasmtime API for [`StreamReader`], [`FutureReader`], [`StreamProducer`],
   [`StreamConsumer`], [`FutureProducer`], [`FutureConsumer`], [`StreamAny`], and
   [`FutureAny`].
@@ -1056,16 +1064,12 @@ repository test.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 [CanonicalABI – buffers]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#buffer-state
-[CanonicalABI – stream state]:
-  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#stream-state
-[CanonicalABI – future state]:
-  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#future-state
+[CanonicalABI – ends]:
+  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#stream-and-future-state
 [CanonicalABI – new]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-streamfuturenew
-[CanonicalABI – stream copy]:
-  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-streamreadwrite
-[CanonicalABI – future copy]:
-  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-futurereadwrite
+[CanonicalABI – copy]:
+  https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-streamfuturereadwrite
 [CanonicalABI – cancel]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#-canon-streamfuturecancel-readwrite
 [CanonicalABI – drop]:
@@ -1078,19 +1082,21 @@ repository test.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md#asynchronous-value-types
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime streams]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs
 [Wasmtime buffers]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams/buffers.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams/buffers.rs
 [Wasmtime any]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/future_stream_any.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/future_stream_any.rs
 [Wasmtime handle table]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/vm/component/handle_table.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/vm/component/handle_table.rs
 [Wasmtime budget]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/store.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/store.rs
+[Wasmtime values]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/values.rs
 [Wasmtime flat]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/cranelift/src/compiler/component.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/cranelift/src/compiler/component.rs
 [Wasmtime traps]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs
 [`StreamReader`]:
   https://docs.wasmtime.dev/api/wasmtime/component/struct.StreamReader.html
 [`FutureReader`]:
@@ -1112,6 +1118,6 @@ repository test.
 [wit-bindgen]:
   https://github.com/bytecodealliance/wit-bindgen/blob/main/crates/guest-rust/src/rt/async_support.rs
 [Component Model test corpus]:
-  https://github.com/WebAssembly/component-model/tree/main/test/async
+  https://github.com/WebAssembly/component-model/tree/2f1e56f563c918d39d68b2e0fc9328c340b8f83a/test/async
 [Wasmtime component tests]:
-  https://github.com/bytecodealliance/wasmtime/tree/main/tests/misc_testsuite/component-model/async
+  https://github.com/bytecodealliance/wasmtime/tree/v50.0.0/tests/misc_testsuite/component-model/async

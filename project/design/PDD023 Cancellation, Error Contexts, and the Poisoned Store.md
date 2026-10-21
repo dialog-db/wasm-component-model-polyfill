@@ -18,11 +18,10 @@ The design follows the [Concurrency explainer][Concurrency], the
 [Explainer][Explainer – invariants], and the Python reference in
 [`definitions.py`] at the commit the conformance corpus of [PDD016] is vendored
 from. Where the reference leaves a choice to the host, the design makes the
-choice [Wasmtime] makes at `v49.0.0-rc.1`. In two places the design follows
-Wasmtime over the reference: the `cancellable` immediate, which wit-bindgen
-still emits, and which callback a cancellation request wakes. There, one guest
-binary must behave the same in the polyfill and in Wasmtime. Each departure
-states its reason.
+choice [Wasmtime] makes at `v50.0.0`. In one place the design follows Wasmtime
+over the reference: which callback a cancellation request wakes. There, one
+guest binary must behave the same in the polyfill and in Wasmtime. Each
+departure states its reason.
 
 Six terms recur:
 
@@ -39,17 +38,15 @@ Six terms recur:
 
 ## Goals
 
-- A trap poisons the store. The triggers are the triggers of Wasmtime, plus the
-  failure of a host `async` function.
+- A trap poisons the store. The triggers are the triggers of Wasmtime.
 - A poisoned store runs no more guest code. Every host entry into a guest fails
   with Wasmtime's cannot-enter trap. Host work that touches no guest still runs.
 - The first trap ends the driver that is polling, with that trap. No failure is
   lost, and no failure waits for a caller that already left.
 - `subtask.cancel` requests cancellation of a guest callee or a host callee, as
   the reference and Wasmtime state it.
-- A callee learns of the request at the entry gate, in the callback loop, or in
-  a built-in that carries the `cancellable` immediate. `task.cancel` confirms
-  it.
+- A callee learns of the request at the entry gate or in the callback loop.
+  `task.cancel` confirms it.
 - The three `error-context` built-ins run. An error context crosses between
   components as a value, and the host sees it through Wasmtime's types.
 - The store can cap the number of its live records. The conformance harness uses
@@ -72,8 +69,9 @@ Six terms recur:
   none at this version.
 - A public query that answers whether a store is poisoned. Wasmtime keeps its
   flag internal.
-- Delivery of a cancellation to a stackful task through a built-in that has no
-  `cancellable` immediate. The reference states no such delivery.
+- Delivery of a cancellation to a stackful task. Neither the reference nor
+  Wasmtime delivers a request to one.
+- The `stream.forward` built-in. Wasmtime does not implement it at this version.
 
 ## Facts This Design Rests On
 
@@ -95,13 +93,16 @@ Each fact below was read from the cited source.
   enter]), and a host drop of a guest-defined resource ([Wasmtime drop enter]).
   The message is "cannot enter component instance".
 - In Wasmtime, a failure of a work item or a host future ends the event loop.
-  The whole `run_concurrent` returns that failure ([Wasmtime event loop]).
+  The whole `run_concurrent` returns that failure ([Wasmtime event loop]). It
+  sets the trapped flag when it returns a failure ([Wasmtime event-loop trap]).
 - The reference delivers a cancellation request in two places only: at the entry
   gate, and in the callback loop ([`definitions.py`], `Task`, `canon_lift`,
-  `wait_from_callback`).
-- The reference removed the `cancellable` immediate on 2026-09-04 ([spec #716]).
-  Wasmtime 49 still honors it ([Wasmtime cancellable wait]). The C generator of
-  wit-bindgen still emits the cancellable thread built-ins ([wit-bindgen C]).
+  `wait_from_callback`). Wasmtime delivers it in the same two places.
+- Wasmtime's `subtask.cancel` wakes a callback task whose callback returned the
+  yield code, and one that waits on a set that holds no event. It gives way only
+  to a task it wakes ([Wasmtime subtask cancel]). When an event arrives,
+  Wasmtime hands it to the first waiter of the set, and no cancel can wake that
+  waiter after that ([Wasmtime mark ready]).
 - Wasmtime ends a host callee's future at `subtask.cancel` through an abort
   handle. The event loop drops the future at its next poll ([Wasmtime subtask
   cancel]).
@@ -135,15 +136,20 @@ A trap poisons the store. These failures poison it:
   arguments.
 - A host `async` function whose future completes with an error.
 
-The first five are Wasmtime's triggers. A mistyped host `Val` poisons the store
-in Wasmtime because the lowering runs after the entry check. The polyfill
-matches it.
+Each one is a trigger in Wasmtime too. A mistyped host `Val` poisons the store
+in Wasmtime because the lowering runs after the entry check. A failed host
+future ends Wasmtime's event loop, and `run_concurrent` sets the flag as it
+returns the failure. The polyfill matches both.
 
-The last trigger is the polyfill's own. In Wasmtime, a failed host future ends
-the event loop but does not set the flag. Here the failure is a trap of the
-guest task that made the call. That task can never resolve its subtask, which
-the reference does not permit. So one rule holds for every failure: a trap
-poisons.
+In the polyfill, a failed host future is a trap of the guest task that made the
+call. That task can never resolve its subtask, which the reference does not
+permit. So one rule holds for every failure: a trap poisons.
+
+A call through a fused adapter into the caller's own component instance is a
+failure of a fused adapter. Wasmtime compiles that adapter to the cannot-enter
+trap ([Wasmtime same-instance adapter]). The polyfill takes its adapters from
+the same compiler, so the call traps with "cannot enter component instance", and
+the trap poisons the store.
 
 These failures do not poison, because the polyfill raises each one before any
 guest state changes:
@@ -166,7 +172,7 @@ with the cannot-enter trap, "cannot enter component instance":
   module's instantiation.
 - `ResourceAny::resource_drop` of a resource that a guest defines.
 
-Wasmtime refuses the first three and lets instantiation run. Instantiation runs
+Wasmtime refuses the other three and lets instantiation run. Instantiation runs
 guest `start` functions, so the polyfill refuses it too. This is a departure
 from Wasmtime in favor of the reference.
 
@@ -276,13 +282,11 @@ a Guest Callee states. If the callee has not resolved after that, the built-in
 returns `BLOCKED`. The caller then waits for the subtask event. So a ready
 callee that the request does not wake does not run inside the cancel.
 
-This rule follows the reference at a later commit than the corpus. Before
-component-model #723 (commit `07afb81`, 2026-09-16), an asynchronous cancel gave
-way once whenever the callee had not resolved. #723 removed that give-way, and
-the reference still has none at `a25fc0b` ([`definitions.py`],
-`canon_subtask_cancel`). Wasmtime 49 also gives way only when it wakes a thread
-([Wasmtime subtask cancel]). On the give-way, the reference and Wasmtime agree.
-Which threads a request wakes is where they differ, as the next section states.
+The reference gives way only to a callee that the request resumes
+([`definitions.py`], `canon_subtask_cancel`). Wasmtime gives way only to a
+callee it wakes ([Wasmtime subtask cancel]). On the give-way, the reference and
+Wasmtime agree. They differ in one case of which callees a request wakes, as the
+next section states.
 
 A synchronous `subtask.cancel` blocks until the callee resolves. It blocks as
 every blocking built-in blocks: through the provider of [PDD022], or in a nested
@@ -304,93 +308,50 @@ the first of these points:
   instead of the next event. That happens after a wait, after a yield, or at
   once when the task is waiting. The instance's exclusive lock must be free,
   because the callback runs under it ([`definitions.py`], `wait_from_callback`).
-- In a built-in that carries the `cancellable` immediate, as the next section
-  states.
 
 A task learns of a request once. The first delivery moves it to
-`cancel-delivered`. A stackful task that never calls a cancellable built-in is
-never told, and the cancel waits until the task resolves on its own. The
-reference states this, and Wasmtime does the same.
+`cancel-delivered`. A stackful task is never told, and the cancel waits until
+the task resolves on its own. The reference states this, and Wasmtime does the
+same.
 
-When `subtask.cancel` requests cancellation of a started callee, it wakes one of
-the callee's threads if one can take the request at once. The candidates are a
-callback task waiting in its loop, a thread in a cancellable
-`waitable-set.wait`, and a thread in a cancellable yield. Wasmtime wakes the
-first such thread it finds and gives way to it ([Wasmtime subtask cancel]). The
-polyfill does the same.
+When `subtask.cancel` requests cancellation of a started callee, it wakes the
+callee's callback task if the task can take the request at once. Two kinds of
+callback task can:
 
-A callback task that returned the yield code is not a candidate, and neither is
-a waiter whose set already holds an event. Wasmtime queues a yielding callback
-with no way for a cancel to wake it, and it hands an event to the first thread
-that waits on its set when the event arrives, after which no cancel can wake
-that thread ([Wasmtime mark ready]). An asynchronous cancel of such a callee
-answers `BLOCKED`, and the callee learns of the request when it next runs: after
-its yield, or before the set's event.
+- A task whose callback returned the yield code. Its next turn delivers the
+  task-cancelled event in place of the none event.
+- A task that waits in its loop on a set that holds no event. Its next turn
+  delivers the task-cancelled event before any event of the set.
 
-The reference wakes both. Its callback loop marks the implicit thread
-cancellable for a yield and for a wait alike, and `request_cancellation` resumes
-a cancellable thread that is ready ([`definitions.py`] at `a25fc0b`,
-`canon_lift` and `Task.request_cancellation`). A yielding callback is ready as
-soon as its instance is free, and a waiting one as soon as its set holds an
-event or a request is pending. So the reference runs the callee inside the
-cancel, and the cancel answers `CANCELLED_BEFORE_RETURNED` when the callee
-confirms there. The polyfill follows Wasmtime 49 here, as it does for the
-`cancellable` immediate: one guest binary must get the same answer from a cancel
-in the polyfill and in Wasmtime. When Wasmtime wakes these callbacks, the
-polyfill follows.
+Wasmtime wakes the same two and gives way to the woken task ([Wasmtime subtask
+cancel]). The reference wakes them too. Its callback loop marks the implicit
+thread cancellable for a yield and for a wait, and `request_cancellation`
+resumes a cancellable thread that is ready ([`definitions.py`] at `2f1e56f`,
+`canon_lift` and `Task.request_cancellation`). The polyfill does the same. The
+woken callback runs inside the cancel. When it confirms there, the cancel
+answers `CANCELLED_BEFORE_RETURNED`.
 
-The polyfill reads Wasmtime's condition for a waiter from the set when the
-cancel runs, for a waiting thread and for a callback task waiting in its loop
-alike. The two differ in two cases, which the polyfill accepts as departures:
+A callback task that waits on a set that already holds an event is not woken.
+Wasmtime hands the event to the first waiter of the set when the event arrives,
+and no cancel can wake that waiter after that ([Wasmtime mark ready]). An
+asynchronous cancel of such a callee answers `BLOCKED`. The callee learns of the
+request when it next runs, before the set's event.
 
-- Two threads wait cancellably on one set, and an event arrives. Wasmtime hands
-  the event to the first thread and can still wake the second. The polyfill
-  wakes neither while the event is pending.
-- The event leaves the set before the waiter runs. Wasmtime keeps the waiter out
-  of reach. The polyfill can wake it again.
+The reference wakes this callee too. A waiting callback is ready as soon as its
+set holds an event or a request is pending ([`definitions.py`] at `2f1e56f`,
+`wait_from_callback`). So the reference runs the callee inside the cancel, and
+the cancel answers `CANCELLED_BEFORE_RETURNED` when the callee confirms there.
+The polyfill follows Wasmtime here. One guest binary must get the same answer
+from a cancel in the polyfill and in Wasmtime.
 
-To match both cases, the polyfill would need a mark on each waiter, set when the
-wait starts and cleared when a turn hands the waiter an event. Both cases need a
-second thread of the instance to use the set while the first waits on it.
-
-### The Cancellable Immediate
-
-The reference removed the `cancellable` immediate from the built-ins on
-2026-09-04 ([spec #716]). Wasmtime 49 still reads it and honors it. The C
-generator of wit-bindgen still emits `[cancellable][thread-suspend]`,
-`[cancellable][thread-yield]`, and the four cancellable switch built-ins. A C
-guest that uses them runs under Wasmtime today.
-
-The polyfill honors the immediate as Wasmtime 49 does. Ecosystem coherence wins
-over the reference here: one guest binary must behave the same in the polyfill
-and in Wasmtime. The translator reads the immediate and keeps it. It no longer
-drops it. When the toolchain and Wasmtime drop the immediate, this section goes
-with them.
-
-The rules follow Wasmtime ([Wasmtime cancellable wait], [Wasmtime cancellable
-suspend]):
-
-- Every cancellable built-in first takes a pending request, if one exists, and
-  returns the cancelled result at once. `waitable-set.wait` and
-  `waitable-set.poll` return the task-cancelled event (6). The thread built-ins
-  return 1.
-- A cancellable `waitable-set.wait` that blocks can be woken by
-  `subtask.cancel`. It returns the task-cancelled event.
-- A cancellable yield, from `thread.yield` or from a promote that yields, is run
-  first by `subtask.cancel`. It returns 1.
-- A cancellable suspend, from `thread.suspend` or from a switch that suspends,
-  is not woken by `subtask.cancel`. When another thread resumes it, it returns 1
-  if the request is still pending.
-- A built-in without the immediate never takes a request. Its result does not
-  change.
-
-A task that takes a request through a cancellable built-in is in
-`cancel-delivered`, as it is after any other delivery.
-
-Without a provider, a cancellable block waits in a nested turn. Its readiness
-condition includes a pending request, so a request made by work inside the
-nested turn wakes it. A request from a frame below it cannot run, and the block
-fails with the stack-switch cause, as [PDD022] states for every such block.
+The polyfill reads Wasmtime's condition from the set when the cancel runs. A
+waiting callback task whose set holds an event is out of reach. The two differ
+in one case, which the polyfill accepts as a departure. If the event leaves the
+set before the waiter runs, Wasmtime keeps the waiter out of reach, but the
+polyfill can wake it again. To match this case, the polyfill needs a mark on
+each waiter. The mark is set when the wait starts and cleared when a turn hands
+the waiter an event. The case needs a second thread of the instance to use the
+set while the callback task waits on it.
 
 ### The Confirmation
 
@@ -526,10 +487,13 @@ polyfill adds them under the same names.
 ## The Record Cap
 
 The store can cap the number of its live records. The records it counts are
-tasks, subtasks, threads, host tasks, waitable sets, the shared records of
-streams and futures, and error-context records. A new record past the cap fails
-with Wasmtime's "resource table has no free keys". A cap lower than the current
-count evicts nothing, and only new records fail.
+tasks, subtasks, threads, waitable sets, the shared records of streams and
+futures, and error-context records. The subtask of a call into the host counts
+only when the call's first poll leaves it pending. Wasmtime makes the record of
+a host call only then ([Wasmtime host task]), so a host function that answers on
+its first poll takes no record. A new record past the cap fails with Wasmtime's
+"resource table has no free keys". A cap lower than the current count evicts
+nothing, and only new records fail.
 
 The default cap is 1,000,000 records, which is Wasmtime's default. Only the
 store's internal API changes the cap. No public method does. The conformance
@@ -548,9 +512,6 @@ by default.
 
 `task.cancel` and `subtask.cancel` run. [PDD021] let the translator accept them
 and fail each one when a guest called it. That failure is gone.
-
-The translator keeps the `cancellable` immediate of `waitable-set.wait`,
-`waitable-set.poll`, and the thread built-ins, and passes it to each built-in.
 
 ## Error Model Growth
 
@@ -591,18 +552,13 @@ This design revises three statements of [PDD020]:
 
 - A failed call poisons the store. The two cancelled states of the subtask
   record are reached only through cancellation, never through a failure.
-- `CannotEnterComponent` is raised by a poisoned store.
+- `CannotEnterComponent` is raised by a host entry into a poisoned store.
 - `subtask.cancel` runs.
 
 This design revises two statements of [PDD021]:
 
 - `task.cancel` and `subtask.cancel` run when a guest calls them.
 - The error-context built-ins and value type are accepted.
-
-This design revises one statement of [PDD022]:
-
-- The `cancellable` immediate of the thread built-ins is honored, as Wasmtime 49
-  honors it.
 
 ## Target Differences
 
@@ -616,9 +572,9 @@ wording of the `unreachable` trap only.
 
 The directives this design owns, in the Component Model corpus:
 
-- Cancellation: `big-interleaving-test.wast` (1623, 1651, 1664, 1675),
-  `cancel-and-exclusive-lock.wast:196`, `cancel-delivery.wast:278`,
-  `cancel-subtask.wast:217`, `reentrance.wast:548` and `:891`,
+- Cancellation: `big-interleaving-test.wast` (1654, 1682, 1695, 1706),
+  `cancel-and-exclusive-lock.wast:196`, `cancel-delivery.wast:375`,
+  `cancel-subtask.wast:205`, `reentrance.wast:521` and `:864`,
   `trap-if-block-and-sync.wast:352`, and `trap-if-sync-and-waitable-set.wast`
   (325, 327).
 - The poisoned store: `builtin-trap-poisons-instance.wast` (10, 39).
@@ -633,22 +589,24 @@ In the Wasmtime corpus:
   `error-context-trap-in-post-return.wast` (3, and 45 through 50).
 
 That is 39 lines of the shared list. The cascade lines of each owned file go
-with it. Several of the owned directives also need a stack switch, such as the
-stackful directives of `big-interleaving-test.wast` and
+with it. Several of the owned directives also need a stack switch, such as
 `cancel-and-exclusive-lock.wast:196`. They pass under a provider. Without one, a
 live run decides whether each one enters the no-provider overlay of [PDD022].
 The design does not predict it.
 
 These lines of owned files stay deferred, each with its current cause:
 
-- `reentrance.wast:685`. It needs the rule of [PDD022] that a task that must not
+- The four owned directives of `big-interleaving-test.wast`. The file also uses
+  `stream.forward`, which this design does not cover, so the four lines stay in
+  the shared list as cascades of that failure.
+- `reentrance.wast:658`. It needs the rule of [PDD022] that a task that must not
   block runs the ready threads of its own instance.
-- `reentrance.wast:813`, and `trap-if-block-and-sync.wast:340` and `:348`. They
+- `reentrance.wast:786`, and `trap-if-block-and-sync.wast:340` and `:348`. They
   need a stack switch of a sync-typed thread, which [PDD022] states.
-- `binary.wast` 1186 through 1275. The reference now requires the vestigial byte
-  to be zero, and the parser still reads it as the `cancellable` immediate. The
-  polyfill honors the immediate, so the eight lines stay in the `validation`
-  category.
+- `binary.wast` 1186 through 1275. Each directive gives a built-in a non-zero
+  reserved byte and expects the message "non-zero reserved byte". The parser
+  rejects the byte with a message of its own, so the eight lines stay in the
+  `validation` category.
 - The two WASI HTTP fixtures, which need a host for `wasi:http/types`.
 
 ## User Stories
@@ -669,12 +627,13 @@ A developer embeds a component that has a bug.
 > store is lost and builds a new one. No other guest code ran after the trap, so
 > the component's broken state was never read.
 
-A developer ports a C library that uses pthreads and wit-bindgen.
+A developer writes a callback component that runs a long job in slices.
 
-> A worker thread waits with the cancellable form of `thread.yield` so that it
-> can stop early. The same binary runs under Wasmtime and the polyfill. When the
-> caller cancels, the yield returns 1 in both, the worker calls `task.cancel`,
-> and the caller reads `CANCELLED_BEFORE_RETURNED`.
+> After each slice, the callback returns the yield code so that other work can
+> run. The caller cancels the job. The cancel runs the callback at once with the
+> task-cancelled event, and the callback calls `task.cancel`. The caller reads
+> `CANCELLED_BEFORE_RETURNED`. The same binary gets the same answer under
+> Wasmtime.
 
 A developer passes an error from one component to another.
 
@@ -697,6 +656,7 @@ each trigger on both targets:
 - A mistyped host `Val`.
 - A trap in a core `start` function.
 - A trap in a destructor.
+- A call through a fused adapter into the caller's own component instance.
 
 After each one, `Func::call` fails with the cannot-enter message. A second test
 proves that an arity mismatch, a recursive driver, and a link error leave the
@@ -733,19 +693,28 @@ targets:
 
 - `cancel-subtask.wast`, `cancel-delivery.wast`, and
   `cancel-and-exclusive-lock.wast`.
-- `cancel-sync-and-waitable.wast`, `cancel-sibling-subtask.wast`, and
-  `yield-when-cancelled.wast`.
+- `cancel-not-delivered.wast`, `cancel-targeted-resume.wast`, and
+  `cancel-resumed-callback-switch.wast`.
+- `cancel-sync-and-waitable.wast`, `cancel-sibling-subtask.wast`,
+  `yield-when-cancelled.wast`, and `default-flags-sync-cancel.wast`.
 - `trap-if-sync-and-waitable-set.wast`.
-- The four owned directives of `big-interleaving-test.wast`.
-- `reentrance.wast:548` and `:891`.
+- `reentrance.wast:521` and `:864`.
 - `trap-if-block-and-sync.wast:352`, with the cannot-block message.
 
 A repository test proves each resolution. A callee at the gate resolves to
 `CANCELLED_BEFORE_STARTED`. A callee that calls `task.cancel` resolves to
 `CANCELLED_BEFORE_RETURNED`. A callee that returns anyway resolves to
-`RETURNED`. A second test proves that a stackful callee without a cancellable
-built-in is never told. A synchronous cancel of that callee waits for its
-return.
+`RETURNED`. A second test proves that a stackful callee is never told. A
+synchronous cancel of that callee waits for its return.
+
+A repository test proves which callback tasks a request wakes, on both targets:
+
+- An asynchronous cancel of a callee whose callback returned the yield code runs
+  the callee inside the cancel. The cancel answers `CANCELLED_BEFORE_RETURNED`.
+- A callee that waits on a set with no event takes the request at once.
+- An asynchronous cancel of a callee whose set already handed it an event
+  answers `BLOCKED` without running it. The callee takes the request before the
+  set's event when it next runs.
 
 `subtask.cancel` cancels a host callee. `cancel-host.wast` passes whole on both
 targets. A repository test proves three rules:
@@ -754,16 +723,6 @@ targets. A repository test proves three rules:
 - An asynchronous cancel returns `BLOCKED` first.
 - A future that completed before the abort resolves to `RETURNED` with its
   result.
-
-The cancellable immediate behaves as in Wasmtime 49. The corpus has no directive
-for it. Repository tests prove each rule on both targets, with a provider:
-
-- A pending request makes each cancellable built-in return the cancelled result
-  at once.
-- A blocked cancellable `waitable-set.wait` wakes with the task-cancelled event.
-- A ready cancellable yield runs first and returns 1.
-- The request does not wake a cancellable suspend.
-- A built-in without the immediate never takes a request.
 
 `task.cancel` and `subtask.cancel` trap with Wasmtime's messages. A repository
 test proves each message of Error Model Growth that the corpus does not reach.
@@ -774,7 +733,9 @@ A cancelled subtask leaves nothing behind.
 `cancel-starting-subtask-does-not-leak.wast` passes on both targets with the
 harness's `wasmtime.set-max-table-capacity`. A repository test proves that a new
 record past the cap fails with "resource table has no free keys". It also proves
-that the default cap is 1,000,000.
+that the default cap is 1,000,000. Two more tests prove that a host call that
+answers on its first poll takes no record, and that a host call left pending
+counts.
 
 Error contexts run. `error-context.wast` and
 `error-context-trap-in-post-return.wast` pass whole on both targets. A
@@ -786,8 +747,9 @@ as the typed `ErrorContext`. The guest then drops its handle, and the host
 lowers its value into another component. The debug message reads the same there.
 
 The lists record the result. The shared list holds none of the 39 lines this
-design owns. The web list is unchanged. `tests all` runs the corpus in the four
-states of [PDD022], and each state is green against its lists.
+design owns, except the four cascades of `big-interleaving-test.wast`. The web
+list is unchanged. `tests all` runs the corpus in the four states of [PDD022],
+and each state is green against its lists.
 
 ## References
 
@@ -809,23 +771,22 @@ states of [PDD022], and each state is green against its lists.
 - [`definitions.py`], the executable reference for `Task`, `Subtask`,
   `canon_lift`, `canon_subtask_cancel`, `canon_task_cancel`, and the
   error-context built-ins.
-- [spec #716], the change that removed the `cancellable` immediate.
-- [Wasmtime], the reference implementation at `v49.0.0-rc.1`:
+- [Wasmtime], the reference implementation at `v50.0.0`:
   - The poisoned store: its [trapped flag][Wasmtime trapped], [core
     trap][Wasmtime core trap], [call trap][Wasmtime call trap], and the three
     entry refusals ([call][Wasmtime call enter], [prepared
     call][Wasmtime prepared enter], [resource drop][Wasmtime drop enter]).
-  - Its [event loop][Wasmtime event loop].
-  - Cancellation: its [`subtask.cancel`][Wasmtime subtask cancel], [cancellable
-    wait][Wasmtime cancellable wait], and [cancellable
-    suspend][Wasmtime cancellable suspend].
+  - Its [event loop][Wasmtime event loop], the [flag][Wasmtime event-loop trap]
+    that `run_concurrent` sets on a failure, and its [same-instance
+    adapter][Wasmtime same-instance adapter].
+  - Cancellation: its [`subtask.cancel`][Wasmtime subtask cancel] and the
+    [handoff of an event][Wasmtime mark ready] to a waiter.
+  - The [record of a host call][Wasmtime host task].
   - Error contexts: its [built-ins][Wasmtime error context],
     [transfer][Wasmtime error-context transfer], and [host
     type][Wasmtime error-context any].
   - Its [resource table][Wasmtime resource table], its [wast
     runner][Wasmtime runner], and its [trap messages][Wasmtime traps].
-- wit-bindgen's [C generator][wit-bindgen C], which emits the cancellable thread
-  built-ins.
 - The [Component Model test corpus] and the [Wasmtime component tests].
 
 [PDD008]: ./PDD008%20Canonical%20ABI%20and%20Host%20Functions.md
@@ -848,44 +809,43 @@ states of [PDD022], and each state is green against its lists.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/FutureFeatures.md#blast-zones
 [`definitions.py`]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/canonical-abi/definitions.py
-[spec #716]: https://github.com/WebAssembly/component-model/pull/716
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime trapped]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/store.rs#L285-L298
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/store.rs#L326-L340
 [Wasmtime core trap]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/func.rs#L1476-L1479
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/func.rs#L1478-L1481
 [Wasmtime call trap]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func.rs#L389-L391
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func.rs#L392-L394
 [Wasmtime call enter]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func.rs#L468-L470
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func.rs#L471-L473
 [Wasmtime prepared enter]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L6278-L6280
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L6492-L6494
 [Wasmtime drop enter]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resources/any.rs#L204-L206
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resources/any.rs#L306-L308
 [Wasmtime event loop]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L1325-L1340
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L1387-L1400
+[Wasmtime event-loop trap]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L1311-L1321
+[Wasmtime same-instance adapter]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/fact/trampoline.rs#L117-L127
 [Wasmtime subtask cancel]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L4161-L4345
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L4360-L4561
 [Wasmtime mark ready]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L5384-L5400
-[Wasmtime cancellable wait]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L4085-L4103
-[Wasmtime cancellable suspend]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L4005-L4065
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L5606-L5616
+[Wasmtime host task]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L6304-L6325
 [Wasmtime error context]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L4245-L4330
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L4339-L4421
 [Wasmtime error-context transfer]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L4558-L4589
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L4652-L4684
 [Wasmtime error-context any]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/values.rs#L1260-L1268
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/values.rs#L1285-L1293
 [Wasmtime resource table]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/resource_table.rs#L20-L75
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/resource_table.rs#L20-L75
 [Wasmtime runner]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wast/src/wast.rs#L258-L270
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wast/src/wast.rs#L258-L269
 [Wasmtime traps]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
-[wit-bindgen C]:
-  https://github.com/bytecodealliance/wit-bindgen/blob/2f795ab/crates/c/src/lib.rs#L750-L780
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs
 [Component Model test corpus]:
   https://github.com/WebAssembly/component-model/tree/main/test/async
 [Wasmtime component tests]:

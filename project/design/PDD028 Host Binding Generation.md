@@ -34,8 +34,8 @@ Eighteen terms recur:
 - The host core is the part of a host that depends on no runtime.
 - A glue module is the part of a host that implements the generated traits for
   one runtime and calls the host core.
-- To refuse is to fail the compile with an error that names the option and the
-  reason.
+- To refuse is to fail the compile with an error that names the option, the
+  flag, or the WIT function, and the reason.
 - The option ledger is the list in this document that classifies each option and
   each flag of Wasmtime's macro.
 - The codegen corpus is the set of WIT files that Wasmtime's macro tests use.
@@ -59,7 +59,7 @@ Eighteen terms recur:
   through a polyfill glue module on both targets.
 - Each option and each flag of Wasmtime's macro has one entry in the option
   ledger.
-- Every refusal is a compile error that names the option and the reason.
+- Every refusal is a compile error that names what it refuses and the reason.
 - The generated code uses the typed value contract of [PDD027] and does not
   change it.
 - A host error from a generated method traps the guest and reaches the host's
@@ -90,13 +90,14 @@ Eighteen terms recur:
 - Background tasks that a host function starts, such as Wasmtime's
   `Accessor::spawn`.
 - Asynchronous resource destructors. [PDD027] excludes them.
+- Bindings for WIT getters and setters. Wasmtime's macro refuses them.
 - A redesign of the typed values, the resource handles, or `ResourceTable`.
   [PDD027] designs them.
 
 ## Facts This Design Rests On
 
 Each fact below was read from the cited source. Wasmtime facts are from
-`v49.0.0-rc.1`, the version that the polyfill pins.
+`v50.0.0`, the version that the polyfill pins.
 
 - Wasmtime's macro accepts five invocation forms: `bindgen!()`,
   `bindgen!("world")`, `bindgen!(in "path")`, `bindgen!("world" in "path")`, and
@@ -168,8 +169,11 @@ Each fact below was read from the cited source. Wasmtime facts are from
   behind `@unstable` ([Wasmtime WASI WIT]).
 - The generator behind Wasmtime's macro is the crate
   `wasmtime-internal-wit-bindgen`. Wasmtime publishes it as an internal crate.
-  It has about 4,900 lines and depends on `wit-parser` 0.258 ([Wasmtime
+  It has about 5,000 lines and depends on `wit-parser` 0.261 ([Wasmtime
   generator]).
+- Wasmtime's macro refuses a WIT getter or setter, which is a function with a
+  `[get]` or `[set]` name. Its error is "unimplemented getter/setter" ([Wasmtime
+  getters]).
 - The codegen corpus has 35 entries. The test suite expands each one under six
   sets of options ([Wasmtime codegen tests]). No entry declares an async
   function.
@@ -202,6 +206,11 @@ The macro is the polyfill's own generator. It is not a fork of
 every point, and it has no stable API. A fork must change nearly every point and
 then follow each release of Wasmtime. The polyfill's generator uses Wasmtime's
 generator as the reference for structure and names.
+
+The macro refuses a WIT getter or setter, as Wasmtime's macro does. The error
+names the function and quotes Wasmtime's message, "unimplemented getter/setter".
+The refusal applies only to the code that the macro writes. An interface that
+`with` maps to another module can hold a getter or a setter.
 
 ### The Code for One Interface
 
@@ -768,6 +777,12 @@ The macro refuses each unsupported option. A compile-fail test covers each
 refusal of the option ledger. Each error names the option and the reason. The
 error for the `async` flag on a plain import suggests `async func`.
 
+The macro refuses a getter and a setter. A test world imports an interface with
+a getter, and an interface with a resource that has a getter and a setter. An
+invocation that generates either interface fails the compile. The error names
+the function and quotes "unimplemented getter/setter". An invocation that maps
+both interfaces with `with` compiles.
+
 The codegen corpus gives the expected results. Under each set of the codegen
 corpus test, each entry compiles or fails with the refusal that the table of
 expected results gives. Both targets build each entry that compiles.
@@ -818,10 +833,11 @@ entry point that panics on a failure a user can cause, as Wasmtime's does.
 - [PDD021], streams and futures, revised in place by this design.
 - [PDD023], cancellation and the poisoned store.
 - [PDD027], typed component values.
-- [Wasmtime] at `v49.0.0-rc.1`. These are the parts that this design cites:
+- [Wasmtime] at `v50.0.0`. These are the parts that this design cites:
   - The macro: its [documentation][Wasmtime bindgen docs], its
     [options][Wasmtime bindgen options], its [feature gates][Wasmtime features],
-    and its [generator][Wasmtime generator].
+    its [generator][Wasmtime generator], and its refusal of [getters and
+    setters][Wasmtime getters].
   - The flags: the [list][Wasmtime flags], the [rules][Wasmtime flag rules],
     [unused rules][Wasmtime unused rules], and [async
     functions][Wasmtime async flags].
@@ -863,72 +879,74 @@ entry point that panics on a failure a user can cause, as Wasmtime's does.
 [PDD027]: ./PDD027%20Typed%20Component%20Values.md
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime bindgen docs]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/mod.rs#L177-L540
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/mod.rs#L180-L543
 [Wasmtime bindgen options]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/src/bindgen.rs#L276-L296
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/src/bindgen.rs#L276-L296
 [Wasmtime features]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/src/bindgen.rs#L196-L200
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/src/bindgen.rs#L196-L200
 [Wasmtime generator]:
-  https://github.com/bytecodealliance/wasmtime/tree/v49.0.0-rc.1/crates/wit-bindgen
+  https://github.com/bytecodealliance/wasmtime/tree/v50.0.0/crates/wit-bindgen
+[Wasmtime getters]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3945-L3961
 [Wasmtime flags]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/config.rs#L5-L15
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/config.rs#L5-L15
 [Wasmtime flag rules]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/config.rs#L95-L159
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/config.rs#L101-L165
 [Wasmtime unused rules]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L1148-L1149
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L1152-L1153
 [Wasmtime async flags]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/config.rs#L66-L93
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/config.rs#L66-L99
 [Wasmtime async expansion]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/char_async.rs#L360-L384
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/char_async.rs#L360-L384
 [Wasmtime concurrent expansion]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/smoke_concurrent.rs#L181-L209
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/smoke_concurrent.rs#L181-L209
 [Wasmtime concurrent export]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/char_concurrent.rs#L354-L389
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/char_concurrent.rs#L354-L389
 [Wasmtime world expansion]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/smoke.rs#L9-L175
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/smoke.rs#L9-L175
 [Wasmtime world imports]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/direct-import.rs#L101-L200
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/direct-import.rs#L101-L200
 [Wasmtime versions]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/expanded/multiversion.rs#L197-L300
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/expanded/multiversion.rs#L197-L300
 [Wasmtime import traits]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L2978-L2987
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3064-L3073
 [Wasmtime resource traits]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L3293-L3315
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3381-L3403
 [Wasmtime parameter mode]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L3075-L3079
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3162-L3166
 [Wasmtime only interfaces]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L1144-L1146
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L1148-L1150
 [Wasmtime with lookup]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L1251-L1360
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L1256-L1365
 [Wasmtime with unused]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L1128-L1142
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L1132-L1146
 [Wasmtime with resource]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L1862-L1873
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L1880-L1891
 [Wasmtime trappable]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L3029-L3052
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3116-L3139
 [Wasmtime trappable closure]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L2958-L2965
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3043-L3050
 [Wasmtime trappable error]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L2932-L2957
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3020-L3042
 [Wasmtime convert]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L3407-L3420
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3497-L3512
 [Wasmtime has data]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/has_data.rs#L288-L305
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/has_data.rs#L288-L305
 [Wasmtime access]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L216-L520
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L226-L530
 [Wasmtime call concurrent]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/func.rs#L343-L351
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/func.rs#L347-L355
 [Wasmtime readers]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L1428-L1440
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent/futures_and_streams.rs#L1440-L1452
 [Wasmtime link options]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wit-bindgen/src/lib.rs#L3589-L3718
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wit-bindgen/src/lib.rs#L3698-L3827
 [Wasmtime codegen tests]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/component-macro/tests/codegen.rs#L3-L47
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/component-macro/tests/codegen.rs#L3-L47
 [Wasmtime WASI bindings]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasi/src/p3/bindings.rs#L76-L97
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasi/src/p3/bindings.rs#L76-L97
 [Wasmtime WASI HTTP bindings]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasi-http/src/p3/bindings.rs#L9-L18
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasi-http/src/p3/bindings.rs#L9-L18
 [Wasmtime WASI WIT]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasi/src/p3/wit/deps/cli.wit#L207-L208
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasi/src/p3/wit/deps/cli.wit#L207-L208
 [wasi-webgpu]:
   https://github.com/WebAssembly/wasi-webgpu/blob/6a776bada0b66d3dbf9da304a49ff2947ce4e1f8/wit/webgpu.wit

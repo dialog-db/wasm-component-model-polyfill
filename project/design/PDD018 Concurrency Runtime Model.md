@@ -28,7 +28,8 @@ states the reason.
 - Each component instance keeps one handle table for every handle kind, as the
   runtime-state rules of the Canonical ABI require.
 - A task record replaces the per-call scope of [PDD014]. A synchronous call is a
-  task with one thread.
+  task with one thread. A call whose callee cannot see thread state runs on the
+  caller's task instead.
 - A host `async` function is a future the store owns and polls. The contract
   fixes how the future reaches the store and from which lowered form a guest can
   call it.
@@ -109,8 +110,11 @@ Four rules hold for every driver:
   pending in that state, because its closure can wait on something outside the
   store.
 - Dropping a driver's future cancels nothing. The task stays in the store and
-  runs in the next turn of any driver. This is Wasmtime's rule for
-  `call_concurrent`.
+  runs in the next turn of any driver. This is Wasmtime's rule for a
+  `call_concurrent` whose task started. Wasmtime traps a call when the host
+  dropped its future before the call started ([`host_future_dropped`]). The
+  polyfill starts that call in its turn. The call owns its arguments and needs
+  nothing from the dropped future.
 - Dropping the store drops every task, host task, and suspended thread. No
   destructor runs, per [PDD017].
 
@@ -150,6 +154,13 @@ the resumption of a thread, or the lowering of a completed host task's result.
 An item runs to its next yield point and returns. A host task that joined the
 store since the last turn counts as woken. The driver loops on `Progress`,
 returns pending on `Waiting` and `Yield`, and applies the idle rule on `Idle`.
+
+The driver also has a turn budget. A turn budget is a limit on the turns of
+progress in a row. After 128 turns in a row that end in `Progress`, the driver
+gives way once, as it does on `Yield`. The work it would run next runs in its
+next poll. A long run of progress therefore cannot hold the host executor.
+Wasmtime's event loop gives way after 128 work items in a row in the same way
+([turn budget]).
 
 ## The Handle Table
 
@@ -229,9 +240,25 @@ synchronous calls still nest on the one real stack. A host call into an export
 pushes the export's task. A guest call into a host function pushes the subtask
 of that call, and the subtask stays on the stack while the host side runs. An
 adapter's enter intrinsic pushes the callee's task, and its exit intrinsic pops
-it. A synchronous call between two components is therefore a task with one
-thread. A synchronous export called from the host is the same. The synchronous
-baseline is the case of one task per instance at a time.
+it. The adapter passes the enter intrinsic two values: whether the callee is
+`async`, and the callee instance. A synchronous call between two components is
+therefore a task with one thread. A synchronous export called from the host is
+the same. The synchronous baseline is the case of one task per instance at a
+time.
+
+A thread-transparent adapter calls neither intrinsic. It is an adapter whose
+callee cannot see thread state. Wasmtime's adapter compiler marks an adapter
+thread transparent when three things hold ([thread transparency]):
+
+- Both sides of the call are synchronous.
+- Neither function type holds a handle.
+- The callee instance declares no host import, no lower of another component's
+  `async` function, and no built-in.
+
+The callee then runs on the caller's task and thread, and the call makes no
+task. No guest can see the difference, because the callee has no way to read
+thread state. The polyfill takes its adapters from that compiler, so it follows
+the same rule.
 
 Every borrow operation of [PDD014] consults the current scope. A borrow lowered
 into a guest increments the borrow count of the current task, and the table
@@ -484,8 +511,9 @@ executor run its own timers and sockets. In the browser the driver is polled
 from a microtask. A self-wake lands back in the microtask queue, ahead of every
 network response and timer. A guest that spins on `thread.yield` and
 `waitable-set.poll` then starves the page. The browser's yield therefore crosses
-a macrotask boundary before it wakes the driver. The scheduler code is shared.
-Only the wake after a yield is per target.
+a macrotask boundary before it wakes the driver. The spent turn budget uses the
+same wake. The scheduler code is shared. Only the wake that returns control to
+the host executor is per target.
 
 ## Target Differences
 
@@ -495,7 +523,8 @@ this document is the same on both:
 - Who polls the driver: any executor natively, `wasm-bindgen-futures` in the
   browser.
 - The `Send` bound on a host task: required natively, absent in the browser.
-- The wake after a yield: a self-wake natively, a macrotask hop in the browser.
+- The wake after a yield or a spent turn budget: a self-wake natively, a
+  macrotask hop in the browser.
 - The intended provider of the suspend capability: none natively, JSPI in the
   browsers that ship it. This design fills the capability on neither target. The
   callback form is the baseline in every browser.
@@ -577,10 +606,14 @@ A reviewer reads the conformance summary after a feature lands.
 
 A synchronous call runs as a task. A host call into a synchronous export pushes
 a task on the current-task stack and pops it on return. A guest call into a
-synchronous host function and a synchronous call between two composed components
-do the same. Every borrow test of the synchronous baseline passes unchanged,
-including `borrows.wast`, `handle-table.wast`, and `multiple-resources.wast` of
-the Component Model corpus and `resources.wast` of the Wasmtime corpus.
+synchronous host function does the same. A synchronous call between two composed
+components does the same when its adapter is not thread transparent. A call
+through a thread-transparent adapter pushes no task. A chain of synchronous
+calls ends in a host import that counts the tasks on the stack. A transparent
+instance in the middle of the chain adds no task, and an opaque one adds one.
+Every borrow test of the synchronous baseline passes unchanged, including
+`borrows.wast`, `handle-table.wast`, and `multiple-resources.wast` of the
+Component Model corpus and `resources.wast` of the Wasmtime corpus.
 
 The handle table is per instance. Two handles of different resource types in one
 instance take consecutive indices from one allocator. An owned handle
@@ -592,6 +625,11 @@ repository pass unchanged.
 The driver entry runs a closure. The `run_concurrent` entry runs its closure
 with an accessor that reaches the store's host data and returns the closure's
 value. It refuses a nested driver with the recursive-driver cause.
+
+The driver gives the host executor a turn. A guest task makes progress in every
+turn while it waits on a host call. That host call completes only after the host
+executor runs a task of its own. The guest call completes, because the driver
+gives way after 128 turns of progress.
 
 The boundary context is the one crossing. No call site outside the lift and
 lower code names `cabi_realloc` or reads or writes a guest memory. Every export
@@ -626,6 +664,9 @@ failure results for every named file.
   and the entry gate.
 - [Wasmtime], the reference implementation, and its [`run_concurrent`],
   [`Accessor`], and [`func_wrap_concurrent`] surface.
+- Wasmtime's [thread transparency] analysis of fused adapters, the [turn budget]
+  of its event loop, and its rule for a dropped call future,
+  [`host_future_dropped`].
 - [JSPI], the JavaScript Promise Integration proposal, and the rules it places
   on frames between a promising export and a suspending import.
 - The [Component Model test corpus] and the [Wasmtime component tests].
@@ -652,6 +693,12 @@ failure results for every named file.
   https://docs.wasmtime.dev/api/wasmtime/component/struct.Accessor.html
 [`func_wrap_concurrent`]:
   https://docs.wasmtime.dev/api/wasmtime/component/struct.LinkerInstance.html#method.func_wrap_concurrent
+[thread transparency]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/component/thread_transparency.rs#L138-L155
+[turn budget]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L1352-L1356
+[`host_future_dropped`]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L6437-L6470
 [JSPI]: https://github.com/WebAssembly/js-promise-integration
 [Component Model test corpus]:
   https://github.com/WebAssembly/component-model/tree/main/test/async

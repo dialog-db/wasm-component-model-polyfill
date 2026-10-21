@@ -16,8 +16,8 @@ suites part of the polyfill's test regime.
   records each case that the polyfill does not pass yet, with a reason.
 - A case that passes and is not in the list, or a case in the list that fails
   for a different reason, fails the run. Stale expectations do not accumulate.
-- The polyfill reports a trap with the message Wasmtime uses, so that
-  `assert_trap` directives match exactly.
+- The polyfill reports a trap with the message Wasmtime uses, so that the
+  `assert_trap` directives of both corpora match it by substring.
 - A small set of real guest components, built with `wasm-tools` and composed
   with `wac`, lives in the repository with its WIT and runs under the same
   harness.
@@ -45,14 +45,22 @@ format. It maps each directive onto the public API of the polyfill:
   later components through a `Linker`.
 - An `invoke` directive becomes an export call with literal `Val` arguments.
 - An `assert_return` compares the lifted result with the expected literal.
-- An `assert_trap` compares the error message with the expected message.
+- An `assert_trap` passes when the error message contains the expected message.
+  The rule is the same for both corpora.
 - An `assert_invalid` and an `assert_unlinkable` expect `Component::new` or
   `Linker::instantiate` to fail.
 
 The harness is a test in the workspace. It carries the cross-target attribute of
 [PDD004], so the corpora run natively and in the browser. The corpora are
 vendored into the repository at a recorded upstream commit, so that a run is
-reproducible and an upstream change is a deliberate update.
+reproducible and an upstream change is a deliberate update. The Wasmtime corpus
+comes from the release tag of the Wasmtime version that the polyfill follows,
+`v50.0.0`. The Component Model corpus comes from the specification commit that
+the polyfill follows, `2f1e56f`.
+
+[Wasmtime's own runner][Wasmtime runner] does not compare the trap message in
+the Component Model corpus. The harness compares it in both corpora, so that a
+trap with the wrong cause does not pass.
 
 ## Expected Failures
 
@@ -139,7 +147,8 @@ byte-for-byte from their sources and recorded commands.
 - [PDD007], linking and instantiation.
 - [PDD015], component composition.
 - The [Component Model test corpus] and its `nyi.txt`.
-- The [Wasmtime component tests].
+- The [Wasmtime component tests], and [Wasmtime's runner][Wasmtime runner],
+  which ignores trap messages in the Component Model corpus.
 - [`wast`], the crate that parses the script format.
 - [`wasm-tools`] and [`wac`], the toolchain that builds the fixtures.
 
@@ -151,9 +160,11 @@ byte-for-byte from their sources and recorded commands.
 [PDD007]: ./PDD007%20Linking%20and%20Instantiation.md
 [PDD015]: ./PDD015%20Component%20Composition.md
 [Component Model test corpus]:
-  https://github.com/WebAssembly/component-model/tree/main/test
+  https://github.com/WebAssembly/component-model/tree/2f1e56f563c918d39d68b2e0fc9328c340b8f83a/test
 [Wasmtime component tests]:
-  https://github.com/bytecodealliance/wasmtime/tree/main/tests/misc_testsuite/component-model
+  https://github.com/bytecodealliance/wasmtime/tree/v50.0.0/tests/misc_testsuite/component-model
+[Wasmtime runner]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/tests/wast.rs#L220-L224
 [`wast`]: https://docs.rs/wast
 [`wasm-tools`]: https://github.com/bytecodealliance/wasm-tools
 [`wac`]: https://github.com/bytecodealliance/wac

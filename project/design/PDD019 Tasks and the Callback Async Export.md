@@ -18,12 +18,10 @@ async export. The polyfill runs the guest on the one real stack. The callback
 form never needs a stack switch, which is why it is the first feature. The
 design follows the [Concurrency explainer][Concurrency] and the Python reference
 in [`definitions.py`]. Where the reference leaves a choice to the host, the
-design makes the choice [Wasmtime] makes at `v49.0.0-rc.1`. That tag is the
-first to carry Wasmtime's realignment with the current reference, and its trap
-messages equal those of the version before it. The design assumes the fused
-adapter compiler of Wasmtime 49, whose synchronous adapters import no may-block
-global and manage the context slots around each realloc call themselves. Where
-the design departs from either, it states the reason.
+design makes the choice [Wasmtime] makes at `v50.0.0`. The design assumes the
+fused adapter compiler of Wasmtime 50. Its synchronous adapters import no
+may-block global, and they manage the context slots around each realloc call
+themselves. Where the design departs from either, it states the reason.
 
 ## Goals
 
@@ -704,9 +702,9 @@ repository test.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md#canonical-definitions
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [callback handling]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs
 [trap messages]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs
 [`ComponentFunc::async_`]:
   https://docs.wasmtime.dev/api/wasmtime/component/types/struct.ComponentFunc.html#method.async_
 [Component Model test corpus]:

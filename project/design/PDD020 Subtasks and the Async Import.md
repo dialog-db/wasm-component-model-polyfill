@@ -16,14 +16,13 @@ guest work on a target with no stack switch.
 The design follows the [Concurrency explainer][Concurrency] and the Python
 reference in [`definitions.py`] at the commit the conformance corpus of [PDD016]
 is vendored from. Where the reference leaves a choice to the host, the design
-makes the choice [Wasmtime] makes at `v49.0.0-rc.1`. That tag is the first to
-carry Wasmtime's realignment with the current reference. It allows reentrance
-everywhere, blocks a sync-typed task lazily, and runs the callee thread of a
-call next. Its trap messages equal those of Wasmtime 48. The fused adapters of
-Wasmtime 48 trap on a call between a parent and a child instance, which the
-reference forbids, so this design requires the fused adapter compiler of
-Wasmtime 49 or later. Where the design departs from the reference or from
-Wasmtime, it states the reason.
+makes the choice [Wasmtime] makes at `v50.0.0`, and it takes its trap messages
+from that tag. Wasmtime blocks a sync-typed task lazily, and it runs the callee
+thread of a call next. It allows reentrance everywhere except into the caller's
+own component instance. Its fused adapter compiler compiles a call from an
+instance into itself to a trap. The polyfill takes its adapters from that
+compiler, so it raises the same trap. Where the design departs from the
+reference or from Wasmtime, it states the reason.
 
 Two terms recur. An async-typed function is a function whose type carries the
 `async` effect. A sync-typed function is one whose type does not. For an
@@ -40,10 +39,10 @@ validation refuses the component.
 - A guest call into a host `async` function or into another component's export
   is a subtask. The subtask enters the caller's handle table when the call does
   not resolve at once, and the guest waits on it as on any waitable.
-- A call between components with an asynchronous lower or an asynchronous lift
-  runs through the prepare-and-start protocol. When the entry gate is open, the
-  callee starts before the lower returns, and the status word is the
-  reference's.
+- A call between components with an asynchronous lower, an asynchronous lift, or
+  an async-typed function runs through the prepare-and-start protocol. When the
+  entry gate is open, the callee starts before the lower returns, and the status
+  word is the reference's.
 - `subtask.drop` removes the entry with the trap of the reference.
 - The subtask event reaches the caller through the waitable sets of [PDD019].
   `waitable.join` finds its first waitable kind.
@@ -57,7 +56,8 @@ validation refuses the component.
 - The resolver enforces Wasmtime's rule on the registration kind: an async-typed
   import needs a concurrent registration, and a sync-typed import refuses one.
 - Two host calls into one instance overlap through `call_concurrent`.
-- No call traps for reentrance. The entry gate is the only serialization.
+- A call into the caller's own component instance traps, as in Wasmtime. Every
+  other reentrant call proceeds, and the entry gate is its only serialization.
 - Every trap the feature adds is a structured error cause with Wasmtime's
   message, so the conformance corpora match it by substring.
 - The behavior is the same on both targets.
@@ -78,9 +78,11 @@ validation refuses the component.
   `thread.yield`. They stay refused at translation.
 - Streams, futures, and error contexts, as built-ins and as value types. The
   type projection still refuses them in a function type.
-- The rules that decide which trap poisons an instance. `CannotEnterComponent`
-  is Wasmtime's trap for a host entry into a poisoned instance. This design
-  raises it nowhere and reserves it for those rules.
+- The rules that decide which trap poisons the store, and the refusal of a host
+  entry into a poisoned store. Wasmtime refuses that entry with
+  `CannotEnterComponent`. This design raises that trap in one place only: the
+  adapter of a call into the caller's own instance, as the section on reentrance
+  states.
 - A provider for the suspend seam.
 - Host-side cancellation of a task that `call_concurrent` started. Dropping the
   store is the only way to end one, which is Wasmtime's rule at this version.
@@ -115,11 +117,15 @@ Five rules hold:
   resource destructor. The reference runs the ready threads of such a task's own
   instance while the task blocks, and traps when none remains. The block of such
   a task therefore runs only items of its own instance. Items of other instances
-  stay queued for the driver. An async-typed task's block runs any ready item,
-  because the reference returns control to the caller there and any thread can
-  run. When the nested turn cannot progress and any instance in the store has a
-  task that must not block in progress, the cause is the cannot-block cause, as
-  Wasmtime reports it on idle.
+  stay queued for the driver. A caller can wait below a task that is allowed to
+  block, through a synchronous call that has not resolved. When the nearest such
+  caller must not block, the nested turn runs only items of that caller's
+  instance. With a stack switch, the blocked task suspends and control goes back
+  to that caller, so the caller's rule applies. Any other async-typed task's
+  block runs any ready item, because the reference returns control to the caller
+  there and any thread can run. When the nested turn cannot progress and any
+  instance in the store has a task that must not block in progress, the cause is
+  the cannot-block cause, as Wasmtime reports it on idle.
 - The seam keeps one budget, and past it the call fails with the stack-switch
   cause. This is the one departure of this design from the reference, and the
   section below states it.
@@ -132,7 +138,7 @@ fn block(store, condition) -> Result:
         return seam.suspend(condition)
     // a nested turn runs ready items, then yielded items, then polls the
     // host tasks, and reports Progress, Idle, or Waiting
-    filter = own_instance if current_task().must_not_block() else any_instance
+    filter = nested_turn_filter()
     past_budget = false
     loop:
         if condition(): return Ok
@@ -150,10 +156,17 @@ fn block(store, condition) -> Result:
 fn give_way(store) -> Result:                 // what thread.yield asks for
     if seam.has_provider() and not current_task().must_not_block():
         return seam.suspend(ready_again)
-    filter = own_instance if current_task().must_not_block() else any_instance
-    store.nested_turn(active_waker, filter)
+    store.nested_turn(active_waker, nested_turn_filter())
     if seam.note_turn(store): return Err(StackSwitchNeeded)
     return Ok
+
+fn nested_turn_filter() -> Filter:
+    if current_task().must_not_block(): return own_instance
+    // the nearest caller below that waits for this block through a
+    // synchronous call that has not resolved
+    caller = waiting_caller_below()
+    if caller is set and caller.must_not_block(): return caller.instance
+    return any_instance
 ```
 
 A task that must not block never reaches the suspend provider. The reference
@@ -268,11 +281,28 @@ event, and `waitable.join` moves a subtask between sets. None of them changes.
 
 ## Calls Between Components
 
-With the fused adapter compiler of Wasmtime 49, a call between two components
-takes one of two paths. When the lower and the lift are both synchronous, the
-adapter calls the enter and exit intrinsics of [PDD018] and nothing else. When
-either is asynchronous, the adapter calls `PrepareCall` and then `SyncStartCall`
-or `AsyncStartCall`. The polyfill serves the three intrinsics as trampolines.
+With the fused adapter compiler of Wasmtime 50, a call between two components
+takes one of two paths. When the lower and the lift are both synchronous and the
+function is sync-typed, the adapter calls the enter and exit intrinsics of
+[PDD018] and nothing else. The adapter passes the enter intrinsic two values:
+whether the callee is async-typed, and the callee's instance. In every other
+case, the adapter calls `PrepareCall` and then `StartCall`. The polyfill serves
+both intrinsics as trampolines.
+
+A thread-transparent adapter calls neither the enter nor the exit intrinsic. An
+adapter is thread transparent when three things hold. It is synchronous on both
+sides, and its function is sync-typed. Its signature carries no handle. Its
+callee instance declares nothing that can read or write thread state: no host
+import, no context built-in, no other built-in of tasks, waitables, threads,
+resources, or backpressure, and no call into an async-typed export. The callee
+then runs on the caller's task and thread, and the store makes no task for the
+call. No guest can observe the difference, because the callee has no built-in
+that can see it.
+
+The start intrinsic takes the callee's core function as a `funcref`, its counts
+of flat parameters and flat results, and a flag word. The flag
+`START_FLAG_ASYNC_CALLER` marks an asynchronous lower. The flag
+`START_FLAG_ASYNC_CALLEE` marks an asynchronous lift.
 
 Two generated functions accompany every prepared call. The start function takes
 the caller's flat arguments, lifts them in the caller, and lowers them into the
@@ -292,13 +322,15 @@ fn prepare_call(caller_instance, callee_instance, callee_function, start, return
     subtask.return_ = return_
     subtask.caller_kind = caller_kind                   // sync, or async with or without a result
 
-fn start_call(lower_kind):
+fn start_call(callee_core, param_count, result_count, flags):
+    lower_kind = async if flags has START_FLAG_ASYNC_CALLER else sync
+    lift_kind = callback if flags has START_FLAG_ASYNC_CALLEE else sync
     item = TaskStart(task):
         flat = call(subtask.start)                      // lifts and lowers the arguments
         subtask.state = started
         if subtask.handle is set: subtask.record_event()
-        result = call_and_trap(callee.core, flat)
-        match callee.lift:
+        result = call_and_trap(callee_core, flat)
+        match lift_kind:
             sync:     call(subtask.return_, result)     // lowers into the caller
                       subtask.resolve(returned)
                       run post-return
@@ -331,11 +363,11 @@ The rules of the protocol:
   before the lower returns, and the corpus reads `STARTED` right after a call
   whose gate was open. When the caller can block, a suspend provider suspends it
   instead and lets the driver run the item.
-- The gate holds the item as [PDD019] states. A callback export and a
-  synchronous export of an async-typed function need the exclusive thread of
-  their instance. A held item leaves the subtask in `STARTING`, and the item
-  stays queued in arrival order. A synchronous export of a sync-typed function
-  ignores the gate.
+- The gate holds the item as [PDD019] states. Every callee that reaches the
+  start intrinsic has an async-typed function. A callback export and a
+  synchronous export of such a function need the exclusive thread of their
+  instance. A held item leaves the subtask in `STARTING`, and the item stays
+  queued in arrival order.
 - When the callee's `task.return` runs, the return function runs at that moment.
   This is the reference's `on_resolve`. The result crosses into the caller's
   memory through the caller's boundary context, before the callee's callback
@@ -352,19 +384,21 @@ The rules of the protocol:
   callee resolves, under the rules of the blocking section. A sync-typed caller
   that has to wait fails with the cannot-block cause, and only after the callee
   did not resolve at once. That is the lazy rule of the reference and of
-  Wasmtime 49.
+  Wasmtime.
 - A trap in the callee, or an exception the callee does not catch, unwinds
   through the start item to the trampoline and fails the caller's call. The
   message is the one the synchronous baseline gives the same trap.
 
-The four combinations, and what the caller observes:
+The four combinations of lower and lift, and what the caller observes. The
+function type splits the first combination in two:
 
-| Lower        | Lift        | Intrinsics              | The caller sees                                |
-| ------------ | ----------- | ----------------------- | ---------------------------------------------- |
-| synchronous  | synchronous | enter and exit          | the flat results                               |
-| synchronous  | callback    | prepare and sync start  | the flat results, after the callee resolved    |
-| asynchronous | synchronous | prepare and async start | `RETURNED`, or `STARTING` while the gate holds |
-| asynchronous | callback    | prepare and async start | `RETURNED`, `STARTED`, or `STARTING`           |
+| Lower        | Lift                     | Intrinsics                 | The caller sees                                |
+| ------------ | ------------------------ | -------------------------- | ---------------------------------------------- |
+| synchronous  | synchronous, sync-typed  | enter and exit, or neither | the flat results                               |
+| synchronous  | synchronous, async-typed | prepare and start          | the flat results, after the callee resolved    |
+| synchronous  | callback                 | prepare and start          | the flat results, after the callee resolved    |
+| asynchronous | synchronous              | prepare and start          | `RETURNED`, or `STARTING` while the gate holds |
+| asynchronous | callback                 | prepare and start          | `RETURNED`, `STARTED`, or `STARTING`           |
 
 An asynchronous lower of a sync export whose task the gate holds returns
 `STARTING`. When the gate opens, the driver runs the start item, the results
@@ -476,8 +510,8 @@ function through `with` on the store context, such as the host data.
 
 ### The Link Rule
 
-Wasmtime 49 refuses at link time an async-typed import satisfied by `func_new`
-or `func_wrap`, and a sync-typed import satisfied by `func_new_concurrent` or
+Wasmtime refuses at link time an async-typed import satisfied by `func_new` or
+`func_wrap`, and a sync-typed import satisfied by `func_new_concurrent` or
 `func_wrap_concurrent`. The resolver of [PDD007] enforces both, and each failure
 is a link error with Wasmtime's message. A synchronous host function serves an
 async-typed import correctly, since it resolves at once, so the rule is
@@ -530,10 +564,13 @@ queues its start item behind the entry gate, exactly as `Func::call` does. It
 returns a future that resolves when the task returns, and lifts the result.
 Post-return runs after the result is lifted, as it does for `Func::call`. The
 future is spawn-like, as Wasmtime documents its own. Dropping it cancels
-nothing. The task progresses only while a driver runs turns, in practice while
-the future is awaited inside the `run_concurrent` closure. A `Func::call` is a
-driver and cannot be entered from the closure, because it takes the store by
-`&mut` and the closure holds only the accessor.
+nothing, also for a call that still waits at the gate. Here the design departs
+from Wasmtime, which fails such a call with a trap when its turn comes. The
+polyfill starts the call, because the call owns its arguments and needs nothing
+from the dropped future. The task progresses only while a driver runs turns, in
+practice while the future is awaited inside the `run_concurrent` closure. A
+`Func::call` is a driver and cannot be entered from the closure, because it
+takes the store by `&mut` and the closure holds only the accessor.
 
 Two overlapping calls observe the entry gate and the scheduling order of
 [PDD018]:
@@ -556,13 +593,20 @@ whole entry with a timeout.
 
 ## Reentrance
 
-The reference at the corpus commit and Wasmtime 49 agree, and both differ from
-Wasmtime 48 on this point:
+The reference at the corpus commit allows reentrance everywhere. Wasmtime allows
+it everywhere except into the caller's own instance, and the design follows
+Wasmtime:
 
-- No call traps for reentrance. The adapters of Wasmtime 49 emit no
-  `CannotEnterComponent` for a call between a parent and a child or into the
-  caller's own instance. A sync-typed callee can be entered at any depth: from a
-  child, a parent, a sibling, a destructor, or the host. The synchronous
+- A call into the caller's own instance traps. The fused adapter compiler
+  compiles an adapter whose caller and callee are the same component instance to
+  the `CannotEnterComponent` trap, with the message
+  `cannot enter component instance`. The adapter copies no value first.
+  [Wasmtime's source][Wasmtime same instance] states that the trap departs from
+  the reference, and that without it the guest can observe the order of the
+  adapter's lifts and lowers. The polyfill takes its adapters from that
+  compiler, so it raises the same trap.
+- Every other call can reenter. A sync-typed callee can be entered at any depth:
+  from a child, a parent, a sibling, a destructor, or the host. The synchronous
   baseline serves each as a nested call on the real stack.
 - The entry gate is the only serialization. An async-typed callee lifted
   synchronously or with a callback needs the exclusive thread of its instance,
@@ -570,8 +614,8 @@ Wasmtime 48 on this point:
   A callback holder releases between events, and the call proceeds. A
   synchronous holder releases on return, so a cycle through it goes idle and
   fails with the deadlock cause.
-- The host can always enter. Wasmtime 49 refuses a host entry only into a store
-  a trap poisoned, and the poisoning rules are out of scope. From the host,
+- The host can always enter. Wasmtime refuses a host entry only into a store a
+  trap poisoned, and the poisoning rules are out of scope. From the host,
   reentrance while an instance is on the stack is reachable only through
   `call_concurrent`, from a host task's body or from the `run_concurrent`
   closure, and the gate treats it like any other call.
@@ -583,21 +627,22 @@ Wasmtime 48 on this point:
 The translator accepts what this design builds and refuses the rest with
 `Error::Unsupported`, the rule [PDD006] states:
 
-- Accepted: `canon lower async`, an async-typed import, the `PrepareCall`,
-  `SyncStartCall`, and `AsyncStartCall` trampolines, `subtask.drop`, and a
-  `funcref` parameter in an intrinsic signature, which the prepare and start
-  intrinsics carry.
+- Accepted: `canon lower async`, an async-typed import, the `PrepareCall` and
+  `StartCall` trampolines, `subtask.drop`, and a `funcref` parameter in an
+  intrinsic signature, which the prepare and start intrinsics carry.
 - Refused: `subtask.cancel`, `task.cancel`, `canon lift async` without a
   callback, the stream, future, and error-context built-ins, every thread
   built-in other than `thread.yield`, and the table initializer of
   `thread.new-indirect`.
 
-The adapters of Wasmtime 49 import no may-block global. The may-not-suspend flag
+The adapters of Wasmtime 50 import no may-block global. The may-not-suspend flag
 of the instance record of [PDD018] carries that state. The enter intrinsic sets
-it for a synchronous call between components. A host call into a sync-typed
-export sets it for the length of the call. A resource destructor sets it on its
-defining instance for the length of the destructor, as Wasmtime enters a
-destructor as a synchronous call. Each clears the flag on exit.
+it for a synchronous call between components. A thread-transparent adapter calls
+no enter intrinsic, so its callee runs under the caller's flag. That callee has
+no built-in that reads the flag. A host call into a sync-typed export sets it
+for the length of the call. A resource destructor sets it on its defining
+instance for the length of the destructor, as Wasmtime enters a destructor as a
+synchronous call. Each clears the flag on exit.
 
 ## Error Model Growth
 
@@ -615,7 +660,9 @@ destructor as a synchronous call. Each clears the flag on exit.
 - `subtask.drop` on an undelivered resolution is the subtask-not-resolved cause
   [PDD018] already defines, with Wasmtime's message.
 
-No trap cause is added. `CannotEnterComponent` is raised nowhere.
+No trap cause is added. The adapter of a call into the caller's own instance
+raises `CannotEnterComponent` through the trap intrinsic of the fused adapters,
+with Wasmtime's message.
 
 ## Target Differences
 
@@ -635,10 +682,10 @@ cause:
 - A second call of the import that the block is inside.
 - A call of the host function that an outer nesting level blocks in.
 - Two caller instances that synchronously lower the same asynchronous callee
-  export. The adapter reaches the callee through a sync-start-call intrinsic
-  that names no component instance. The two callers share one host function, and
-  the second caller enters it while the block of the first caller is still
-  inside it.
+  export. The adapter reaches the callee through the start-call intrinsic, which
+  names no component instance. The two callers share one host function, and the
+  second caller enters it while the block of the first caller is still inside
+  it.
 - A destructor that drops a second handle of its own resource type in the same
   instance. `resource.drop` runs the destructor from inside itself, so this
   shape needs no nested turn.
@@ -673,10 +720,10 @@ The files and directives this design owns, in the Component Model corpus:
 - `drop-waitable-set.wast`. A callback export waits on a set, and a second
   callee drops that set and traps.
 - `reentrance.wast`, eight of its twelve directives: the five synchronous
-  reentrance cases, which the adapters of Wasmtime 49 no longer trap, the
-  sync-typed reentry while the exclusive thread is held, the callback cycle that
-  waits at the gate and completes, and the synchronous cycle that fails with the
-  deadlock message.
+  reentrance cases, which do not trap because none calls into the caller's own
+  instance, the sync-typed reentry while the exclusive thread is held, the
+  callback cycle that waits at the gate and completes, and the synchronous cycle
+  that fails with the deadlock message.
 
 In the Wasmtime corpus:
 
@@ -813,6 +860,11 @@ The four combinations cross correctly. `fused.wast` and `cross-abi-calls.wast`
 pass whole. The four async permutations of `task-builtins.wast` and of
 `context-in-compositions.wast` pass. `many-params-with-retptr.wast` passes.
 
+A thread-transparent adapter makes no task. Repository tests prove that a
+synchronous call through a thread-transparent instance adds no task to the
+store, and that the same call through an instance with a context built-in adds
+one.
+
 The gate holds a callee. `backpressure-deadlock.wast` reads `STARTING` under
 backpressure. The Wasmtime `reentrance.wast` holds a callback callee at the
 root's gate while the root's own task runs, and the host reads the root's
@@ -834,7 +886,10 @@ cause. Repository tests prove that a resource destructor that blocks fails with
 the cannot-block cause, and that a task that must not block never reaches a
 suspend provider. Repository tests prove the stack-switch cause with a host task
 pending, that a sync-typed task's block runs only items of its own instance, and
-that a nested turn can open another.
+that a nested turn can open another. Without a provider, the Wasmtime
+`thread-transparency/reentrancy.wast` proves that a block under a waiting
+sync-typed caller runs only items of the caller's instance, and fails with the
+cannot-block message when none is ready.
 
 The seam's budget ends a wait the store never serves. `async-calls-sync.wast`
 and `reenter-during-yield.wast` reach it from their two shapes, the spin-waiting
@@ -847,17 +902,19 @@ from every yield, and the yield past the budget ends the call it is inside.
 A synchronous lower returns at `task.return`. `callback-yield-then-exit.wast`
 passes, and the callee's late exit runs in the next driver.
 
-Reentrance does not trap. The eight owned directives of the Component Model
-`reentrance.wast` pass, the five synchronous ones through the adapters of
-Wasmtime 49 alone.
+Reentrance traps only into the caller's own instance. The eight owned directives
+of the Component Model `reentrance.wast` pass, the five synchronous ones through
+the fused adapters alone. A repository test proves that a start function that
+calls a function its own component lifted traps with
+`cannot enter component instance`.
 
 An exception reaches the host. `exceptions.wast` passes whole.
 
 Two host calls overlap. Repository tests prove that two `call_concurrent`
 futures into one callback export interleave and both resolve, that a call into a
 synchronous export runs while a callback task waits, that a second synchronous
-call is queued behind a first, that a dropped future cancels nothing, and that
-an idle store leaves the entry pending.
+call is queued behind a first, that a dropped future cancels nothing even when
+its call had not started, and that an idle store leaves the entry pending.
 
 The accessor is a token. Repository tests prove that `with` reaches the host
 data during a poll and returns the closure's value, that a `?` after `with`
@@ -897,9 +954,11 @@ repository test.
   [`subtask.drop`][CanonicalABI – subtask.drop].
 - [`definitions.py`], the executable reference for `canon_lower`, `Subtask`,
   `Task.enter_implicit_thread`, and `canon_subtask_drop`.
-- [Wasmtime], the reference implementation at `v49.0.0-rc.1`: its [concurrent
-  runtime][Wasmtime concurrent], its [fused adapter compiler][Wasmtime fact],
-  its [host function registration][Wasmtime linker], its [registration type
+- [Wasmtime], the reference implementation at `v50.0.0`: its [concurrent
+  runtime][Wasmtime concurrent], its [fused adapter compiler][Wasmtime fact]
+  with its [same-instance trap][Wasmtime same instance], its
+  [thread-transparency analysis][Wasmtime thread transparency], its [host
+  function registration][Wasmtime linker], its [registration type
   check][Wasmtime host], its [trap messages][Wasmtime traps], and its [component
   spectest][Wasmtime spectest].
 - The Wasmtime API for [`Accessor`], [`run_concurrent`], [`call_concurrent`],
@@ -936,17 +995,21 @@ repository test.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/canonical-abi/definitions.py
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime concurrent]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs
 [Wasmtime fact]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/fact/trampoline.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/fact/trampoline.rs
+[Wasmtime same instance]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/fact/trampoline.rs#L117-L127
+[Wasmtime thread transparency]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/component/thread_transparency.rs
 [Wasmtime linker]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/linker.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/linker.rs
 [Wasmtime host]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/func/host.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/func/host.rs
 [Wasmtime traps]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs
 [Wasmtime spectest]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wast/src/spectest.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wast/src/spectest.rs
 [`Accessor`]:
   https://docs.wasmtime.dev/api/wasmtime/component/struct.Accessor.html
 [`run_concurrent`]:

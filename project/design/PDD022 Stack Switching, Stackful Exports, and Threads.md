@@ -18,8 +18,8 @@ implements or does not.
 The design follows the [Concurrency explainer][Concurrency] and the Python
 reference in [`definitions.py`] at the commit the conformance corpus of [PDD016]
 is vendored from. Where the reference leaves a choice to the host, the design
-makes the choice [Wasmtime] makes at `v49.0.0-rc.1`. Where it departs from
-either, it states the reason.
+makes the choice [Wasmtime] makes at `v50.0.0`. Where it departs from either, it
+states the reason.
 
 Five terms recur:
 
@@ -75,10 +75,11 @@ Five terms recur:
   implements no instruction.
 - The shared-everything thread built-ins `thread.spawn-ref`,
   `thread.spawn-indirect`, and `thread.available-parallelism`.
-- Cancellation, including a cancellable form of any thread built-in. The
-  cancelled event is not delivered.
+- Cancellation. No thread built-in takes a pending cancellation request. The
+  reference delivers the cancelled event only to a callback.
 - The rules that decide which trap poisons an instance.
-- A cap on the number of live threads. The limits of the engine apply.
+- A cap on the number of live threads of its own. Each guest thread counts as
+  one handle against the store's cap on live handles, as in Wasmtime.
 
 ## Facts This Design Rests On
 
@@ -102,10 +103,10 @@ prototype on an x86_64 Linux host.
   instance as the function object itself. A call between two core instances is
   therefore a call from WebAssembly to WebAssembly. The runtime layer holds this
   rule for the browser backend.
-- Wasmtime 49 implements the stack-switching proposal on x86_64 Linux only
+- Wasmtime 50 implements the stack-switching proposal on x86_64 Linux only
   ([Wasmtime stack switching]). The feature is off by default and turns off
   compiler inlining.
-- Under Wasmtime 49 with the feature on, a host function that runs inside one
+- Under Wasmtime 50 with the feature on, a host function that runs inside one
   continuation can start a second continuation and get control back when the
   second suspends. A suspension crosses frames of two other instances. Two
   suspended continuations resume in either order. The prototype measured all
@@ -236,7 +237,7 @@ switch module, stack-switching form:
 
 A resumption runs synchronously and returns when the thread suspends again or
 finishes. The provider works on any engine that implements the proposal. Today
-those are Wasmtime 49 on x86_64 Linux and wasm3. No browser ships the proposal.
+those are Wasmtime 50 on x86_64 Linux and wasm3. No browser ships the proposal.
 
 ### The Host-Suspension Provider
 
@@ -284,6 +285,18 @@ stackful lift and the thread built-ins run there too. A thread entry that never
 blocks runs to its end. A thread that blocks succeeds when the work that
 releases it can run above it. It fails with the stack-switch cause when that
 work lies on a frame below it.
+
+A nested turn stands in for the frames below the block. One of those frames can
+be a caller that waits for the block in an instance that must not suspend. Under
+a provider, the blocked thread suspends and control goes back to that caller.
+The caller then blocks, and its rule lets only the ready threads of its own
+instance run. The nested turn follows the same rule. It runs only the ready work
+of that caller's instance, even when the blocked thread's own task can block.
+The nearest such caller counts. The search for it stops at a frame below which
+no caller waits for the block: an asynchronous lower, a synchronous lower whose
+callee has resolved, a thread switch, or the subtask of a host call. When no
+thread of the caller's instance is ready, the block fails with the cannot-block
+cause.
 
 ## Selecting a Provider
 
@@ -374,11 +387,15 @@ A thread starts in one of three ways:
 
 - The scheduler starts it from a turn: a task that a host call or a driver
   began, a thread a gate released, or a thread `thread.resume-later` made ready.
-- A trampoline starts it as a nested start. This covers the start intrinsics of
-  [PDD020] for an async-typed callee, through a synchronous or an asynchronous
-  lower, and a switch to a new thread inside a thread built-in.
-- A fused adapter calls a sync-typed callee directly, on the caller's stack, as
-  today. The callee's task must not block, so its thread never suspends.
+- A trampoline starts it as a nested start. This covers the start-call intrinsic
+  of [PDD020] for an async-typed callee, through a synchronous or an
+  asynchronous lower, and a switch to a new thread inside a thread built-in.
+- A sync-typed callee runs on the caller's stack. The fused adapter calls it
+  directly, or the start-call intrinsic runs it in place when its lift is
+  `async`. The callee's task must not block, so its thread never suspends. An
+  adapter is thread transparent when the callee's instance declares nothing that
+  can read or write thread state. Such an adapter makes no task for the call,
+  and the callee runs on the caller's task and thread.
 
 A nested start runs the new thread on a stack of its own, above the trampoline
 that started it. The trampoline calls the provider's start. When the new thread
@@ -395,7 +412,7 @@ async lower of a stackful callee, under a provider
     ──────────────                          ──────────────
     caller core function
     fused adapter
-    async-start intrinsic (host)  ──start──▶  entry wrapper
+    start-call intrinsic (host)   ──start──▶  entry wrapper
                                             callee core function
                                             shim: not ready, suspend
     intrinsic continues  ◀───────suspended──
@@ -459,12 +476,15 @@ thread when the frame is a turn of the scheduler.
 `thread.new-indirect` reads its start function from the table that the
 translator's table initializer already extracts. The start function takes one
 `i32`, or one `i64` in a 64-bit memory, and returns nothing. The reference
-admits both. Wasmtime 49 admits only the `i32` form, with the message "start
+admits both. Wasmtime 50 admits only the `i32` form, with the message "start
 function does not match expected type (currently only `(i32) -> ()` is
 supported)". The polyfill admits both, because it runs 64-bit memories and the
 reference states the rule. This is a departure from Wasmtime. A table entry that
 is empty fails with Wasmtime's message for an uninitialized start function. A
-start function of another type fails with the type message.
+start function of another type fails with the type message. Each new thread
+takes one handle of the store's cap on live handles. When the store is at its
+cap, `thread.new-indirect` fails with Wasmtime's message: "cannot allocate
+another handle: store handle limit exceeded".
 
 A switch or a resume that names a thread which is not suspended fails with
 Wasmtime's message: "cannot resume thread which is not suspended". A promote
@@ -499,10 +519,10 @@ value and no other thread of the same instance is ready ([CanonicalABI – canon
 lift]). Wasmtime keeps a do-not-suspend flag on each instance and reads only the
 blocked thread's own instance ([Wasmtime may-not-suspend]).
 
-A start intrinsic that begins an async-typed callee clears that flag on the
-callee's instance until the callee returns or suspends. The callee may then
-suspend, because its suspension returns control to its caller, and the caller
-can go on without a block. Wasmtime does the same ([Wasmtime async-typed
+When the start-call intrinsic begins an async-typed callee, it clears that flag
+on the callee's instance until the callee returns or suspends. The callee may
+then suspend, because its suspension returns control to its caller, and the
+caller can go on without a block. Wasmtime does the same ([Wasmtime async-typed
 start]). The polyfill follows both rules.
 
 The store-wide view has one use. When a driver's store goes idle with work left,
@@ -575,10 +595,13 @@ This design revises four statements of [PDD018]:
 - The capability is filled in every browser that ships JSPI, which is every
   current browser.
 
-This design revises three statements of [PDD020]:
+This design revises four statements of [PDD020]:
 
 - A task that must not block reaches the provider, only to resume the threads of
   its own instance.
+- An async-typed task's block runs any ready item, unless a caller below waits
+  for it and must not suspend. It then runs only the ready work of that caller's
+  instance.
 - A callee of an asynchronous lower starts at once from inside the trampoline,
   with or without a provider.
 - The target difference of the re-entrant host call no longer exists.
@@ -594,7 +617,7 @@ The differences of [PDD018] and [PDD020] stay, except the re-entrant host call,
 which this design removes. The provider is the difference this design adds:
 
 - Native: the stack-switching provider on an engine that implements the
-  proposal. Under Wasmtime 49, that is x86_64 Linux. The host-suspension
+  proposal. Under Wasmtime 50, that is x86_64 Linux. The host-suspension
   provider on Wasmi. Nested turns elsewhere.
 - Browser: the host-suspension provider in every browser that ships JSPI. Nested
   turns in an older browser, such as Safari 26.
@@ -642,15 +665,15 @@ start. The owner reviews it once the time each lane takes is known.
 
 The directives this design owns, in the Component Model corpus:
 
-- The stackful lift: seven directives of `big-interleaving-test.wast` (912, 973,
-  1295, 1508, 1623, 1640, 1651), `sync-barges-in.wast:323`, and
+- The stackful lift: seven directives of `big-interleaving-test.wast` (943,
+  1004, 1326, 1539, 1654, 1671, 1682), `sync-barges-in.wast:323`, and
   `values/variants.wast:186`.
 - The thread built-ins: `during-sync-call-exclusive-resume.wast`,
   `during-sync-call-may-block-if-other-ready-threads.wast`,
   `during-sync-call-no-sibling-resume.wast`,
   `during-sync-scheduling-candidates.wast`, `self-switch-traps.wast`,
   `switch-to-ready-callback.wast`, `trap-if-block-and-sync.wast`,
-  `trap-if-sync-and-waitable-set.wast`, `reentrance.wast:557` and `:701`, and
+  `trap-if-sync-and-waitable-set.wast`, `reentrance.wast:658` and `:786`, and
   `values/post-return.wast:4`.
 - A frame below: `async-calls-sync.wast:250` and `:251`,
   `cancel-and-exclusive-lock.wast:196`, and `sync-streams.wast:208`.
@@ -669,9 +692,11 @@ In the Wasmtime corpus:
   596, 612, 614, 623, 625, 627).
 
 The cascade lines of each owned file go with it. A line of an owned file whose
-failure has another cause keeps that cause and stays in the shared list. Those
-are the two `subtask.cancel` directives of `big-interleaving-test.wast` (1664,
-1675), and `reentrance.wast:548` and `:891`.
+failure has another cause keeps that cause and stays in the shared list. Two
+owned files fail whole for such a cause: `big-interleaving-test.wast` and
+`values/post-return.wast`. Each defines its component with `stream.forward`,
+which the polyfill does not implement. Wasmtime does not pass these files
+either.
 
 Without a provider, every directive of the frame-below group fails with the
 stack-switch cause, so each is in the overlay. Every other owned directive is in
@@ -750,18 +775,22 @@ A task that must not block switches only within its instance. With a provider,
 
 The stackful lift runs. With a provider, `stackful.wast`,
 `drop-waitable-set-stackful.wast`, `task-deletion.wast`, `sync-barges-in.wast`,
-`values/variants.wast`, the seven stackful directives of
-`big-interleaving-test.wast`, and the four stackful directives of
+`values/variants.wast`, and the four stackful directives of
 `task-return-traps.wast` pass on both targets, with the message "async-lifted
 export failed to produce a result" where the file expects it.
 
 The thread built-ins run. With a provider, `self-switch-traps.wast`,
 `switch-to-ready-callback.wast`, `trap-if-sync-and-waitable-set.wast`,
 `during-sync-call-exclusive-resume.wast`, `join-during-sync-read.wast`,
-`thread-transparency/reentrancy.wast`, `reentrance.wast:557` and `:701`,
-`values/post-return.wast`, and the two table directives of
-`task-return-traps.wast` pass on both targets. A repository test proves the
-`i64` start function of `thread.new-indirect` in a 64-bit memory.
+`thread-transparency/reentrancy.wast`, `reentrance.wast:658` and `:786`, and the
+two table directives of `task-return-traps.wast` pass on both targets. A
+repository test proves the `i64` start function of `thread.new-indirect` in a
+64-bit memory.
+
+A nested turn holds to a waiting caller that must not suspend. With the provider
+off, `thread-transparency/reentrancy.wast` passes on both targets with the
+cannot-block message. The file's second thread does not run before the trap, so
+it does not reenter the instance of the waiting caller.
 
 A frame below releases a block. With a provider, the frame-below directives of
 both corpora pass on both targets: `async-calls-sync.wast:250` and `:251`,
@@ -812,7 +841,7 @@ runs the corpus in all four states and each state is green against its lists.
   explainer states them.
 - [`definitions.py`], the executable reference for `Thread`, `Task`,
   `canon_lift`, and the thread built-ins.
-- [Wasmtime], the reference implementation at `v49.0.0-rc.1`: its [trap
+- [Wasmtime], the reference implementation at `v50.0.0`: its [trap
   messages][Wasmtime traps], its [may-not-suspend
   rule][Wasmtime may-not-suspend], its [activation state][Wasmtime activations],
   and its [stack-switching support][Wasmtime stack switching].
@@ -851,17 +880,17 @@ runs the corpus in all four states and each state is green against its lists.
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/canonical-abi/definitions.py
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
 [Wasmtime traps]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/environ/src/trap_encoding.rs
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/trap_encoding.rs
 [Wasmtime may-not-suspend]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L2047-L2073
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L2163-L2189
 [Wasmtime async-typed start]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L3249-L3262
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L3457-L3470
 [Wasmtime idle store]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/component/concurrent.rs#L1402-L1415
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/component/concurrent.rs#L1462-L1475
 [Wasmtime activations]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/wasmtime/src/runtime/vm/traphandlers.rs#L1206-L1215
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/wasmtime/src/runtime/vm/traphandlers.rs#L1206-L1215
 [Wasmtime stack switching]:
-  https://github.com/bytecodealliance/wasmtime/blob/v49.0.0-rc.1/crates/cranelift/src/func_environ/stack_switching/instructions.rs#L13-L20
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/cranelift/src/func_environ/stack_switching/instructions.rs#L16-L23
 [JSPI]:
   https://github.com/WebAssembly/js-promise-integration/blob/main/proposals/js-promise-integration/Overview.md
 [caniuse]: https://caniuse.com/wf-wasm-jspi

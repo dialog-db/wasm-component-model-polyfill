@@ -15,9 +15,11 @@ inner component to another crosses the boundary as the Canonical ABI specifies.
 - A call from one inner component to another passes through an adapter module.
   The adapter lifts from the caller's memory and lowers into the callee's
   memory, including string transcoding between encodings.
-- The component instance flags that the Canonical ABI requires (`may_leave`,
-  `may_enter`) exist per inner instance and are enforced. A reentrant call
-  traps.
+- The `may_leave` flag that the Canonical ABI requires exists per inner instance
+  and is enforced.
+- A call from an inner instance into a function that the same instance lifted
+  traps with Wasmtime's message. A call between two different inner instances
+  does not trap for reentrance.
 - An `own<T>` or `borrow<T>` handle passes from one inner component to another.
   The handle table of the source removes or lends the entry, and the handle
   table of the destination receives it.
@@ -55,14 +57,24 @@ inner component's export.
 
 ## Instance Flags
 
-Every component instance carries a flags global with the `may_leave` and
-`may_enter` bits the [Canonical ABI runtime state][CanonicalABI – runtime state]
-defines. An adapter clears `may_leave` on the caller while a call is in progress
-and clears `may_enter` on the callee, so that a reentrant call traps. A host
-trampoline consults the same flags before it enters a component.
+Every component instance carries a flags global with the `may_leave` flag that
+the [Canonical ABI runtime state][CanonicalABI – runtime state] defines. An
+adapter traps when the caller's `may_leave` flag is clear. The adapter clears
+the flag on an instance while it copies values into or out of the memory of that
+instance, because a `cabi_realloc` call can run there. A host trampoline
+consults the caller's flag before a guest leaves its component through it.
+
+An adapter whose caller and callee are the same component instance copies no
+value. The [fused adapter compiler][Wasmtime same instance] compiles it to a
+trap, `CannotEnterComponent`, with the message
+`cannot enter component instance`. The Canonical ABI allows the call. Wasmtime
+traps because the guest can otherwise observe the order of the adapter's lifts
+and lowers. The polyfill takes its adapters from that compiler, so it raises the
+same trap. A call between two different inner instances does not trap for
+reentrance, in any direction and at any depth.
 
 The polyfill materializes each flags global as a core global that the plan
-names. The global is an import source like a memory or a function. The flags are
+names. The global is an import source like a memory or a function. The flag is
 per instance, so two instantiations of one component carry separate flags.
 
 ## Intrinsics
@@ -79,7 +91,8 @@ An adapter imports a small set of functions from the polyfill:
   intrinsic lends the entry for the duration of the call, using the scope
   machinery of [PDD014].
 - A trap intrinsic, which the adapter calls when a flag check or a bounds check
-  fails, so that the trap carries the message Wasmtime uses.
+  fails, or when its caller and callee are the same instance. The trap carries
+  the message Wasmtime uses.
 
 Each intrinsic is a host trampoline the polyfill builds at instantiation. The
 plan names which intrinsic an adapter import refers to.
@@ -116,11 +129,12 @@ to another.
 > handle to the second component's table. The second component drops it, and the
 > first component's destructor runs exactly once.
 
-A contributor wants a reentrancy bug to surface as a trap rather than as memory
-corruption.
+A contributor wants a call into the caller's own instance to surface as a trap
+rather than as memory corruption.
 
-> A test composes two components that call each other in a cycle. The second
-> call into the same instance traps with the message Wasmtime uses.
+> A test builds a component whose start function calls a function that the same
+> component lifted. Instantiation fails with the message Wasmtime uses,
+> `cannot enter component instance`, and the adapter copies no value.
 
 ## Test Cases
 
@@ -132,8 +146,14 @@ Strings cross an adapter in each encoding. A call from a UTF-8 component into a
 UTF-16 component passes a string through the adapter and the callee reads the
 same text, and the reverse direction transcodes back.
 
-Instance flags are enforced. A reentrant call into an inner instance traps with
-the message Wasmtime uses.
+The `may_leave` flag is enforced. A call out of an instance whose `may_leave`
+flag is clear traps with the message Wasmtime uses.
+
+A call into the caller's own instance traps. A component whose start function
+calls a function that the same component lifted fails to instantiate with
+`cannot enter component instance`. The `same-instance-call.wast` file of the
+Wasmtime corpus traps with the same message for strings, lists, and calls with
+no values in memory.
 
 A handle transfers between inner components. An `own<T>` returned by one inner
 component and dropped by the other runs the first component's destructor exactly
@@ -160,7 +180,8 @@ the Wasmtime corpus pass except for the cases the expected-failure list records.
 - [Linking], the Component Model design document on linking.
 - [CanonicalABI], including the [runtime state][CanonicalABI – runtime state]
   and the [storing rules][CanonicalABI – storing].
-- [Wasmtime], whose fused adapter compiler produces the adapter modules.
+- [Wasmtime] at `v50.0.0`, whose fused adapter compiler produces the adapter
+  modules, and the compiler's [same-instance trap][Wasmtime same instance].
 - The [Component Model test corpus] and the [Wasmtime component tests].
 
 [PDD000]: ./PDD000%20Wasm%20Component%20Model%20Polyfill.md
@@ -182,6 +203,8 @@ the Wasmtime corpus pass except for the cases the expected-failure list records.
 [CanonicalABI – storing]:
   https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md#storing
 [Wasmtime]: https://github.com/bytecodealliance/wasmtime
+[Wasmtime same instance]:
+  https://github.com/bytecodealliance/wasmtime/blob/v50.0.0/crates/environ/src/fact/trampoline.rs#L117-L127
 [Component Model test corpus]:
   https://github.com/WebAssembly/component-model/tree/main/test
 [Wasmtime component tests]:
