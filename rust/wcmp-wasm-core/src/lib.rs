@@ -97,7 +97,7 @@ pub use crate::error::{Error, Result, TrapKind};
 pub use crate::externs::{Extern, Func, Global, Instance, Memory, Table, Tag};
 pub use crate::module::{ExportType, ImportType, Module};
 pub use crate::store::{
-    AsContext, AsContextMut, Caller, EntryHook, Store, StoreContext, StoreContextMut,
+    AsContext, AsContextMut, CallHook, Caller, Store, StoreContext, StoreContextMut,
 };
 pub use crate::types::{
     ExternType, FuncType, GlobalType, HeapType, MemoryType, Mutability, RefType, TableType,

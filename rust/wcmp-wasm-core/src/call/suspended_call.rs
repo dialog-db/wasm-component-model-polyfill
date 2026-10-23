@@ -13,9 +13,8 @@ use crate::capability::Capability;
 use crate::checks;
 use crate::contract::BackendSuspendedCall;
 use crate::error::Result;
-use crate::internal::StoreContextMutInternal;
-use crate::internal::run_entry_hook;
-use crate::store::{AsContextMut, StoreId};
+use crate::internal::{StoreContextMutInternal, call_hook};
+use crate::store::{AsContextMut, CallHook, StoreId};
 use crate::values::Val;
 
 /// A resumable call that waits in a suspending host function.
@@ -84,11 +83,11 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend
             .resume_call(self.inner, import_results, results)
             .await;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 
@@ -121,9 +120,9 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.start_resume(self.inner, import_results);
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 }

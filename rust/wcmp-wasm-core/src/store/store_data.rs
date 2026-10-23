@@ -11,8 +11,8 @@ use core::fmt;
 
 use crate::contract::MaybeSend;
 use crate::engine::Engine;
-use crate::internal::{StoreDataInternal, StoreIdInternal};
-use crate::store::{EntryHook, StoreId};
+use crate::internal::{ErasedCallHook, StoreDataInternal, StoreIdInternal};
+use crate::store::StoreId;
 
 /// The host's data, erased: `Send` where the store must be.
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,8 +39,9 @@ pub struct StoreData {
     /// in each call, so a read compares this rather than ask `value` for
     /// its type through its vtable.
     ty: TypeId,
-    /// What the engine calls around each entry of guest code.
-    entry_hook: Option<EntryHook>,
+    /// What the engine calls at each crossing between the host and guest
+    /// code.
+    call_hook: Option<ErasedCallHook>,
 }
 
 impl StoreData {
@@ -63,7 +64,7 @@ impl StoreDataInternal for StoreData {
             engine,
             value: Box::new(value),
             ty: TypeId::of::<T>(),
-            entry_hook: None,
+            call_hook: None,
         }
     }
 
@@ -80,12 +81,12 @@ impl StoreDataInternal for StoreData {
         }
     }
 
-    fn entry_hook(&self) -> Option<EntryHook> {
-        self.entry_hook.clone()
+    fn take_call_hook(&mut self) -> Option<ErasedCallHook> {
+        self.call_hook.take()
     }
 
-    fn set_entry_hook(&mut self, hook: Option<EntryHook>) {
-        self.entry_hook = hook;
+    fn set_call_hook(&mut self, hook: ErasedCallHook) {
+        self.call_hook = Some(hook);
     }
 
     fn user_mut<T: 'static>(&mut self) -> &mut T {

@@ -40,8 +40,8 @@
 //! one. No test passes without a check.
 
 mod boundary;
+mod call_hook;
 mod compile;
-mod entry_hook;
 mod host_functions;
 mod memory;
 mod overclaiming;
@@ -55,15 +55,16 @@ pub use crate::boundary::{
     it_instantiates_a_module_with_a_gc_global_and_an_exported_tag,
     it_loads_a_module_whose_internal_items_do_not_cross_its_boundary,
 };
+pub use crate::call_hook::{
+    it_calls_the_call_hook_around_each_stretch_of_a_resumable_call,
+    it_calls_the_call_hook_at_each_crossing_between_host_and_guest,
+    it_fails_a_call_with_the_error_of_its_call_hook,
+};
 pub use crate::compile::{
     it_compiles_a_module_asynchronously_and_synchronously,
     it_describes_the_imports_and_exports_of_a_module,
     it_refuses_an_import_of_the_wrong_type_with_a_link_error,
     it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
-};
-pub use crate::entry_hook::{
-    it_calls_the_entry_hook_around_a_call_into_a_guest,
-    it_fails_a_call_with_the_error_of_its_entry_hook,
 };
 pub use crate::host_functions::{
     it_calls_a_host_function_of_more_than_eight_parameters,
@@ -132,8 +133,9 @@ macro_rules! contract_tests {
             it_loads_a_module_whose_internal_items_do_not_cross_its_boundary,
             it_describes_a_tag_at_the_boundary,
             it_links_a_tag_from_one_instance_into_another,
-            it_calls_the_entry_hook_around_a_call_into_a_guest,
-            it_fails_a_call_with_the_error_of_its_entry_hook,
+            it_calls_the_call_hook_at_each_crossing_between_host_and_guest,
+            it_fails_a_call_with_the_error_of_its_call_hook,
+            it_calls_the_call_hook_around_each_stretch_of_a_resumable_call,
             it_enters_a_host_function_again_at_any_depth,
             it_calls_a_host_function_of_more_than_eight_parameters,
             it_traps_with_the_host_error_that_no_guest_can_catch,

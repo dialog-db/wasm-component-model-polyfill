@@ -41,7 +41,7 @@ use crate::error::{Error, InstantiationError};
 pub use wcmp_wasm_core::MemoryType;
 pub use wcmp_wasm_core::backend::Backend;
 pub use wcmp_wasm_core::{
-    AsContextMut, Caller, Capabilities, Capability, Engine, EntryHook, Error as RuntimeError,
+    AsContextMut, CallHook, Caller, Capabilities, Capability, Engine, Error as RuntimeError,
     Extern, ExternType, Func, FuncType, Global, GlobalType, HeapType, Instance, MaybeSend, Memory,
     Module, Mutability, ResumableCall, Resumption, Store, StoreContextMut, SuspendedCall, Table,
     TrapKind, Val, ValType,
@@ -280,21 +280,7 @@ pub fn host_func<T: HostFrames + 'static>(
         ty,
         move |mut caller: Caller<'_, T>, params, results| {
             *caller.data_mut().host_frames() += 1;
-            // The host may switch threads or read the current thread's
-            // context slots, so the slots the guest holds in globals go back
-            // to the thread's record first, and the guest loads them again
-            // after.
-            let result = caller
-                .as_context_mut()
-                .run_entry_hook()
-                .map_err(into_anyhow)
-                .and_then(|()| func(caller.as_context_mut(), params, results))
-                .and_then(|()| {
-                    caller
-                        .as_context_mut()
-                        .run_entry_hook()
-                        .map_err(into_anyhow)
-                });
+            let result = func(caller.as_context_mut(), params, results);
             *caller.data_mut().host_frames() -= 1;
             result
         },

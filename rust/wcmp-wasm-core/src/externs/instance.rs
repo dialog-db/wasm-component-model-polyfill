@@ -9,9 +9,9 @@
 use crate::checks;
 use crate::error::{Error, Result};
 use crate::externs::Extern;
-use crate::internal::{ModuleInternal, StoreContextMutInternal};
+use crate::internal::{ModuleInternal, StoreContextMutInternal, call_hook};
 use crate::module::Module;
-use crate::store::AsContextMut;
+use crate::store::{AsContextMut, CallHook};
 
 handle! {
     /// An instance of a module, in the store that instantiated it.
@@ -54,7 +54,11 @@ impl Instance {
                 actual: imports.len(),
             });
         }
-        backend.instantiate(module.backend_module(), imports).await
+        // The start function of the module is guest code.
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend.instantiate(module.backend_module(), imports).await;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 
     /// The export of the instance named `name`, or `None` where the

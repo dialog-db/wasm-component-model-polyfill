@@ -13,9 +13,8 @@ use crate::capability::Capability;
 use crate::checks;
 use crate::contract::HostFunc;
 use crate::error::Result;
-use crate::internal::run_entry_hook;
-use crate::internal::{CallerInternal, StoreContextInternal, StoreContextMutInternal};
-use crate::store::{AsContext, AsContextMut, Caller};
+use crate::internal::{CallerInternal, StoreContextInternal, StoreContextMutInternal, call_hook};
+use crate::store::{AsContext, AsContextMut, CallHook, Caller};
 use crate::types::FuncType;
 use crate::values::Val;
 
@@ -53,7 +52,10 @@ impl Func {
         checks::func_type(store.engine().capabilities(), &ty)?;
         let body = HostFunc::new(move |store, params, results| {
             let _span = tracing::trace_span!("core host call").entered();
-            func(Caller::from_backend(store), params, results)
+            call_hook(store, CallHook::CallingHost)?;
+            let outcome = func(Caller::from_backend(&mut *store), params, results);
+            call_hook(store, CallHook::ReturningFromHost)?;
+            outcome
         });
         store.backend_mut().func_new(ty, body)
     }
@@ -85,7 +87,14 @@ impl Func {
         checks::func_type(capabilities, &ty)?;
         let body = HostFunc::suspending(move |store, params, results| {
             let _span = tracing::trace_span!("core host call (suspending)").entered();
-            func(Caller::from_backend(store), params, results)
+            call_hook(store, CallHook::CallingHost)?;
+            let outcome = func(Caller::from_backend(&mut *store), params, results);
+            // "Not yet" does not return to the guest. The call suspends, and
+            // the host that made it runs next.
+            if !matches!(outcome, Ok(Poll::Pending)) {
+                call_hook(store, CallHook::ReturningFromHost)?;
+            }
+            outcome
         });
         store.backend_mut().func_new(ty, body)
     }
@@ -118,9 +127,9 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.func_call(*self, params, results);
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 
@@ -162,9 +171,9 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.func_call_resumable(*self, params, results).await;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 
@@ -194,9 +203,9 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.func_start_resumable(*self, params);
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 }

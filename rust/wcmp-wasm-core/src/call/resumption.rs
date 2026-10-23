@@ -12,9 +12,8 @@ use crate::call::ResumableCall;
 use crate::capability::Capability;
 use crate::contract::BackendResumption;
 use crate::error::{Error, Result};
-use crate::internal::StoreContextMutInternal;
-use crate::internal::run_entry_hook;
-use crate::store::{AsContextMut, StoreId};
+use crate::internal::{StoreContextMutInternal, call_hook};
+use crate::store::{AsContextMut, CallHook, StoreId};
 use crate::values::Val;
 
 /// A resumable call that runs: started with
@@ -85,9 +84,12 @@ impl Resumption {
         let inner = self.inner.as_mut().ok_or_else(|| Error::Backend {
             message: "the resumable call already stopped".to_owned(),
         })?;
+        // A backend that runs the call on a microtask runs its guest code
+        // during the wait.
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.stop_resumption(inner.as_mut(), results).await;
         self.inner = None;
-        run_entry_hook(&mut *backend)?;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 }

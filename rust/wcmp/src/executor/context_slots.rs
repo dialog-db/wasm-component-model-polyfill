@@ -21,11 +21,16 @@
 //! owner of the globals.
 //!
 //! The current thread changes only while the host runs. So the store's
-//! entry hook, which the runtime layer calls around each entry of guest
-//! code and which every host function of the polyfill calls around its
-//! body, writes the loaded slots back to the owner's record and clears
-//! the loaded flag. A thread that runs next loads its own slots. Host
-//! code that reads a thread's record sees what the thread last wrote.
+//! call hook, which the runtime layer calls at each crossing between the
+//! host and guest code, writes the loaded slots back to the owner's record
+//! and clears the loaded flag before the host runs. A thread that runs
+//! next loads its own slots. Host code that reads a thread's record sees
+//! what the thread last wrote.
+//!
+//! The hook writes back at every crossing but one: the return of a host
+//! function to the guest that called it. The call of that function
+//! already wrote back, so on its return only the slots `load` loaded for
+//! the guest are in the globals, and they stay there.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -40,7 +45,7 @@ use crate::error::{Error, Result};
 use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::runtime_layer::{
-    AsContextMut, Caller as RuntimeCaller, EntryHook, Extern as RuntimeExtern, Func as RuntimeFunc,
+    AsContextMut, CallHook, Caller as RuntimeCaller, Extern as RuntimeExtern, Func as RuntimeFunc,
     FuncType, Global as RuntimeGlobal, Imports, Instance as RuntimeInstance,
     Module as RuntimeModule, RuntimeError, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
     instantiate, substrate_failure,
@@ -103,8 +108,13 @@ impl ContextSlots {
             loaded: global(store, "loaded")?,
             owner: None,
         });
-        let hook: EntryHook = Arc::new(move |context| write_back(&tables, &cache, context));
-        store.internal().runtime_mut().set_entry_hook(Some(hook));
+        store
+            .internal()
+            .runtime_mut()
+            .call_hook(move |context, kind| match kind {
+                CallHook::ReturningFromHost => Ok(()),
+                _ => write_back(&tables, &cache, context),
+            });
         let slots = Self { instance };
         store.internal().install_context_slots(slots.clone());
         Ok(slots)
@@ -208,8 +218,10 @@ fn encode() -> Vec<u8> {
 /// globals and set the loaded flag.
 ///
 /// It is a plain runtime-layer function, not one of the polyfill's host
-/// functions, because those run the entry hook around their body, and
-/// the hook would clear the flag `load` sets.
+/// functions, because no host function of the component runs. The store's
+/// call hook runs around it as around every host function: it writes back
+/// when `load` is called, with nothing loaded, and leaves the slots `load`
+/// loaded when it returns.
 fn load_func<T: 'static>(
     store: &mut StoreContext<'_, T>,
     tables: Arc<Mutex<HandleTables>>,
@@ -236,15 +248,15 @@ fn load_func<T: 'static>(
     .map_err(substrate_failure)
 }
 
-/// The store's entry hook: write the loaded slots back to the record of
-/// the thread they were loaded for, and clear the loaded flag.
+/// The store's call hook: write the loaded slots back to the record of the
+/// thread they were loaded for, and clear the loaded flag.
 ///
 /// A thread that ended since its slots were loaded has no record, and
 /// its slots end with it.
-fn write_back(
+fn write_back<T: 'static>(
     tables: &Mutex<HandleTables>,
     cache: &SharedCache,
-    mut context: RuntimeContextMut<'_, ()>,
+    mut context: RuntimeContextMut<'_, StoreData<T>>,
 ) -> core::result::Result<(), RuntimeError> {
     let mut cache = lock(cache);
     let Some(cache) = cache.as_mut() else {

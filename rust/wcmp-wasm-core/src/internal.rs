@@ -14,7 +14,7 @@
 use crate::contract::{Backend, BackendModule, BackendStore};
 use crate::engine::Engine;
 use crate::error::Result;
-use crate::store::{EntryHook, StoreContextMut, StoreId};
+use crate::store::{CallHook, StoreId};
 
 /// What the crate reaches on an [`Engine`].
 pub trait EngineInternal {
@@ -45,12 +45,16 @@ pub trait StoreDataInternal: Sized {
     /// The host data, mutably.
     fn user_mut<T: 'static>(&mut self) -> &mut T;
 
-    /// The hook the engine calls around each entry of guest code.
-    fn entry_hook(&self) -> Option<EntryHook>;
+    /// Take the store's call hook out, so that it can run with the store.
+    fn take_call_hook(&mut self) -> Option<ErasedCallHook>;
 
-    /// Set the hook the engine calls around each entry of guest code.
-    fn set_entry_hook(&mut self, hook: Option<EntryHook>);
+    /// Set the store's call hook.
+    fn set_call_hook(&mut self, hook: ErasedCallHook);
 }
+
+/// A store's call hook, with the type of the host's data erased.
+pub type ErasedCallHook =
+    Box<dyn FnMut(&mut dyn BackendStore, CallHook) -> Result<()> + Send + Sync>;
 
 /// What the crate reaches on a [`StoreContext`](crate::StoreContext).
 pub trait StoreContextInternal<'a> {
@@ -76,16 +80,24 @@ pub trait CallerInternal<'a> {
     fn from_backend(store: &'a mut dyn BackendStore) -> Self;
 }
 
-/// Call the entry hook of `store`, if it has one.
+/// Call the call hook of `store` with the crossing `kind`, if the store has
+/// a hook.
 ///
-/// A store whose backend refuses its data, as the browser's does for a
-/// store the host forgot, runs no hook: the call that follows meets the
-/// refusal, with the error the backend gives it.
-pub fn run_entry_hook(store: &mut dyn BackendStore) -> Result<()> {
-    match store.try_data().and_then(|data| data.entry_hook()) {
-        Some(hook) => {
-            hook(<StoreContextMut<'_, ()> as StoreContextMutInternal>::from_backend(store))
-        }
-        None => Ok(()),
+/// The hook is out of the store while it runs, as in Wasmtime, so a
+/// crossing the hook itself makes does not call it again. A store whose
+/// backend refuses its data, as the browser's does for a store the host
+/// forgot, calls no hook: the call that follows meets the refusal, with the
+/// error the backend gives it.
+pub fn call_hook(store: &mut dyn BackendStore, kind: CallHook) -> Result<()> {
+    let Some(mut hook) = store
+        .try_data_mut()
+        .and_then(StoreDataInternal::take_call_hook)
+    else {
+        return Ok(());
+    };
+    let outcome = hook(&mut *store, kind);
+    if let Some(data) = store.try_data_mut() {
+        data.set_call_hook(hook);
     }
+    outcome
 }
