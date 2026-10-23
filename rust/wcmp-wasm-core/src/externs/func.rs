@@ -13,6 +13,7 @@ use crate::capability::Capability;
 use crate::checks;
 use crate::contract::HostFunc;
 use crate::error::Result;
+use crate::internal::run_entry_hook;
 use crate::internal::{CallerInternal, StoreContextInternal, StoreContextMutInternal};
 use crate::store::{AsContext, AsContextMut, Caller};
 use crate::types::FuncType;
@@ -117,7 +118,10 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_call(*self, params, results)
+        run_entry_hook(&mut *backend)?;
+        let outcome = backend.func_call(*self, params, results);
+        run_entry_hook(&mut *backend)?;
+        outcome
     }
 
     /// Calls the function as a resumable call.
@@ -158,7 +162,10 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_call_resumable(*self, params, results).await
+        run_entry_hook(&mut *backend)?;
+        let outcome = backend.func_call_resumable(*self, params, results).await;
+        run_entry_hook(&mut *backend)?;
+        outcome
     }
 
     /// Starts the function as a resumable call, and answers the call as a
@@ -187,6 +194,9 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_start_resumable(*self, params)
+        run_entry_hook(&mut *backend)?;
+        let outcome = backend.func_start_resumable(*self, params);
+        run_entry_hook(&mut *backend)?;
+        outcome
     }
 }

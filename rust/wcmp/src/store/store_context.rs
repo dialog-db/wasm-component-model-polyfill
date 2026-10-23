@@ -22,9 +22,9 @@ use crate::concurrency::{
     WaitableSetId, YieldWake,
 };
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause, TaskCause};
-use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
 use crate::executor::release_subtask;
+use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::internal::{AccessorInternal, ErrorInternal, ResourceAnyInternal};
 use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
@@ -1641,6 +1641,17 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal.
     fn provider(&self) -> Option<StoreProvider> {
         self.store_data().provider().cloned()
+    }
+
+    /// The store's context module, once a component needed it.
+    /// Workspace-internal.
+    fn context_slots(&self) -> Option<ContextSlots> {
+        self.store_data().context_slots().cloned()
+    }
+
+    /// Install the store's context module. Workspace-internal.
+    fn install_context_slots(&mut self, slots: ContextSlots) {
+        self.store_data_mut().install_context_slots(slots);
     }
 
     /// Run the store's flight, the start or the resume of a thread a

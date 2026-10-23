@@ -31,8 +31,8 @@ use crate::concurrency::{
     Plan, ResultChannel, Scheduler, StoreProvider, SubtaskId, TaskId, ThreadId, WaitableSetId,
 };
 use crate::error::{Result, SchedulerCause};
-use crate::executor::ResourceDestructor;
 use crate::executor::ir::CanonOptions;
+use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
     Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
@@ -355,6 +355,16 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// The provider the store keeps, when the engine selected one.
     pub fn provider(self) -> Option<StoreProvider> {
         self.context.provider()
+    }
+
+    /// The store's context module, once a component needed it.
+    pub fn context_slots(self) -> Option<ContextSlots> {
+        self.context.context_slots()
+    }
+
+    /// Install the store's context module.
+    pub fn install_context_slots(self, slots: ContextSlots) {
+        self.context.install_context_slots(slots);
     }
 
     /// Run the store's flight, the start or the resume of a thread a

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use crate::boundary::BoundarySink;
 use crate::concurrency::{InstanceId, Scheduler, StoreProvider, TurnGuard};
 use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCause};
-use crate::executor::ResourceDestructor;
+use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::internal::{ErrorInternal, ResourceAnyInternal, StoreIdInternal};
 use crate::resource::{HandleTables, ResourceAny, host_reason};
 use crate::runtime_layer::HostFrames;
@@ -80,6 +80,9 @@ pub struct StoreData<T: 'static> {
     /// The store's boundary counters, which hold nothing without the
     /// `boundary-counters` feature.
     boundary: BoundarySink,
+    /// The context module whose exports are the `context.get` and
+    /// `context.set` built-ins, once a component needed them.
+    context_slots: Option<ContextSlots>,
 }
 
 /// The copy budget a crossing starts with unless the host sets
@@ -107,6 +110,7 @@ impl<T: 'static> StoreData<T> {
             destructors: HashMap::new(),
             scheduler,
             provider: None,
+            context_slots: None,
             dropped: false,
             poisoned: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
@@ -205,6 +209,17 @@ impl<T: 'static> StoreData<T> {
     /// Install the provider the engine selected. Workspace-internal.
     pub fn install_provider(&mut self, provider: StoreProvider) {
         self.provider = Some(provider);
+    }
+
+    /// Install the store's context module. Workspace-internal.
+    pub fn install_context_slots(&mut self, slots: ContextSlots) {
+        self.context_slots = Some(slots);
+    }
+
+    /// The store's context module, once a component needed it.
+    /// Workspace-internal.
+    pub fn context_slots(&self) -> Option<&ContextSlots> {
+        self.context_slots.as_ref()
     }
 
     /// The provider that fills the store's suspend capability, or

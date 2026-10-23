@@ -11,8 +11,10 @@ use core::marker::PhantomData;
 
 use crate::contract::BackendStore;
 use crate::engine::Engine;
-use crate::internal::{StoreContextInternal, StoreContextMutInternal, StoreDataInternal};
-use crate::store::{AsContext, AsContextMut, StoreContext};
+use crate::internal::{
+    StoreContextInternal, StoreContextMutInternal, StoreDataInternal, run_entry_hook,
+};
+use crate::store::{AsContext, AsContextMut, EntryHook, StoreContext};
 
 /// Write access to a store whose host data is a `T`.
 pub struct StoreContextMut<'a, T> {
@@ -50,6 +52,22 @@ impl<T: 'static> StoreContextMut<'_, T> {
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
         self.store.engine()
+    }
+
+    /// Set the hook the engine calls with the store just before guest code
+    /// runs and just after it stops. See [`EntryHook`](crate::EntryHook).
+    pub fn set_entry_hook(&mut self, hook: Option<EntryHook>) {
+        self.store.data_mut().set_entry_hook(hook);
+    }
+
+    /// Call the store's entry hook now, if it has one, as the engine does
+    /// around each entry of guest code. A host function that changes which
+    /// thread runs, or reads what the hook saves, calls it first.
+    ///
+    /// An error from the hook is [`Error::Backend`](crate::Error::Backend)
+    /// or an error of the runtime layer it reached.
+    pub fn run_entry_hook(&mut self) -> crate::Result<()> {
+        run_entry_hook(&mut *self.store)
     }
 }
 

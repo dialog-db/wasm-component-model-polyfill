@@ -113,6 +113,8 @@ async fn it_raises_each_core_trap_the_capabilities_permit() {
 
 wcmp_wasm_core_contract::contract_tests!(
     @each Web::new;
+    it_calls_the_entry_hook_around_a_call_into_a_guest,
+    it_fails_a_call_with_the_error_of_its_entry_hook,
     it_compiles_a_module_asynchronously_and_synchronously,
     it_refuses_bytes_that_are_not_a_module_with_a_compile_error,
     it_describes_the_imports_and_exports_of_a_module,

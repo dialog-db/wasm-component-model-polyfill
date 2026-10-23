@@ -14,6 +14,7 @@ use crate::checks;
 use crate::contract::BackendSuspendedCall;
 use crate::error::Result;
 use crate::internal::StoreContextMutInternal;
+use crate::internal::run_entry_hook;
 use crate::store::{AsContextMut, StoreId};
 use crate::values::Val;
 
@@ -83,9 +84,12 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        backend
+        run_entry_hook(&mut *backend)?;
+        let outcome = backend
             .resume_call(self.inner, import_results, results)
-            .await
+            .await;
+        run_entry_hook(&mut *backend)?;
+        outcome
     }
 
     /// Resumes the call with `import_results`, the results of the
@@ -117,7 +121,10 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        backend.start_resume(self.inner, import_results)
+        run_entry_hook(&mut *backend)?;
+        let outcome = backend.start_resume(self.inner, import_results);
+        run_entry_hook(&mut *backend)?;
+        outcome
     }
 }
 

@@ -13,6 +13,7 @@ use crate::capability::Capability;
 use crate::contract::BackendResumption;
 use crate::error::{Error, Result};
 use crate::internal::StoreContextMutInternal;
+use crate::internal::run_entry_hook;
 use crate::store::{AsContextMut, StoreId};
 use crate::values::Val;
 
@@ -86,6 +87,7 @@ impl Resumption {
         })?;
         let outcome = backend.stop_resumption(inner.as_mut(), results).await;
         self.inner = None;
+        run_entry_hook(&mut *backend)?;
         outcome
     }
 }

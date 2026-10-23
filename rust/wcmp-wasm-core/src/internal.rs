@@ -13,7 +13,8 @@
 
 use crate::contract::{Backend, BackendModule, BackendStore};
 use crate::engine::Engine;
-use crate::store::StoreId;
+use crate::error::Result;
+use crate::store::{EntryHook, StoreContextMut, StoreId};
 
 /// What the crate reaches on an [`Engine`].
 pub trait EngineInternal {
@@ -43,6 +44,12 @@ pub trait StoreDataInternal: Sized {
 
     /// The host data, mutably.
     fn user_mut<T: 'static>(&mut self) -> &mut T;
+
+    /// The hook the engine calls around each entry of guest code.
+    fn entry_hook(&self) -> Option<EntryHook>;
+
+    /// Set the hook the engine calls around each entry of guest code.
+    fn set_entry_hook(&mut self, hook: Option<EntryHook>);
 }
 
 /// What the crate reaches on a [`StoreContext`](crate::StoreContext).
@@ -67,4 +74,18 @@ pub trait StoreContextMutInternal<'a> {
 pub trait CallerInternal<'a> {
     /// The caller over the store `store`, which a guest runs in.
     fn from_backend(store: &'a mut dyn BackendStore) -> Self;
+}
+
+/// Call the entry hook of `store`, if it has one.
+///
+/// A store whose backend refuses its data, as the browser's does for a
+/// store the host forgot, runs no hook: the call that follows meets the
+/// refusal, with the error the backend gives it.
+pub fn run_entry_hook(store: &mut dyn BackendStore) -> Result<()> {
+    match store.try_data().and_then(|data| data.entry_hook()) {
+        Some(hook) => {
+            hook(<StoreContextMut<'_, ()> as StoreContextMutInternal>::from_backend(store))
+        }
+        None => Ok(()),
+    }
 }
