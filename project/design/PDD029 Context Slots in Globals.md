@@ -58,21 +58,25 @@ loaded flag and records that thread as the owner. With no task on the stack,
 ## Writing Back
 
 The current thread changes only while the host runs. So the polyfill writes back
-each time control can pass to the host:
+each time control can pass to the host. The store's call hook does this. The
+engine calls the hook at each crossing between the host and guest code, and
+tells the hook which crossing it is, as [PDD025] states.
 
-- The store's entry hook writes back. [PDD025] calls it around each entry of
-  guest code.
-- Each host function of the polyfill writes back before its body runs and after
-  its body returns.
+The hook writes back at each crossing but one: the return of a host function to
+the guest that called it. The call of that function wrote back already. So when
+the function returns, only the slots that `load` loaded for the guest are in the
+globals, and they stay there.
 
-`load` itself does not write back, because a write back clears the flag it sets.
+`load` is a host function too, so the hook runs around it. When the guest calls
+`load`, the hook writes back, and nothing is loaded then. When `load` returns,
+the hook keeps the slots that `load` loaded.
 
 After a write back, the next thread that reads or writes a slot loads its own. A
 thread that ended before a write back has no record, and its slots end with it.
 
 ## Revisions to Earlier Designs
 
-[PDD025] is revised in place. A store holds an entry hook.
+[PDD025] is revised in place. A store holds a call hook.
 
 ## User Stories
 
@@ -87,6 +91,10 @@ of each component sees only its own slots.
 A thread of each of two components in one store starts with zero slots. A test
 instantiates one component twice in a store. Its export answers what slot 0 held
 and sets it. Each call answers zero, whichever component ran before.
+
+A host function reads what a guest wrote. A guest writes slot 0 and calls the
+host. The host reads the value from the record of the current thread. After the
+call returns, the guest finds its value in slot 0.
 
 The polyfill loads and writes back the slots of the current thread. A test
 pushes two tasks. Each task finds zero slots and writes its own. After the inner

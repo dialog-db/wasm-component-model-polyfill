@@ -11,8 +11,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `context.get` and `context.set` no longer call the host for a slot that is
   loaded. Each store keeps the current thread's slots in the globals of a
-  generated module, and writes them back to the thread's record around each
-  entry of guest code and each host function. A Rust component built for
+  generated module, and writes them back to the thread's record at each crossing
+  from guest code to the host. A Rust component built for
   `wasm32-wasip3` reads its stack pointer this way around most of its
   functions. On one such kernel, a call-heavy workload on Wasmtime went from
   1414 ms to 187 ms. In
@@ -20,9 +20,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `wcmp-wasm-core` stores hold an entry hook, `EntryHook`, that the engine calls
-  around each entry of guest code. `StoreContextMut::set_entry_hook` installs
-  it, and `StoreContextMut::run_entry_hook` runs it.
+- `wcmp-wasm-core` stores take a call hook, as Wasmtime stores do.
+  `Store::call_hook` and `StoreContextMut::call_hook` set it, and the engine
+  calls it with a `CallHook` at each crossing between the host and guest code.
 
 ## [0.1.1] - 2026-10-21
 

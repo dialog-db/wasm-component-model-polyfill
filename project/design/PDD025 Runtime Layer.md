@@ -408,17 +408,36 @@ of a stack and a suspension.
 A call of a guest function is untyped. The host passes the arguments as a slice
 of values, and a slice for the results.
 
-## The Entry Hook
+## The Call Hook
 
-A store can hold one entry hook. The hook is a closure that the engine calls
-with the store just before guest code runs and just after it stops. The engine
-calls it around a call, around a resumable call and its resumption, and after
-the stop of a resumption. A call that suspends or traps also counts as a stop.
+A store can hold one call hook, as a Wasmtime store can. The hook is a closure
+that the engine calls with the store at each crossing between the host and guest
+code. The engine tells the hook which crossing it is:
+
+- The host calls guest code. This is a call, the start of a resumable call, a
+  resumption, a wait for a resumable call to stop, or an instantiation, which
+  runs the start function of the module.
+- Guest code returns to the host. This crossing follows each of the above, also
+  when the guest traps or suspends.
+- Guest code calls a host function.
+- A host function returns to guest code. A suspending host function that answers
+  "not yet" does not return. The call suspends, and the guest code returns to
+  the host.
+
+The engine makes each crossing itself, so no host function can skip the hook.
+
+An error from the hook replaces what follows it, as in Wasmtime. Before guest
+code runs, the call fails with the error, and the guest does not run. Before the
+body of a host function runs, the body does not run, and the guest traps with
+the error. After guest code or a host function stops, the error replaces its
+outcome.
+
+The hook is out of the store while it runs. So a crossing that the hook itself
+causes does not call the hook.
 
 The hook lets the polyfill keep state that guest code reads with no host call.
-The polyfill saves and restores that state in the hook, because the state
-changes only while the host runs. An error from the hook is the error of the
-call that the hook runs around. A host function can also run the hook itself.
+The polyfill saves that state in the hook before the host runs, because the
+state changes only while the host runs.
 
 ## Host Suspension
 
@@ -777,11 +796,14 @@ A tag crosses the boundary. A test exports a tag from one instance and imports
 it into another. The host reads the tag's parameter types. A guest throws with
 the tag in one instance and catches it in the other.
 
-The entry hook runs around each call into a guest. A test counts the runs of a
-hook around one call and finds two. It removes the hook and finds no more runs.
-A hook that fails before the guest runs fails the call, and the guest does not
-run. A hook that fails after the guest returned fails the call too. The test
-runs on every backend.
+The call hook runs at each crossing. A test sets a hook and instantiates a
+module, and the hook sees a call of guest code and its return. The guest calls a
+host function, and the hook sees four crossings in order. A guest that traps
+returns to the host too. A hook that fails at each of the four crossings fails
+the call, and the host function runs only where the hook failed after the call
+of the host function. A resumable call that suspends returns to the host, and
+its suspending function does not return. Each resumption has its own crossings.
+The tests run on every backend.
 
 A module above the synchronous limit of the browser compiles and instantiates in
 Chromium. The test uses a module above 8 MB and runs in the web lane.
