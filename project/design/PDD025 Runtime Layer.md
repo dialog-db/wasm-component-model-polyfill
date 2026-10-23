@@ -408,6 +408,18 @@ of a stack and a suspension.
 A call of a guest function is untyped. The host passes the arguments as a slice
 of values, and a slice for the results.
 
+## The Entry Hook
+
+A store can hold one entry hook. The hook is a closure that the engine calls
+with the store just before guest code runs and just after it stops. The engine
+calls it around a call, around a resumable call and its resumption, and after
+the stop of a resumption. A call that suspends or traps also counts as a stop.
+
+The hook lets the polyfill keep state that guest code reads with no host call.
+The polyfill saves and restores that state in the hook, because the state
+changes only while the host runs. An error from the hook is the error of the
+call that the hook runs around. A host function can also run the hook itself.
+
 ## Host Suspension
 
 Host suspension is the one primitive that the runtime layer gives for a call
@@ -764,6 +776,12 @@ on every backend whose engine accepts it.
 A tag crosses the boundary. A test exports a tag from one instance and imports
 it into another. The host reads the tag's parameter types. A guest throws with
 the tag in one instance and catches it in the other.
+
+The entry hook runs around each call into a guest. A test counts the runs of a
+hook around one call and finds two. It removes the hook and finds no more runs.
+A hook that fails before the guest runs fails the call, and the guest does not
+run. A hook that fails after the guest returned fails the call too. The test
+runs on every backend.
 
 A module above the synchronous limit of the browser compiles and instantiates in
 Chromium. The test uses a module above 8 MB and runs in the web lane.
