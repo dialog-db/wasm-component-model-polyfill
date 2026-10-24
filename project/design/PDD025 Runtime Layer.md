@@ -415,8 +415,8 @@ that the engine calls with the store at each crossing between the host and guest
 code. The engine tells the hook which crossing it is:
 
 - The host calls guest code. This is a call, the start of a resumable call, a
-  resumption, a wait for a resumable call to stop, or an instantiation, which
-  runs the start function of the module.
+  resumption, or a wait for a resumable call to stop. Each instantiation is a
+  call of guest code too, because the module can have a start function.
 - Guest code returns to the host. This crossing follows each of the above, also
   when the guest traps or suspends.
 - Guest code calls a host function.
@@ -426,14 +426,23 @@ code. The engine tells the hook which crossing it is:
 
 The engine makes each crossing itself, so no host function can skip the hook.
 
+Two crossings do not pair as they do in Wasmtime:
+
+- When the host drops the wait of a call before the call stops, the guest code
+  does not return to the host.
+- The engine calls guest code around each instantiation, because it does not
+  know if the module has a start function. Wasmtime makes these crossings only
+  for a module that has one.
+
 An error from the hook replaces what follows it, as in Wasmtime. Before guest
 code runs, the call fails with the error, and the guest does not run. Before the
 body of a host function runs, the body does not run, and the guest traps with
 the error. After guest code or a host function stops, the error replaces its
-outcome.
+outcome. A suspended call that the hook does not let resume is lost. A
+resumption whose wait the hook refuses keeps its call.
 
 The hook is out of the store while it runs. So a crossing that the hook itself
-causes does not call the hook.
+causes does not call the hook. A hook that the hook sets replaces it.
 
 The hook lets the polyfill keep state that guest code reads with no host call.
 The polyfill saves that state in the hook before the host runs, because the
@@ -798,12 +807,13 @@ the tag in one instance and catches it in the other.
 
 The call hook runs at each crossing. A test sets a hook and instantiates a
 module, and the hook sees a call of guest code and its return. The guest calls a
-host function, and the hook sees four crossings in order. A guest that traps
-returns to the host too. A hook that fails at each of the four crossings fails
-the call, and the host function runs only where the hook failed after the call
-of the host function. A resumable call that suspends returns to the host, and
-its suspending function does not return. Each resumption has its own crossings.
-The tests run on every backend.
+host function, and the hook sees four crossings in order. A host function that
+calls back into the guest nests four more crossings. A guest that traps returns
+to the host too. A hook that the hook sets runs from the next crossing. A hook
+that fails at each of the four crossings fails the call, and the host function
+runs only where the hook failed after the call of the host function. A resumable
+call that suspends returns to the host, and its suspending function does not
+return. Each resumption has its own crossings. The tests run on every backend.
 
 A module above the synchronous limit of the browser compiles and instantiates in
 Chromium. The test uses a module above 8 MB and runs in the web lane.

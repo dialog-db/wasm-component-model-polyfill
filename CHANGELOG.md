@@ -11,11 +11,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `context.get` and `context.set` no longer call the host for a slot that is
   loaded. Each store keeps the current thread's slots in the globals of a
-  generated module, and writes them back to the thread's record at each crossing
-  from guest code to the host. A Rust component built for
+  generated module, and writes them back to the thread's record at the crossings
+  between guest code and the host. A Rust component built for
   `wasm32-wasip3` reads its stack pointer this way around most of its
   functions. On one such kernel, a call-heavy workload on Wasmtime went from
-  1414 ms to 187 ms. In
+  1414 ms to 187 ms. By Irakli Gozalishvili in
   [#3](https://github.com/dialog-db/wasm-component-model-polyfill/pull/3).
 
 ### Added
