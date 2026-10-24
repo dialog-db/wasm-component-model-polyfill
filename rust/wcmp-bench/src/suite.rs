@@ -29,7 +29,7 @@ use crate::run::Run;
 /// Every benchmark of the suite, in the order a report lists them:
 /// the call floor first, then the canonical ABI's heap values, the
 /// typed path's type check, then handles, composition, host calls in
-/// flight, and parsing.
+/// flight, a shadow stack in a context slot, and parsing.
 pub fn benchmarks() -> Vec<Benchmark> {
     [
         u32_call(),
@@ -51,6 +51,10 @@ pub fn benchmarks() -> Vec<Benchmark> {
         composition_call(),
         host_calls_in_flight(),
         yields(),
+        shadow_stack_calls(),
+        global_stack_calls(),
+        shadow_stack_host_calls(),
+        global_stack_host_calls(),
         component_new(),
     ]
     .into_iter()
@@ -572,6 +576,63 @@ async fn yields(run: &mut Run) -> Result<()> {
         spin.call(&mut store, &arguments).await?;
     }
     Ok(())
+}
+
+/// Run the case's number of frames of [`guests::SHADOW_STACK`] through
+/// its export `name` on each iteration, with `tick` linked as a host
+/// function that does nothing.
+async fn shadow_stack(run: &mut Run, name: &str) -> Result<()> {
+    let frames = u32::try_from(run.case().number()).unwrap_or(u32::MAX);
+    let engine = engine(run)?;
+    let component = Component::new(&engine, guests::SHADOW_STACK).await?;
+    let mut linker: Linker<()> = Linker::new(&engine);
+    linker
+        .root()
+        .func_wrap("tick", |_: HostCall<'_, ()>, (): ()| Ok(()))?;
+    let mut store: Store<()> = Store::new(&engine, ())?;
+    let instance = linker.instantiate(&mut store, &component).await?;
+    let export = export(&instance, name)?.typed::<(u32,), (u32,)>()?;
+    run.moves_elements(u64::from(frames));
+    while run.iterate() {
+        export.call(&mut store, (frames,)).await?;
+    }
+    Ok(())
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `shadow-stack` component: `slot-calls: func(n: u32) -> u32`, whose core function runs `n` frames that each move a stack pointer in context slot 0 with one `context.get` and two `context.set`s",
+    payload = "one u32 in and out through `TypedFunc`, and the case's number of frames inside the guest: the cost of a `wasm32-wasip3` stack pointer",
+    cases = [1, 1000]
+)]
+async fn shadow_stack_calls(run: &mut Run) -> Result<()> {
+    shadow_stack(run, "slot-calls").await
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `shadow-stack` component: `global-calls: func(n: u32) -> u32`, whose core function runs the frames of `slot-calls` with the stack pointer in a core global",
+    payload = "one u32 in and out through `TypedFunc`, and the case's number of frames inside the guest: the control for `shadow-stack-calls`",
+    cases = [1, 1000]
+)]
+async fn global_stack_calls(run: &mut Run) -> Result<()> {
+    shadow_stack(run, "global-calls").await
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `shadow-stack` component: `slot-host-calls: func(n: u32) -> u32`, whose frames each keep the stack pointer in context slot 0 and call the host import `tick: func()`",
+    payload = "one u32 in and out through `TypedFunc`, and the case's number of frames inside the guest, each with one host call that does nothing",
+    cases = [1, 1000]
+)]
+async fn shadow_stack_host_calls(run: &mut Run) -> Result<()> {
+    shadow_stack(run, "slot-host-calls").await
+}
+
+#[wcmp_macros::bench(
+    guest = "the inline `shadow-stack` component: `global-host-calls: func(n: u32) -> u32`, whose frames each keep the stack pointer in a core global and call the host import `tick: func()`",
+    payload = "one u32 in and out through `TypedFunc`, and the case's number of frames inside the guest, each with one host call: the control for `shadow-stack-host-calls`",
+    cases = [1, 1000]
+)]
+async fn global_stack_host_calls(run: &mut Run) -> Result<()> {
+    shadow_stack(run, "global-host-calls").await
 }
 
 /// The host side of [`host_calls_in_flight`]: the calls of one

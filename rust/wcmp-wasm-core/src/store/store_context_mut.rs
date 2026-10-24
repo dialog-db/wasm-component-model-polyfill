@@ -11,8 +11,9 @@ use core::marker::PhantomData;
 
 use crate::contract::BackendStore;
 use crate::engine::Engine;
+use crate::error::Result;
 use crate::internal::{StoreContextInternal, StoreContextMutInternal, StoreDataInternal};
-use crate::store::{AsContext, AsContextMut, StoreContext};
+use crate::store::{AsContext, AsContextMut, CallHook, StoreContext};
 
 /// Write access to a store whose host data is a `T`.
 pub struct StoreContextMut<'a, T> {
@@ -50,6 +51,20 @@ impl<T: 'static> StoreContextMut<'_, T> {
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
         self.store.engine()
+    }
+
+    /// Set the hook the engine calls with the store at each crossing
+    /// between the host and guest code. See
+    /// [`Store::call_hook`](crate::Store::call_hook).
+    pub fn call_hook(
+        &mut self,
+        mut hook: impl FnMut(StoreContextMut<'_, T>, CallHook) -> Result<()> + Send + Sync + 'static,
+    ) {
+        self.store
+            .data_mut()
+            .set_call_hook(Box::new(move |store, kind| {
+                hook(StoreContextMut::from_backend(store), kind)
+            }));
     }
 }
 

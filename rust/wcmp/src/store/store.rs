@@ -242,6 +242,9 @@ impl<T: 'static> Store<T> {
             RuntimeStore::new(engine.inner(), StoreData::new(data)).map_err(substrate_failure)?;
         let id = inner.data().id();
         let mut store = Self { inner, id };
+        store
+            .store_data_mut()
+            .install_generated_modules(engine.generated_modules().clone());
         // The provider the engine selected is instantiated in the
         // store once, here, and stays in it for the store's life.
         let provider = match engine.suspend_provider() {
@@ -249,11 +252,14 @@ impl<T: 'static> Store<T> {
                 StackSwitchingProvider::instantiate(
                     &mut store.context(),
                     engine.inner(),
-                    engine.switch_modules(),
+                    engine.generated_modules(),
                 )?,
             )),
             SuspendProviderKind::HostSuspension => Some(StoreProvider::HostSuspension(
-                HostSuspensionProvider::instantiate(&mut store.context(), engine.switch_modules())?,
+                HostSuspensionProvider::instantiate(
+                    &mut store.context(),
+                    engine.generated_modules(),
+                )?,
             )),
             _ => None,
         };

@@ -33,6 +33,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, InstantiationError};
 
@@ -41,10 +42,10 @@ use crate::error::{Error, InstantiationError};
 pub use wcmp_wasm_core::MemoryType;
 pub use wcmp_wasm_core::backend::Backend;
 pub use wcmp_wasm_core::{
-    AsContextMut, Caller, Capabilities, Capability, Engine, Error as RuntimeError, Extern,
-    ExternType, Func, FuncType, Global, GlobalType, HeapType, Instance, MaybeSend, Memory, Module,
-    Mutability, ResumableCall, Resumption, Store, StoreContextMut, SuspendedCall, Table, TrapKind,
-    Val, ValType,
+    AsContextMut, CallHook, Caller, Capabilities, Capability, Engine, Error as RuntimeError,
+    Extern, ExternType, Func, FuncType, Global, GlobalType, HeapType, Instance, MaybeSend, Memory,
+    Module, Mutability, ResumableCall, Resumption, Store, StoreContextMut, SuspendedCall, Table,
+    TrapKind, Val, ValType,
 };
 
 /// The choice of the tests' backend, which the crate's integration
@@ -301,6 +302,11 @@ pub fn host_func<T: HostFrames + 'static>(
 /// exactly where the value is.
 #[derive(Clone, Debug)]
 pub struct Shared<V>(V);
+
+/// The modules the polyfill generates for the stores of one engine, the
+/// switch modules and the context module, compiled once each, by their
+/// bytes.
+pub type GeneratedModules = Shared<Arc<Mutex<HashMap<Vec<u8>, Module>>>>;
 
 impl<V> Shared<V> {
     /// Hold `value`.

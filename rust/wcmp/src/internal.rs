@@ -106,13 +106,10 @@ pub trait EngineInternal {
     /// Borrow the wrapped runtime-layer engine.
     fn inner(&self) -> &crate::runtime_layer::Engine;
 
-    /// The switch modules the stores of the engine instantiate,
-    /// compiled once each, by their bytes.
-    fn switch_modules(
-        &self,
-    ) -> &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<Vec<u8>, crate::runtime_layer::Module>>,
-    >;
+    /// The modules the polyfill generates for the stores of the engine,
+    /// the switch modules and the context module, compiled once each, by
+    /// their bytes.
+    fn generated_modules(&self) -> &crate::runtime_layer::GeneratedModules;
 }
 
 /// The crate-internal face of [`EngineConfig`](crate::EngineConfig).

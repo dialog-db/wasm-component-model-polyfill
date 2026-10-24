@@ -168,9 +168,12 @@ fn setup() -> Scenario {
     )
     .expect("the host function");
 
-    let provider =
-        StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
-            .expect("the engine instantiates the base switch module");
+    let provider = StackSwitchingProvider::instantiate(
+        &mut context,
+        engine.inner(),
+        engine.generated_modules(),
+    )
+    .expect("the engine instantiates the base switch module");
     let shim = provider
         .shims(&mut context, &[(i32_to_i32(), try_part, finish_part)])
         .expect("the engine instantiates the extension with the shim")
@@ -513,9 +516,12 @@ fn it_runs_entries_with_no_results_and_with_several() {
     )
     .expect("the host function");
 
-    let provider =
-        StackSwitchingProvider::instantiate(&mut context, engine.inner(), engine.switch_modules())
-            .expect("the engine instantiates the base switch module");
+    let provider = StackSwitchingProvider::instantiate(
+        &mut context,
+        engine.inner(),
+        engine.generated_modules(),
+    )
+    .expect("the engine instantiates the base switch module");
     let shims = provider
         .shims(
             &mut context,

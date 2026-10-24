@@ -65,7 +65,7 @@ use crate::abi::options::BoundaryOptions;
 use crate::abi::runtime_state::AbiRuntimeState;
 use crate::abi::transcode::transcode;
 use crate::abi::{lift_readable_end, lower_readable_end};
-use crate::concurrency::{InstanceId, Scope, ThreadId};
+use crate::concurrency::{InstanceId, Scope};
 use crate::error::{Error, Result, TaskCause};
 use crate::executor::ir::{CoreParameter, CoreSignature, EndTableSpec, TranscodeOp};
 use crate::internal::ErrorInternal;
@@ -74,78 +74,6 @@ use crate::runtime_layer::host_func;
 use crate::runtime_layer::{Func as RuntimeFunc, FuncType, Val as RuntimeVal, ValType as CoreType};
 use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
-
-/// Build a `context.get` intrinsic for `slot`. It reads the slot of
-/// the current thread: the thread of the task on top of the store's
-/// stack of current scopes.
-pub fn build_context_get<T: 'static>(
-    store: &mut StoreContext<'_, T>,
-    slot: usize,
-    signature: &CoreSignature,
-) -> crate::error::Result<RuntimeFunc> {
-    let tables = store.internal().tables_handle();
-    host_func(
-        store.internal().runtime_mut(),
-        core_func_type(signature),
-        move |_store_ctx, _args, results| {
-            results[0] = RuntimeVal::I32(context_get(&tables, slot)?);
-            Ok(())
-        },
-    )
-}
-
-/// Read slot `slot` of the current thread, which is what a
-/// `context.get` intrinsic does.
-fn context_get(tables: &Arc<Mutex<HandleTables>>, slot: usize) -> anyhow::Result<i32> {
-    let guard = lock_tables(tables)?;
-    let thread = current_thread(&guard)?;
-    let value = *guard
-        .tasks
-        .thread(thread)
-        .and_then(|record| record.context.get(slot))
-        .ok_or_else(|| Error::internal("context slot index out of range"))?;
-    Ok(value)
-}
-
-/// Build a `context.set` intrinsic for `slot`. See
-/// [`build_context_get`]: it writes the current thread's slot.
-pub fn build_context_set<T: 'static>(
-    store: &mut StoreContext<'_, T>,
-    slot: usize,
-    signature: &CoreSignature,
-) -> crate::error::Result<RuntimeFunc> {
-    let tables = store.internal().tables_handle();
-    host_func(
-        store.internal().runtime_mut(),
-        core_func_type(signature),
-        move |_store_ctx, args, _results| {
-            let value = arg_u32(args, 0)? as i32;
-            context_set(&tables, slot, value)
-        },
-    )
-}
-
-/// Write `value` into slot `slot` of the current thread, which is
-/// what a `context.set` intrinsic does.
-fn context_set(tables: &Arc<Mutex<HandleTables>>, slot: usize, value: i32) -> anyhow::Result<()> {
-    let mut guard = lock_tables(tables)?;
-    let thread = current_thread(&guard)?;
-    let target = guard
-        .tasks
-        .thread_mut(thread)
-        .and_then(|record| record.context.get_mut(slot))
-        .ok_or_else(|| Error::internal("context slot index out of range"))?;
-    *target = value;
-    Ok(())
-}
-
-/// The thread whose context slots the context intrinsics address.
-fn current_thread(guard: &HandleTables) -> anyhow::Result<ThreadId> {
-    guard
-        .tasks
-        .current_thread()
-        .ok_or_else(|| anyhow!("an adapter read or wrote a context slot with no task on the stack"))
-}
 
 /// The runtime-layer function type for a [`CoreSignature`].
 pub fn core_func_type(signature: &CoreSignature) -> FuncType {
@@ -922,62 +850,6 @@ mod tests {
                 .instance(callee)
                 .is_some_and(|record| !record.may_not_suspend),
             "the outer call restores the value the instance started with"
-        );
-    }
-
-    #[wcmp_macros::test]
-    fn it_reads_and_writes_the_context_slots_of_the_current_thread() {
-        // Every read and write here goes through the bodies the
-        // `context.get` and `context.set` intrinsics run.
-        let tables = Arc::new(Mutex::new(HandleTables::new()));
-        let instance = tables.lock().unwrap().tasks.insert_instance();
-        assert!(
-            context_get(&tables, 0).is_err(),
-            "there is no thread to address with no task on the stack"
-        );
-
-        let caller = tables
-            .lock()
-            .unwrap()
-            .tasks
-            .push_task(None, None, instance)
-            .expect("room under the record cap");
-        context_set(&tables, 0, 7).expect("the caller writes its first slot");
-        context_set(&tables, 1, 8).expect("the caller writes its second slot");
-        assert!(
-            context_set(&tables, 2, 9).is_err(),
-            "a thread has two context slots and no more"
-        );
-
-        let callee = tables
-            .lock()
-            .unwrap()
-            .tasks
-            .push_task(None, None, instance)
-            .expect("room under the record cap");
-        assert_eq!(
-            (
-                context_get(&tables, 0).unwrap(),
-                context_get(&tables, 1).unwrap()
-            ),
-            (0, 0),
-            "the callee's task brings its own thread, with empty slots"
-        );
-        context_set(&tables, 0, 9).expect("the callee writes its own first slot");
-
-        assert_eq!(tables.lock().unwrap().exit_task(callee).borrows(), Ok(()));
-        assert_eq!(
-            (
-                context_get(&tables, 0).unwrap(),
-                context_get(&tables, 1).unwrap()
-            ),
-            (7, 8),
-            "the caller's slots are as it left them"
-        );
-        assert_eq!(
-            tables.lock().unwrap().tasks.current_task(),
-            Some(caller),
-            "the caller's task is current again"
         );
     }
 

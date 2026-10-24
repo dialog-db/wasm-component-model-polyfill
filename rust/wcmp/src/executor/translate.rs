@@ -1197,23 +1197,11 @@ impl ProjectionState {
         if let Some(index) = self.intrinsic_to_spec.get(&intrinsic) {
             return Ok(*index);
         }
-        let signature = CoreSignature {
-            params: intrinsic
-                .core_params()
-                .iter()
-                .map(lift_core_parameter)
-                .collect::<Result<Vec<_>>>()?,
-            results: intrinsic
-                .core_results()
-                .iter()
-                .map(lift_core_val_type)
-                .collect::<Result<Vec<_>>>()?,
-        };
         let spec = match intrinsic {
-            UnsafeIntrinsic::ContextGetI32_0 => TrampolineSpec::ContextGet { slot: 0, signature },
-            UnsafeIntrinsic::ContextGetI32_1 => TrampolineSpec::ContextGet { slot: 1, signature },
-            UnsafeIntrinsic::ContextSetI32_0 => TrampolineSpec::ContextSet { slot: 0, signature },
-            UnsafeIntrinsic::ContextSetI32_1 => TrampolineSpec::ContextSet { slot: 1, signature },
+            UnsafeIntrinsic::ContextGetI32_0 => TrampolineSpec::ContextGet { slot: 0 },
+            UnsafeIntrinsic::ContextGetI32_1 => TrampolineSpec::ContextGet { slot: 1 },
+            UnsafeIntrinsic::ContextSetI32_0 => TrampolineSpec::ContextSet { slot: 0 },
+            UnsafeIntrinsic::ContextSetI32_1 => TrampolineSpec::ContextSet { slot: 1 },
             other => {
                 return Err(Error::unsupported(format!(
                     "the `{}` intrinsic",

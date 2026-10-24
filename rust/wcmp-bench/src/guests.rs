@@ -13,7 +13,10 @@
 //! moves the values the canonical-ABI benchmarks need or keeps a host
 //! call in flight: a component that echoes a string or a list back, a
 //! component with a resource of its own to mint and drop, and a
-//! component that starts many host calls and waits for them all.
+//! component that starts many host calls and waits for them all. One
+//! more keeps a shadow stack pointer in context slot 0, as a Rust
+//! component built for `wasm32-wasip3` does, because no fixture reads
+//! or writes a context slot.
 
 use wcmp_macros::component;
 
@@ -317,5 +320,96 @@ pub const HOSTS_16: &[u8] = component!(
         (export "f13" (func (param "p" $point) (result $point)))
         (export "f14" (func (param "p" $point) (result $point)))
         (export "f15" (func (param "p" $point) (result $point))))))
+    "#
+);
+
+/// A component whose four exports each run `n` stack frames of 16 bytes
+/// and answer `n`. A frame stores to its stack and loads back, and the
+/// four differ only in where the stack pointer lives and whether each
+/// frame calls the host:
+///
+/// - `slot-calls: func(n: u32) -> u32` keeps the pointer in context slot
+///   0, read and written with `context.get` and `context.set` on entry
+///   to and exit from each frame, as a Rust function with a stack frame
+///   does when built for `wasm32-wasip3`.
+/// - `global-calls: func(n: u32) -> u32` keeps it in a mutable global of
+///   the core module, as a build for `wasm32-wasip1` or `wasm32-wasip2`
+///   does.
+/// - `slot-host-calls` and `global-host-calls` are the same, with one
+///   call of the host import `tick: func()` inside each frame.
+pub const SHADOW_STACK: &[u8] = component!(
+    r#"
+    (component
+      (import "tick" (func $tick))
+      (core func $tick' (canon lower (func $tick)))
+      (core func $cget (canon context.get i32 0))
+      (core func $cset (canon context.set i32 0))
+      (core module $m
+        (import "" "context.get" (func $cget (result i32)))
+        (import "" "context.set" (func $cset (param i32)))
+        (import "" "tick" (func $tick))
+        (memory 1)
+        (global $sp (mut i32) (i32.const 0))
+
+        (func $slot-frame (param $x i32) (param $host i32) (result i32)
+          (local $fp i32)
+          (local.set $fp (i32.sub (call $cget) (i32.const 16)))
+          (call $cset (local.get $fp))
+          (i32.store (local.get $fp) (local.get $x))
+          (if (local.get $host) (then (call $tick)))
+          (local.set $x (i32.add (i32.load (local.get $fp)) (i32.const 1)))
+          (call $cset (i32.add (local.get $fp) (i32.const 16)))
+          (local.get $x))
+        (func $global-frame (param $x i32) (param $host i32) (result i32)
+          (local $fp i32)
+          (local.set $fp (i32.sub (global.get $sp) (i32.const 16)))
+          (global.set $sp (local.get $fp))
+          (i32.store (local.get $fp) (local.get $x))
+          (if (local.get $host) (then (call $tick)))
+          (local.set $x (i32.add (i32.load (local.get $fp)) (i32.const 1)))
+          (global.set $sp (i32.add (local.get $fp) (i32.const 16)))
+          (local.get $x))
+
+        (func $slot-run (param $n i32) (param $host i32) (result i32)
+          (local $x i32)
+          (call $cset (i32.const 65536))
+          (block $done
+            (loop $next
+              (br_if $done (i32.eqz (local.get $n)))
+              (local.set $x (call $slot-frame (local.get $x) (local.get $host)))
+              (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+              (br $next)))
+          (local.get $x))
+        (func $global-run (param $n i32) (param $host i32) (result i32)
+          (local $x i32)
+          (global.set $sp (i32.const 65536))
+          (block $done
+            (loop $next
+              (br_if $done (i32.eqz (local.get $n)))
+              (local.set $x (call $global-frame (local.get $x) (local.get $host)))
+              (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+              (br $next)))
+          (local.get $x))
+
+        (func (export "slot-calls") (param i32) (result i32)
+          (call $slot-run (local.get 0) (i32.const 0)))
+        (func (export "global-calls") (param i32) (result i32)
+          (call $global-run (local.get 0) (i32.const 0)))
+        (func (export "slot-host-calls") (param i32) (result i32)
+          (call $slot-run (local.get 0) (i32.const 1)))
+        (func (export "global-host-calls") (param i32) (result i32)
+          (call $global-run (local.get 0) (i32.const 1))))
+      (core instance $i (instantiate $m (with "" (instance
+        (export "context.get" (func $cget))
+        (export "context.set" (func $cset))
+        (export "tick" (func $tick'))))))
+      (func (export "slot-calls") (param "n" u32) (result u32)
+        (canon lift (core func $i "slot-calls")))
+      (func (export "global-calls") (param "n" u32) (result u32)
+        (canon lift (core func $i "global-calls")))
+      (func (export "slot-host-calls") (param "n" u32) (result u32)
+        (canon lift (core func $i "slot-host-calls")))
+      (func (export "global-host-calls") (param "n" u32) (result u32)
+        (canon lift (core func $i "global-host-calls"))))
     "#
 );

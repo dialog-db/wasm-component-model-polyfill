@@ -22,6 +22,7 @@ mod bindgen_world;
 mod call_concurrent;
 mod callback_export;
 mod canonical_abi;
+mod context_slots;
 mod destructor_task;
 mod error_context;
 mod error_context_transfer;

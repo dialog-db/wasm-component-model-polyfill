@@ -39,6 +39,7 @@ use crate::store::StoreContext;
 use crate::store::StoreContextInternalExt;
 use crate::types::ResourceType;
 
+use super::ContextSlots;
 use super::ResourceDestructor;
 use super::build_prepare_call;
 use super::build_start_call;
@@ -51,9 +52,8 @@ use super::error_context_builtins::{
     build_error_context_transfer,
 };
 use super::intrinsics::{
-    build_backpressure_dec, build_backpressure_inc, build_context_get, build_context_set,
-    build_end_transfer, build_enter_sync_call, build_exit_sync_call, build_resource_transfer,
-    build_transcoder, build_trap,
+    build_backpressure_dec, build_backpressure_inc, build_end_transfer, build_enter_sync_call,
+    build_exit_sync_call, build_resource_transfer, build_transcoder, build_trap,
 };
 use super::start_task::StartTask;
 use super::waitable_builtins::{
@@ -383,6 +383,17 @@ async fn run_plan<T: 'static>(
     let provider = store.internal().provider();
     let mut trampolines: Vec<Option<RuntimeFunc>> = Vec::with_capacity(ir.trampoline_specs.len());
     let mut blocking: Vec<(usize, BlockingBuiltin<T>)> = Vec::new();
+    // The `context.get` and `context.set` built-ins are the exports of
+    // the store's context module, which the first component that needs
+    // them instantiates.
+    if ir.trampoline_specs.iter().any(|spec| {
+        matches!(
+            spec,
+            TrampolineSpec::ContextGet { .. } | TrampolineSpec::ContextSet { .. }
+        )
+    }) {
+        ContextSlots::of_store(store).await?;
+    }
     for (index, spec) in ir.trampoline_specs.iter().enumerate() {
         let trampoline = build_runtime_trampoline(
             spec,
@@ -669,6 +680,15 @@ async fn instantiate_core<T: 'static>(
     })
 }
 
+/// The store's context module, which `run_plan` installs before it
+/// builds a trampoline that needs it.
+fn context_slots<T: 'static>(store: &mut StoreContext<'_, T>) -> Result<ContextSlots> {
+    store
+        .internal()
+        .context_slots()
+        .ok_or_else(|| Error::internal("a context built-in was built before the context module"))
+}
+
 /// Build the runtime-layer trampoline for one entry in
 /// [`ExecutorIr::trampoline_specs`]. Dispatches by variant: lowered
 /// imports become host-function trampolines, resource intrinsics
@@ -756,12 +776,8 @@ fn build_runtime_trampoline<T: 'static>(
             build_enter_sync_call(store, signature, abi_state.clone())
         }
         TrampolineSpec::ExitSyncCall { signature } => build_exit_sync_call(store, signature),
-        TrampolineSpec::ContextGet { slot, signature } => {
-            build_context_get(store, *slot, signature)
-        }
-        TrampolineSpec::ContextSet { slot, signature } => {
-            build_context_set(store, *slot, signature)
-        }
+        TrampolineSpec::ContextGet { slot, .. } => context_slots(store)?.get(store, *slot),
+        TrampolineSpec::ContextSet { slot, .. } => context_slots(store)?.set(store, *slot),
         TrampolineSpec::BackpressureInc {
             instance,
             signature,

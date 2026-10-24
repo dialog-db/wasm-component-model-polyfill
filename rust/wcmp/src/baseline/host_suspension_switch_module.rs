@@ -146,7 +146,7 @@ async fn setup() -> Scenario {
     )
     .expect("the finish part");
 
-    let provider = HostSuspensionProvider::instantiate(&mut context, engine.switch_modules())
+    let provider = HostSuspensionProvider::instantiate(&mut context, engine.generated_modules())
         .expect("the backend declares host suspension");
     let block = provider
         .shims(&mut context, &[(i32_to_i32(), try_part, finish_part)])

@@ -13,7 +13,8 @@
 
 use crate::contract::{Backend, BackendModule, BackendStore};
 use crate::engine::Engine;
-use crate::store::StoreId;
+use crate::error::Result;
+use crate::store::{CallHook, StoreId};
 
 /// What the crate reaches on an [`Engine`].
 pub trait EngineInternal {
@@ -43,7 +44,21 @@ pub trait StoreDataInternal: Sized {
 
     /// The host data, mutably.
     fn user_mut<T: 'static>(&mut self) -> &mut T;
+
+    /// Take the store's call hook out, so that it can run with the store.
+    fn take_call_hook(&mut self) -> Option<ErasedCallHook>;
+
+    /// Set the store's call hook.
+    fn set_call_hook(&mut self, hook: ErasedCallHook);
+
+    /// Put back the call hook that ran, unless the hook set another while
+    /// it ran.
+    fn restore_call_hook(&mut self, hook: ErasedCallHook);
 }
+
+/// A store's call hook, with the type of the host's data erased.
+pub type ErasedCallHook =
+    Box<dyn FnMut(&mut dyn BackendStore, CallHook) -> Result<()> + Send + Sync>;
 
 /// What the crate reaches on a [`StoreContext`](crate::StoreContext).
 pub trait StoreContextInternal<'a> {
@@ -67,4 +82,27 @@ pub trait StoreContextMutInternal<'a> {
 pub trait CallerInternal<'a> {
     /// The caller over the store `store`, which a guest runs in.
     fn from_backend(store: &'a mut dyn BackendStore) -> Self;
+}
+
+/// Call the call hook of `store` with the crossing `kind`, if the store has
+/// a hook.
+///
+/// The hook is out of the store while it runs, as in Wasmtime, so a
+/// crossing the hook itself makes does not call it again, and a hook it
+/// sets takes its place. A store whose
+/// backend refuses its data, as the browser's does for a store the host
+/// forgot, calls no hook: the call that follows meets the refusal, with the
+/// error the backend gives it.
+pub fn call_hook(store: &mut dyn BackendStore, kind: CallHook) -> Result<()> {
+    let Some(mut hook) = store
+        .try_data_mut()
+        .and_then(StoreDataInternal::take_call_hook)
+    else {
+        return Ok(());
+    };
+    let outcome = hook(&mut *store, kind);
+    if let Some(data) = store.try_data_mut() {
+        data.restore_call_hook(hook);
+    }
+    outcome
 }

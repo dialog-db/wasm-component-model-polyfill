@@ -13,8 +13,8 @@ use crate::capability::Capability;
 use crate::checks;
 use crate::contract::HostFunc;
 use crate::error::Result;
-use crate::internal::{CallerInternal, StoreContextInternal, StoreContextMutInternal};
-use crate::store::{AsContext, AsContextMut, Caller};
+use crate::internal::{CallerInternal, StoreContextInternal, StoreContextMutInternal, call_hook};
+use crate::store::{AsContext, AsContextMut, CallHook, Caller};
 use crate::types::FuncType;
 use crate::values::Val;
 
@@ -52,7 +52,10 @@ impl Func {
         checks::func_type(store.engine().capabilities(), &ty)?;
         let body = HostFunc::new(move |store, params, results| {
             let _span = tracing::trace_span!("core host call").entered();
-            func(Caller::from_backend(store), params, results)
+            call_hook(store, CallHook::CallingHost)?;
+            let outcome = func(Caller::from_backend(&mut *store), params, results);
+            call_hook(store, CallHook::ReturningFromHost)?;
+            outcome
         });
         store.backend_mut().func_new(ty, body)
     }
@@ -84,7 +87,14 @@ impl Func {
         checks::func_type(capabilities, &ty)?;
         let body = HostFunc::suspending(move |store, params, results| {
             let _span = tracing::trace_span!("core host call (suspending)").entered();
-            func(Caller::from_backend(store), params, results)
+            call_hook(store, CallHook::CallingHost)?;
+            let outcome = func(Caller::from_backend(&mut *store), params, results);
+            // "Not yet" does not return to the guest. The call suspends, and
+            // the host that made it runs next.
+            if !matches!(outcome, Ok(Poll::Pending)) {
+                call_hook(store, CallHook::ReturningFromHost)?;
+            }
+            outcome
         });
         store.backend_mut().func_new(ty, body)
     }
@@ -117,7 +127,10 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_call(*self, params, results)
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend.func_call(*self, params, results);
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 
     /// Calls the function as a resumable call.
@@ -139,6 +152,8 @@ impl Func {
     /// Where the future drops before the call ends, the host has the store
     /// back, as for [`SuspendedCall::resume`](crate::SuspendedCall::resume).
     /// [`start_resumable`](Self::start_resumable) keeps the call instead.
+    /// Where the store's call hook fails after a call that suspended, the
+    /// handle of the suspension drops with the error, and the call is lost.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -158,7 +173,10 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_call_resumable(*self, params, results).await
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend.func_call_resumable(*self, params, results).await;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 
     /// Starts the function as a resumable call, and answers the call as a
@@ -169,6 +187,9 @@ impl Func {
     /// first stretch of the call runs here, so a call that suspends there
     /// has stopped before the first wait. The handle keeps the call where a
     /// wait's future drops, and a later wait takes it up.
+    /// Where the store's call hook fails after the first stretch, the handle
+    /// drops with the error, and the call stops the next time it would
+    /// reach its store.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -187,6 +208,9 @@ impl Func {
         let backend = store.backend_mut();
         checks::same_store(backend, *self)?;
         checks::values_in_store(backend, params)?;
-        backend.func_start_resumable(*self, params)
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend.func_start_resumable(*self, params);
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 }

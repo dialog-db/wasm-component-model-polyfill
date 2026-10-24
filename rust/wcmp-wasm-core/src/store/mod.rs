@@ -8,6 +8,7 @@
 
 mod as_context;
 mod as_context_mut;
+mod call_hook;
 mod caller;
 #[allow(clippy::module_inception)]
 mod store;
@@ -18,6 +19,7 @@ mod store_id;
 
 pub use as_context::AsContext;
 pub use as_context_mut::AsContextMut;
+pub use call_hook::CallHook;
 pub use caller::Caller;
 pub use store::Store;
 pub use store_context::StoreContext;

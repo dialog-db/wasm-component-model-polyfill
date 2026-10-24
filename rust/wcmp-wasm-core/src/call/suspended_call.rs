@@ -13,8 +13,8 @@ use crate::capability::Capability;
 use crate::checks;
 use crate::contract::BackendSuspendedCall;
 use crate::error::Result;
-use crate::internal::StoreContextMutInternal;
-use crate::store::{AsContextMut, StoreId};
+use crate::internal::{StoreContextMutInternal, call_hook};
+use crate::store::{AsContextMut, CallHook, StoreId};
 use crate::values::Val;
 
 /// A resumable call that waits in a suspending host function.
@@ -61,7 +61,9 @@ impl SuspendedCall {
     /// the call on a microtask runs it only after the host function
     /// returned. So there, a resumption from inside a host function fails
     /// with [`Error::Backend`](crate::Error::Backend), and the call drops
-    /// without a resumption. Resume a call from the store itself.
+    /// without a resumption. Resume a call from the store itself. Where the
+    /// store's call hook fails before the call runs, the call drops without
+    /// a resumption too, and the resumption fails with the hook's error.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -83,9 +85,12 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        backend
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend
             .resume_call(self.inner, import_results, results)
-            .await
+            .await;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 
     /// Resumes the call with `import_results`, the results of the
@@ -97,7 +102,10 @@ impl SuspendedCall {
     /// call where a wait's future drops, and a later wait takes it up. A
     /// call resumed with a store other than its own is
     /// [`Error::WrongStore`](crate::Error::WrongStore), and a resumption from
-    /// inside a host function fails as for [`resume`](Self::resume).
+    /// inside a host function, or one that the store's call hook refuses,
+    /// fails as for [`resume`](Self::resume). Where the hook fails after the start,
+    /// the handle drops with the error, and the call stops the next time it
+    /// would reach its store.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -117,7 +125,10 @@ impl SuspendedCall {
             return Err(crate::Error::WrongStore);
         }
         checks::values_in_store(backend, import_results)?;
-        backend.start_resume(self.inner, import_results)
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
+        let outcome = backend.start_resume(self.inner, import_results);
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
+        outcome
     }
 }
 

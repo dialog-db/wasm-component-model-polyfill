@@ -593,15 +593,11 @@ pub enum TrampolineSpec {
     ContextGet {
         /// Which slot, 0 or 1.
         slot: usize,
-        /// The core signature the adapter imports.
-        signature: CoreSignature,
     },
     /// An adapter writes one of the current task's context slots.
     ContextSet {
         /// Which slot, 0 or 1.
         slot: usize,
-        /// The core signature the adapter imports.
-        signature: CoreSignature,
     },
     /// The guest raises the backpressure of one component instance,
     /// which shuts that instance's entry gate.

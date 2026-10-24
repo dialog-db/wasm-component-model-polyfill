@@ -11,7 +11,7 @@ use core::fmt;
 
 use crate::contract::MaybeSend;
 use crate::engine::Engine;
-use crate::internal::{StoreDataInternal, StoreIdInternal};
+use crate::internal::{ErasedCallHook, StoreDataInternal, StoreIdInternal};
 use crate::store::StoreId;
 
 /// The host's data, erased: `Send` where the store must be.
@@ -39,6 +39,9 @@ pub struct StoreData {
     /// in each call, so a read compares this rather than ask `value` for
     /// its type through its vtable.
     ty: TypeId,
+    /// What the engine calls at each crossing between the host and guest
+    /// code.
+    call_hook: Option<ErasedCallHook>,
 }
 
 impl StoreData {
@@ -61,6 +64,7 @@ impl StoreDataInternal for StoreData {
             engine,
             value: Box::new(value),
             ty: TypeId::of::<T>(),
+            call_hook: None,
         }
     }
 
@@ -75,6 +79,18 @@ impl StoreDataInternal for StoreData {
             // two of its stores, which breaks the backend contract.
             unreachable!("a backend gave back the data of another store")
         }
+    }
+
+    fn take_call_hook(&mut self) -> Option<ErasedCallHook> {
+        self.call_hook.take()
+    }
+
+    fn set_call_hook(&mut self, hook: ErasedCallHook) {
+        self.call_hook = Some(hook);
+    }
+
+    fn restore_call_hook(&mut self, hook: ErasedCallHook) {
+        self.call_hook.get_or_insert(hook);
     }
 
     fn user_mut<T: 'static>(&mut self) -> &mut T {
