@@ -83,6 +83,10 @@ crossing writes back first. So no thread sees the slots of another thread.
 A write back clears the loaded flag before it forgets the owner. If the
 substrate fails during a write back, the slots stay loaded for their owner.
 
+When the host drops the wait of a call, the record of the call's thread is stale
+until the next crossing writes back. Only `load` reads the slots of a record,
+and it runs after a crossing, so no host code sees the stale record.
+
 After a write back, the next thread that reads or writes a slot loads its own. A
 thread that ended before a write back has no record, and its slots end with it.
 

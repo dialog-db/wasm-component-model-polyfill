@@ -61,9 +61,10 @@ impl Resumption {
     /// synchronously has seen it stop before the first wait.
     ///
     /// Once a wait answered, with the stop or with an error, the call is
-    /// spent, and a later wait is [`Error::Backend`]. An error from the
-    /// store's call hook before the wait is the one exception: the handle
-    /// keeps the call, as it does where the future drops.
+    /// spent, and a later wait is [`Error::Backend`]. An error before the
+    /// wait starts, from a wrong store, a missing capability, or the
+    /// store's call hook, leaves the call with the handle, as a future that
+    /// drops does.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,

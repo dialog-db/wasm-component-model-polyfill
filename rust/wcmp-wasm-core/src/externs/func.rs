@@ -152,6 +152,8 @@ impl Func {
     /// Where the future drops before the call ends, the host has the store
     /// back, as for [`SuspendedCall::resume`](crate::SuspendedCall::resume).
     /// [`start_resumable`](Self::start_resumable) keeps the call instead.
+    /// Where the store's call hook fails after a call that suspended, the
+    /// handle of the suspension drops with the error, and the call is lost.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
