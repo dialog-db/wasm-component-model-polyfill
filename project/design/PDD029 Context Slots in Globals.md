@@ -25,6 +25,7 @@ Four terms recur:
 - A read or a write of a loaded slot runs in WebAssembly alone.
 - Each thread keeps its own slots, as [PDD019] states.
 - Host code that reads a thread's record sees what the thread last wrote.
+- A host call that returns to the same thread does not unload the slots.
 - Every backend runs the same design.
 
 ## Non-goals
@@ -59,26 +60,37 @@ loaded flag and records that thread as the owner. With no task on the stack,
 
 ## Writing Back
 
-The current thread changes only while the host runs. So the polyfill writes back
-each time control can pass to the host. The store's call hook does this. The
-engine calls the hook at each crossing between the host and guest code, and
-tells the hook which crossing it is, as [PDD025] states.
+The current thread changes only while the host runs. The store's call hook keeps
+the slots right at each crossing between the host and guest code. The engine
+calls the hook at each crossing and tells it which crossing it is, as [PDD025]
+states. The hook does one of three things:
 
-The hook writes back at each crossing but one: the return of `load` to the guest
-that called it. `load` is a host function too, so the hook runs around it. When
-the guest calls `load`, the hook writes back, and nothing is loaded then. `load`
-marks the slots that it loads as fresh. When `load` returns, the hook finds the
-mark, clears it, and keeps the slots.
+- When the guest calls a host function, the hook copies the slot globals into
+  the owner's record. The slots stay loaded. So host code that reads the record
+  sees what the thread last wrote.
+- When a host function returns to the guest, the hook reads the current thread.
+  If the owner is still the current thread, the guest that called the function
+  goes on, and the slots stay loaded. If not, the hook writes back.
+- When the host calls guest code, and when guest code returns to the host, the
+  hook writes back.
 
-The return of each other host function writes back too. The call of that
-function wrote back already, so the globals are usually empty then. They are not
-empty when the function ran guest code that did not return to the host. This
-occurs when the host drops the wait of a call. The write back on the return lets
-the guest that called the function load its own slots again.
+`load` is a host function too, so the hook runs around it. When the guest calls
+`load`, nothing is loaded. When `load` returns, its owner is the current thread,
+so the slots stay loaded.
+
+A host function can switch threads. Then the owner is not the current thread
+when the function returns, and the hook writes back. A host function can also
+run guest code of another thread. The call of that guest code writes back first,
+so the other thread loads its own slots.
 
 The design depends on one rule. Guest code reads or writes the globals without
-`load` only while the slots are loaded. Each time the host starts to run, a
-crossing writes back first. So no thread sees the slots of another thread.
+`load` only while the slots are loaded and their owner is the thread that runs.
+Each crossing to guest code of another thread writes back first. So no thread
+sees the slots of another thread.
+
+A host function can run guest code whose wait the host drops. That guest code
+does not return to the host. If its thread loaded slots, the owner is not the
+current thread when the host function returns, so the hook writes back then.
 
 A write back clears the loaded flag before it forgets the owner. If the
 substrate fails during a write back, the slots stay loaded for their owner.

@@ -22,17 +22,20 @@
 //!
 //! The current thread changes only while the host runs. So the store's
 //! call hook, which the runtime layer calls at each crossing between the
-//! host and guest code, writes the loaded slots back to the owner's record
-//! and clears the loaded flag before the host runs. A thread that runs
-//! next loads its own slots. Host code that reads a thread's record sees
-//! what the thread last wrote.
+//! host and guest code, keeps the owner's record current and unloads the
+//! slots wherever another thread could run next:
 //!
-//! The hook writes back at every crossing but one: the return of `load`
-//! to the guest that called it, which keeps the slots `load` loaded. The
-//! return of any other host function writes back too. Its call already
-//! wrote back, so the globals are empty there, unless a stretch of guest
-//! code that the function ran ended without a return to the host, as a
-//! dropped wait ends.
+//! - When the guest calls a host function, the hook copies the slots to
+//!   the owner's record, so host code that reads the record sees what the
+//!   thread last wrote. The slots stay loaded.
+//! - When the host function returns, the slots stay loaded where the owner
+//!   is still the current thread: the guest that called the function goes
+//!   on. Otherwise the hook writes them back and unloads them, as after a
+//!   host function that switched threads, or after a stretch of guest code
+//!   the function ran whose wait dropped.
+//! - Before and after each stretch of guest code the host runs, the hook
+//!   writes the slots back and unloads them. A thread that runs next loads
+//!   its own.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -77,9 +80,6 @@ struct Cache {
     slots: [RuntimeGlobal; SLOTS],
     loaded: RuntimeGlobal,
     owner: Option<ThreadId>,
-    /// Whether `load` loaded the slots and has yet to return, so that the
-    /// crossing of its return keeps them.
-    fresh: bool,
 }
 
 /// The cache, shared by `load` and the call hook. It is empty only while
@@ -114,12 +114,11 @@ impl ContextSlots {
             slots: [global(store, "slot0")?, global(store, "slot1")?],
             loaded: global(store, "loaded")?,
             owner: None,
-            fresh: false,
         });
         store
             .internal()
             .runtime_mut()
-            .call_hook(move |context, kind| write_back(&tables, &cache, context, kind));
+            .call_hook(move |context, kind| cross(&tables, &cache, context, kind));
         let slots = Self { instance };
         store.internal().install_context_slots(slots.clone());
         Ok(slots)
@@ -241,9 +240,9 @@ fn encode() -> Vec<u8> {
 ///
 /// It is a plain runtime-layer function, not one of the polyfill's host
 /// functions, because no host function of the component runs. The store's
-/// call hook runs around it as around every host function: it writes back
-/// when `load` is called, with nothing loaded, and keeps the slots `load`
-/// loaded, which it marks fresh, when it returns.
+/// call hook runs around it as around every host function. Nothing is
+/// loaded when `load` is called, and when it returns, its owner is the
+/// current thread, so the slots stay loaded.
 fn load_func<T: 'static>(
     store: &mut StoreContext<'_, T>,
     tables: Arc<Mutex<HandleTables>>,
@@ -264,22 +263,16 @@ fn load_func<T: 'static>(
             }
             cache.loaded.set(&mut context, RuntimeVal::I32(1))?;
             cache.owner = Some(thread);
-            cache.fresh = true;
             Ok(())
         },
     )
     .map_err(substrate_failure)
 }
 
-/// The store's call hook at the crossing `kind`: write the loaded slots
-/// back to the record of the thread they were loaded for, and clear the
-/// loaded flag, unless `kind` is the return of `load`.
-///
-/// The owner goes only once the flag is clear, so a failure of the
-/// substrate leaves the slots loaded for their owner, not for no one. A
-/// thread that ended since its slots were loaded has no record, and its
-/// slots end with it.
-fn write_back<T: 'static>(
+/// The store's call hook at the crossing `kind`: copy the loaded slots to
+/// their owner's record when the guest calls the host, and write them
+/// back and unload them wherever another thread could run next.
+fn cross<T: 'static>(
     tables: &Mutex<HandleTables>,
     cache: &SharedCache,
     mut context: RuntimeContextMut<'_, StoreData<T>>,
@@ -289,15 +282,48 @@ fn write_back<T: 'static>(
     let Some(cache) = cache.as_mut() else {
         return Ok(());
     };
-    if core::mem::take(&mut cache.fresh) && kind == CallHook::ReturningFromHost {
-        return Ok(());
-    }
-    let Some(thread) = cache.owner else {
+    let Some(owner) = cache.owner else {
         return Ok(());
     };
+    match kind {
+        CallHook::CallingHost => {
+            let values = values(cache, &mut context)?;
+            write_slots(tables, owner, values).map_err(backend)
+        }
+        CallHook::ReturningFromHost if current_thread(tables).map_err(backend)? == Some(owner) => {
+            Ok(())
+        }
+        _ => unload(tables, cache, context, owner),
+    }
+}
+
+/// Write the loaded slots back to the record of `owner`, the thread they
+/// were loaded for, and clear the loaded flag.
+///
+/// The owner goes only once the flag is clear, so a failure of the
+/// substrate leaves the slots loaded for their owner, not for no one. A
+/// thread that ended since its slots were loaded has no record, and its
+/// slots end with it.
+fn unload<T: 'static>(
+    tables: &Mutex<HandleTables>,
+    cache: &mut Cache,
+    mut context: RuntimeContextMut<'_, StoreData<T>>,
+    owner: ThreadId,
+) -> core::result::Result<(), RuntimeError> {
+    let values = values(cache, &mut context)?;
+    cache.loaded.set(&mut context, RuntimeVal::I32(0))?;
+    cache.owner = None;
+    write_slots(tables, owner, values).map_err(backend)
+}
+
+/// What the slot globals of `cache` hold.
+fn values<T: 'static>(
+    cache: &Cache,
+    context: &mut RuntimeContextMut<'_, StoreData<T>>,
+) -> core::result::Result<[i32; SLOTS], RuntimeError> {
     let mut values = [0; SLOTS];
     for (value, global) in values.iter_mut().zip(&cache.slots) {
-        *value = match global.get(&mut context)? {
+        *value = match global.get(&mut *context)? {
             RuntimeVal::I32(value) => value,
             other => {
                 return Err(RuntimeError::Backend {
@@ -306,11 +332,22 @@ fn write_back<T: 'static>(
             }
         };
     }
-    cache.loaded.set(&mut context, RuntimeVal::I32(0))?;
-    cache.owner = None;
-    write_slots(tables, thread, values).map_err(|error| RuntimeError::Backend {
+    Ok(values)
+}
+
+/// `error` as an error of the runtime layer, which the call hook answers.
+fn backend(error: impl core::fmt::Display) -> RuntimeError {
+    RuntimeError::Backend {
         message: error.to_string(),
-    })
+    }
+}
+
+/// The thread that runs now, if any.
+fn current_thread(tables: &Mutex<HandleTables>) -> Result<Option<ThreadId>> {
+    let tables = tables
+        .lock()
+        .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
+    Ok(tables.tasks.current_thread())
 }
 
 /// The current thread and its slots: what `load` copies in.
