@@ -12,23 +12,29 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use wcmp_macros::wasm;
 use wcmp_wasm_core::{
-    CallHook, Engine, Error, Func, FuncType, ResumableCall, Store, TrapKind, Val, ValType,
+    CallHook, Caller, Engine, Error, Func, FuncType, Instance, ResumableCall, Store, TrapKind, Val,
+    ValType,
 };
 
 use crate::support;
 
 /// A module whose `run` notes its argument through the host function
-/// `note` and answers it, and whose `trap` traps.
+/// `note` and answers it, whose `trap` traps, and whose `outer` calls
+/// `run` back through the host function `through`.
 const NOTE: &[u8] = wasm!(
     r#"
     (module
       (import "host" "note" (func $note (param i32)))
+      (import "host" "through" (func $through (param i32) (result i32)))
       (func (export "run") (param i32) (result i32)
         local.get 0
         call $note
         local.get 0)
       (func (export "trap")
-        unreachable))
+        unreachable)
+      (func (export "outer") (param i32) (result i32)
+        local.get 0
+        call $through))
     "#
 );
 
@@ -83,6 +89,44 @@ fn note<T: 'static>(store: &mut Store<T>, notes: &Arc<AtomicUsize>) -> Func {
     .expect("the store makes a host function")
 }
 
+/// What the store of a test of the call hook holds: how many crossings
+/// the hook saw, and the guest function that the host function `through`
+/// calls back into.
+#[derive(Default)]
+struct Hooked {
+    crossings: usize,
+    inner: Option<Func>,
+}
+
+/// The host function `through` of type `[i32] -> [i32]`, which calls the
+/// guest function the store holds with its argument.
+fn through(store: &mut Store<Hooked>) -> Func {
+    Func::new(
+        &mut *store,
+        FuncType::new([ValType::I32], [ValType::I32]),
+        |mut caller: Caller<'_, Hooked>, params, results| {
+            let inner = caller
+                .data()
+                .inner
+                .ok_or_else(|| anyhow::anyhow!("the guest function is not set"))?;
+            inner.call(&mut caller, params, results)?;
+            Ok(())
+        },
+    )
+    .expect("the store makes a host function")
+}
+
+/// An instance of [`NOTE`] in `store`, with `note` counting its calls in
+/// `notes`, and its `run` as the function `through` calls.
+async fn noted(store: &mut Store<Hooked>, notes: &Arc<AtomicUsize>) -> Instance {
+    let note = note(store, notes);
+    let through = through(store);
+    let instance = support::instance(store, NOTE, &[note.into(), through.into()]).await;
+    let run = support::func(store, instance, "run");
+    store.data_mut().inner = Some(run);
+    instance
+}
+
 /// `crossings` without the stretches of guest code that crossed nothing,
 /// where a `CallingWasm` comes straight before its `ReturningFromWasm`.
 fn without_empty_stretches(crossings: &[CallHook]) -> Vec<CallHook> {
@@ -99,25 +143,25 @@ fn without_empty_stretches(crossings: &[CallHook]) -> Vec<CallHook> {
 
 /// The engine calls the store's hook, with the store, at each crossing
 /// between the host and guest code: around an instantiation, around a
-/// call, and around the host function the call calls. A call that traps
-/// still returns to the host. A hook set later takes the place of the
-/// first.
+/// call, and around the host function the call calls, at any depth. A
+/// call that traps still returns to the host. A hook set later takes the
+/// place of the first, and so does a hook set from inside the hook.
 pub async fn it_calls_the_call_hook_at_each_crossing_between_host_and_guest(engine: &Engine) {
-    let mut store = support::store(engine, 0usize);
+    let mut store = support::store(engine, Hooked::default());
     let crossings = Crossings::default();
     let seen = crossings.clone();
     store.call_hook(move |mut context, kind| {
-        *context.data_mut() += 1;
+        context.data_mut().crossings += 1;
         seen.push(kind);
         Ok(())
     });
     let notes = Arc::new(AtomicUsize::new(0));
-    let note = note(&mut store, &notes);
-    let instance = support::instance(&mut store, NOTE, &[note.into()]).await;
+    let instance = noted(&mut store, &notes).await;
     assert_eq!(
         crossings.take(),
         [CallHook::CallingWasm, CallHook::ReturningFromWasm],
-        "an instantiation runs the start function of the module, which is guest code"
+        "the engine crosses around an instantiation, whether or not the module has a start \
+         function"
     );
 
     let run = support::func(&mut store, instance, "run");
@@ -145,18 +189,55 @@ pub async fn it_calls_the_call_hook_at_each_crossing_between_host_and_guest(engi
         [CallHook::CallingWasm, CallHook::ReturningFromWasm],
         "a trap returns to the host too"
     );
+    let outer = support::func(&mut store, instance, "outer");
+    let results = support::call(&mut store, outer, &[Val::I32(8)], &[ValType::I32]);
+    assert!(matches!(results.as_slice(), [Val::I32(8)]));
     assert_eq!(
-        *store.data(),
-        8,
+        crossings.take(),
+        [
+            CallHook::CallingWasm,
+            CallHook::CallingHost,
+            CallHook::CallingWasm,
+            CallHook::CallingHost,
+            CallHook::ReturningFromHost,
+            CallHook::ReturningFromWasm,
+            CallHook::ReturningFromHost,
+            CallHook::ReturningFromWasm,
+        ],
+        "a host function that calls back into the guest nests a stretch of its own"
+    );
+    assert_eq!(
+        store.data().crossings,
+        16,
         "the hook reached the host's data at each crossing"
     );
 
     store.call_hook(|_, _| Ok(()));
-    support::call(&mut store, run, &[Val::I32(8)], &[ValType::I32]);
+    support::call(&mut store, run, &[Val::I32(9)], &[ValType::I32]);
     assert_eq!(
         crossings.take(),
         [],
         "the later hook took the first one's place"
+    );
+
+    let replaced = crossings.clone();
+    store.call_hook(move |mut context, _| {
+        let seen = replaced.clone();
+        context.call_hook(move |_, kind| {
+            seen.push(kind);
+            Ok(())
+        });
+        Ok(())
+    });
+    support::call(&mut store, run, &[Val::I32(10)], &[ValType::I32]);
+    assert_eq!(
+        crossings.take(),
+        [
+            CallHook::CallingHost,
+            CallHook::ReturningFromHost,
+            CallHook::ReturningFromWasm,
+        ],
+        "a hook set from inside the hook ran from the next crossing on"
     );
 }
 
@@ -166,10 +247,9 @@ pub async fn it_calls_the_call_hook_at_each_crossing_between_host_and_guest(engi
 /// traps with the error. After the body or the guest stopped, the error
 /// takes the place of what they answered.
 pub async fn it_fails_a_call_with_the_error_of_its_call_hook(engine: &Engine) {
-    let mut store = support::store(engine, ());
+    let mut store = support::store(engine, Hooked::default());
     let notes = Arc::new(AtomicUsize::new(0));
-    let note = note(&mut store, &notes);
-    let instance = support::instance(&mut store, NOTE, &[note.into()]).await;
+    let instance = noted(&mut store, &notes).await;
     let run = support::func(&mut store, instance, "run");
 
     for (refused, noted) in [

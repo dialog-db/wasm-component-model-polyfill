@@ -108,9 +108,14 @@ impl<T: 'static> Store<T> {
     /// the guest traps with [`TrapKind::Host`](crate::TrapKind::Host),
     /// carrying the error. After guest code or a host function's body
     /// stopped, the error takes the place of its outcome, as in Wasmtime.
+    /// A [`SuspendedCall`](crate::SuspendedCall) that the hook refuses to
+    /// resume drops, as a resumption does that the host forgets. A
+    /// [`Resumption`](crate::Resumption) whose wait the hook refuses keeps
+    /// the call, and a later wait takes it up.
     ///
     /// The hook is out of the store while it runs, so a crossing that the
-    /// hook itself makes does not call it.
+    /// hook itself makes does not call it. A hook set from inside the hook
+    /// takes the place of the one that runs.
     pub fn call_hook(
         &mut self,
         hook: impl FnMut(StoreContextMut<'_, T>, CallHook) -> Result<()> + Send + Sync + 'static,

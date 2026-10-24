@@ -89,6 +89,10 @@ impl StoreDataInternal for StoreData {
         self.call_hook = Some(hook);
     }
 
+    fn restore_call_hook(&mut self, hook: ErasedCallHook) {
+        self.call_hook.get_or_insert(hook);
+    }
+
     fn user_mut<T: 'static>(&mut self) -> &mut T {
         if self.ty == TypeId::of::<T>() {
             // SAFETY: as in `user`.

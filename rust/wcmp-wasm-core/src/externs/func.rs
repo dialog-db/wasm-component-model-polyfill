@@ -185,6 +185,9 @@ impl Func {
     /// first stretch of the call runs here, so a call that suspends there
     /// has stopped before the first wait. The handle keeps the call where a
     /// wait's future drops, and a later wait takes it up.
+    /// Where the store's call hook fails after the first stretch, the handle
+    /// drops with the error, and the call stops the next time it would
+    /// reach its store.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,

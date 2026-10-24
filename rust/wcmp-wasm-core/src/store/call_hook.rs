@@ -15,8 +15,7 @@
 ///
 /// - [`CallingWasm`](Self::CallingWasm) before each stretch of guest code
 ///   the host runs: a call, the start of a resumable call, a resumption,
-///   each wait for a resumable call to stop, and an instantiation, which
-///   runs the start function of the module.
+///   each wait for a resumable call to stop, and each instantiation.
 /// - [`ReturningFromWasm`](Self::ReturningFromWasm) after each of those,
 ///   whether the guest returned, trapped, or suspended.
 /// - [`CallingHost`](Self::CallingHost) before the body of a host function
@@ -25,6 +24,16 @@
 ///   suspending host function that answers "not yet" does not return to the
 ///   guest, so it has no such crossing. The stretch it suspends ends with
 ///   [`ReturningFromWasm`](Self::ReturningFromWasm).
+///
+/// Two crossings do not pair as they would in Wasmtime:
+///
+/// - Where the future of an asynchronous stretch drops before it ends, as
+///   the host may drop the wait of a resumable call, the stretch has no
+///   [`ReturningFromWasm`](Self::ReturningFromWasm). A hook that counts
+///   depth must not rely on one.
+/// - The engine crosses around every instantiation, because it does not
+///   know whether the module has a start function. Wasmtime crosses only
+///   where the instance runs one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallHook {
     /// The host calls guest code.

@@ -50,6 +50,10 @@ pub trait StoreDataInternal: Sized {
 
     /// Set the store's call hook.
     fn set_call_hook(&mut self, hook: ErasedCallHook);
+
+    /// Put back the call hook that ran, unless the hook set another while
+    /// it ran.
+    fn restore_call_hook(&mut self, hook: ErasedCallHook);
 }
 
 /// A store's call hook, with the type of the host's data erased.
@@ -84,7 +88,8 @@ pub trait CallerInternal<'a> {
 /// a hook.
 ///
 /// The hook is out of the store while it runs, as in Wasmtime, so a
-/// crossing the hook itself makes does not call it again. A store whose
+/// crossing the hook itself makes does not call it again, and a hook it
+/// sets takes its place. A store whose
 /// backend refuses its data, as the browser's does for a store the host
 /// forgot, calls no hook: the call that follows meets the refusal, with the
 /// error the backend gives it.
@@ -97,7 +102,7 @@ pub fn call_hook(store: &mut dyn BackendStore, kind: CallHook) -> Result<()> {
     };
     let outcome = hook(&mut *store, kind);
     if let Some(data) = store.try_data_mut() {
-        data.set_call_hook(hook);
+        data.restore_call_hook(hook);
     }
     outcome
 }
