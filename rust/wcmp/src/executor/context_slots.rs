@@ -36,6 +36,11 @@
 //! - Before and after each stretch of guest code the host runs, the hook
 //!   writes the slots back and unloads them. A thread that runs next loads
 //!   its own.
+//!
+//! Two rules of the rest of the polyfill hold this up. The current thread
+//! of the task tables names the thread that a host function returns into,
+//! as `load` already needs. And no host code writes the slots of a thread
+//! whose slots are loaded: the globals would overwrite the write.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 

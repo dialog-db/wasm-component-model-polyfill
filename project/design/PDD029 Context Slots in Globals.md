@@ -88,6 +88,18 @@ The design depends on one rule. Guest code reads or writes the globals without
 Each crossing to guest code of another thread writes back first. So no thread
 sees the slots of another thread.
 
+Two rules of the rest of the polyfill hold this up:
+
+- The current thread names the thread that a host function returns into. `load`
+  needs this rule too.
+- No host code writes the slots of a thread whose slots are loaded. The globals
+  would overwrite the write at the next write back.
+
+In the browser, a guest that suspends in a suspending host function keeps its
+slots loaded until the host sees the stop, a microtask later. No other guest
+code of the store runs in that time, because the store lets one call run at a
+time.
+
 A host function can run guest code whose wait the host drops. That guest code
 does not return to the host. If its thread loaded slots, the owner is not the
 current thread when the host function returns, so the hook writes back then.
