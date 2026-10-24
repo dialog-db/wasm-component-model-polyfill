@@ -27,12 +27,16 @@
 //! next loads its own slots. Host code that reads a thread's record sees
 //! what the thread last wrote.
 //!
-//! The hook writes back at every crossing but one: the return of a host
-//! function to the guest that called it. The call of that function
-//! already wrote back, so on its return only the slots `load` loaded for
-//! the guest are in the globals, and they stay there.
+//! The hook writes back at every crossing but one: the return of `load`
+//! to the guest that called it, which keeps the slots `load` loaded. The
+//! return of any other host function writes back too. Its call already
+//! wrote back, so the globals are empty there, unless a stretch of guest
+//! code that the function ran ended without a return to the host, as a
+//! dropped wait ends.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use anyhow::anyhow;
 
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, EntityType, ExportKind, ExportSection, Function,
@@ -46,7 +50,7 @@ use crate::internal::ErrorInternal;
 use crate::resource::HandleTables;
 use crate::runtime_layer::{
     AsContextMut, CallHook, Caller as RuntimeCaller, Extern as RuntimeExtern, Func as RuntimeFunc,
-    FuncType, Global as RuntimeGlobal, Imports, Instance as RuntimeInstance,
+    FuncType, GeneratedModules, Global as RuntimeGlobal, Imports, Instance as RuntimeInstance,
     Module as RuntimeModule, RuntimeError, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
     instantiate, substrate_failure,
 };
@@ -73,10 +77,13 @@ struct Cache {
     slots: [RuntimeGlobal; SLOTS],
     loaded: RuntimeGlobal,
     owner: Option<ThreadId>,
+    /// Whether `load` loaded the slots and has yet to return, so that the
+    /// crossing of its return keeps them.
+    fresh: bool,
 }
 
-/// The cache, shared by `load` and the entry hook. It is empty only
-/// while the context module is instantiated.
+/// The cache, shared by `load` and the call hook. It is empty only while
+/// the context module is instantiated.
 type SharedCache = Arc<Mutex<Option<Cache>>>;
 
 impl ContextSlots {
@@ -89,8 +96,8 @@ impl ContextSlots {
         let tables = store.internal().tables_handle();
         let cache: SharedCache = Arc::default();
         let load = load_func(store, tables.clone(), cache.clone())?;
-        let engine = store.internal().runtime().engine().clone();
-        let module = RuntimeModule::new(&engine, &encode()).map_err(substrate_failure)?;
+        let modules = store.internal().generated_modules();
+        let module = compile(store, &modules)?;
         let mut imports = Imports::default();
         imports.define("host", "load", load);
         let instance = instantiate(store.internal().runtime_mut(), &module, &imports)
@@ -107,14 +114,12 @@ impl ContextSlots {
             slots: [global(store, "slot0")?, global(store, "slot1")?],
             loaded: global(store, "loaded")?,
             owner: None,
+            fresh: false,
         });
         store
             .internal()
             .runtime_mut()
-            .call_hook(move |context, kind| match kind {
-                CallHook::ReturningFromHost => Ok(()),
-                _ => write_back(&tables, &cache, context),
-            });
+            .call_hook(move |context, kind| write_back(&tables, &cache, context, kind));
         let slots = Self { instance };
         store.internal().install_context_slots(slots.clone());
         Ok(slots)
@@ -149,6 +154,23 @@ impl ContextSlots {
             .and_then(RuntimeExtern::into_func)
             .ok_or_else(|| Error::internal("the context module exports no such built-in"))
     }
+}
+
+/// The context module, compiled once for the engine of `store` and kept in
+/// `modules` for every later store of the engine.
+fn compile<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    modules: &GeneratedModules,
+) -> Result<RuntimeModule> {
+    let bytes = encode();
+    let mut modules = modules.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(module) = modules.get(&bytes) {
+        return Ok(module.clone());
+    }
+    let module = RuntimeModule::new(store.internal().runtime().engine(), &bytes)
+        .map_err(substrate_failure)?;
+    modules.insert(bytes, module.clone());
+    Ok(module)
 }
 
 /// The context module: the slots and the loaded flag as mutable `i32`
@@ -220,8 +242,8 @@ fn encode() -> Vec<u8> {
 /// It is a plain runtime-layer function, not one of the polyfill's host
 /// functions, because no host function of the component runs. The store's
 /// call hook runs around it as around every host function: it writes back
-/// when `load` is called, with nothing loaded, and leaves the slots `load`
-/// loaded when it returns.
+/// when `load` is called, with nothing loaded, and keeps the slots `load`
+/// loaded, which it marks fresh, when it returns.
 fn load_func<T: 'static>(
     store: &mut StoreContext<'_, T>,
     tables: Arc<Mutex<HandleTables>>,
@@ -242,27 +264,35 @@ fn load_func<T: 'static>(
             }
             cache.loaded.set(&mut context, RuntimeVal::I32(1))?;
             cache.owner = Some(thread);
+            cache.fresh = true;
             Ok(())
         },
     )
     .map_err(substrate_failure)
 }
 
-/// The store's call hook: write the loaded slots back to the record of the
-/// thread they were loaded for, and clear the loaded flag.
+/// The store's call hook at the crossing `kind`: write the loaded slots
+/// back to the record of the thread they were loaded for, and clear the
+/// loaded flag, unless `kind` is the return of `load`.
 ///
-/// A thread that ended since its slots were loaded has no record, and
-/// its slots end with it.
+/// The owner goes only once the flag is clear, so a failure of the
+/// substrate leaves the slots loaded for their owner, not for no one. A
+/// thread that ended since its slots were loaded has no record, and its
+/// slots end with it.
 fn write_back<T: 'static>(
     tables: &Mutex<HandleTables>,
     cache: &SharedCache,
     mut context: RuntimeContextMut<'_, StoreData<T>>,
+    kind: CallHook,
 ) -> core::result::Result<(), RuntimeError> {
     let mut cache = lock(cache);
     let Some(cache) = cache.as_mut() else {
         return Ok(());
     };
-    let Some(thread) = cache.owner.take() else {
+    if core::mem::take(&mut cache.fresh) && kind == CallHook::ReturningFromHost {
+        return Ok(());
+    }
+    let Some(thread) = cache.owner else {
         return Ok(());
     };
     let mut values = [0; SLOTS];
@@ -277,6 +307,7 @@ fn write_back<T: 'static>(
         };
     }
     cache.loaded.set(&mut context, RuntimeVal::I32(0))?;
+    cache.owner = None;
     write_slots(tables, thread, values).map_err(|error| RuntimeError::Backend {
         message: error.to_string(),
     })
@@ -288,7 +319,7 @@ fn current_slots(tables: &Mutex<HandleTables>) -> anyhow::Result<(ThreadId, [i32
         .lock()
         .map_err(|_| Error::internal("resource handle tables lock poisoned"))?;
     let thread = tables.tasks.current_thread().ok_or_else(|| {
-        Error::internal("an adapter read or wrote a context slot with no task on the stack")
+        anyhow!("an adapter read or wrote a context slot with no task on the stack")
     })?;
     let record = tables
         .tasks

@@ -28,8 +28,8 @@ use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::internal::{AccessorInternal, ErrorInternal, ResourceAnyInternal};
 use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
-    AsContextMut, Func as RuntimeFunc, FuncType, StoreContextMut as RuntimeContextMut,
-    Val as RuntimeVal, call_failure, substrate_failure,
+    AsContextMut, Func as RuntimeFunc, FuncType, GeneratedModules,
+    StoreContextMut as RuntimeContextMut, Val as RuntimeVal, call_failure, substrate_failure,
 };
 use crate::types::ResourceType;
 use crate::value::Val;
@@ -1647,6 +1647,12 @@ impl<'a, T: 'static> StoreContext<'a, T> {
     /// Workspace-internal.
     fn context_slots(&self) -> Option<ContextSlots> {
         self.store_data().context_slots().cloned()
+    }
+
+    /// The modules the store's engine generates for its stores.
+    /// Workspace-internal.
+    fn generated_modules(&self) -> GeneratedModules {
+        self.store_data().generated_modules().clone()
     }
 
     /// Install the store's context module. Workspace-internal.

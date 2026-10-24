@@ -33,6 +33,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, InstantiationError};
 
@@ -301,6 +302,11 @@ pub fn host_func<T: HostFrames + 'static>(
 /// exactly where the value is.
 #[derive(Clone, Debug)]
 pub struct Shared<V>(V);
+
+/// The modules the polyfill generates for the stores of one engine, the
+/// switch modules and the context module, compiled once each, by their
+/// bytes.
+pub type GeneratedModules = Shared<Arc<Mutex<HashMap<Vec<u8>, Module>>>>;
 
 impl<V> Shared<V> {
     /// Hold `value`.

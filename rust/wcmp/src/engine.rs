@@ -15,15 +15,14 @@
 //! runtime layer's abstractions in later modules and is not
 //! delegated to a backend's component runtime.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::concurrency::SwitchProbe;
 use crate::engine_config::EngineConfig;
 use crate::error::Result;
 use crate::internal::{EngineConfigInternal, EngineInternal};
 use crate::runtime_layer::{
-    Backend, Capability, Engine as RuntimeEngine, Module as RuntimeModule, Shared,
+    Backend, Capability, Engine as RuntimeEngine, GeneratedModules, Shared,
 };
 use crate::suspend_provider_kind::SuspendProviderKind;
 
@@ -43,13 +42,11 @@ pub struct Engine {
     inner: Shared<RuntimeEngine>,
     config: EngineConfig,
     suspend_provider: SuspendProviderKind,
-    /// The switch modules the stores of this engine instantiate,
-    /// compiled once each, by their bytes.
-    switch_modules: Shared<SwitchModules>,
+    /// The modules the polyfill generates for the stores of this engine,
+    /// the switch modules and the context module, compiled once each, by
+    /// their bytes.
+    generated_modules: GeneratedModules,
 }
-
-/// The switch modules of one engine, compiled once each, by their bytes.
-type SwitchModules = Arc<Mutex<HashMap<Vec<u8>, RuntimeModule>>>;
 
 impl Engine {
     /// Construct an `Engine` over `backend`, with the default
@@ -77,7 +74,7 @@ impl Engine {
             inner,
             config,
             suspend_provider,
-            switch_modules: Shared::new(Arc::default()),
+            generated_modules: Shared::new(Arc::default()),
         })
     }
 
@@ -147,8 +144,8 @@ impl EngineInternal for Engine {
         &self.inner
     }
 
-    fn switch_modules(&self) -> &SwitchModules {
-        &self.switch_modules
+    fn generated_modules(&self) -> &GeneratedModules {
+        &self.generated_modules
     }
 }
 

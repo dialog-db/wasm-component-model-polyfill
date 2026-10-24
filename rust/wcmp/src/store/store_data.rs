@@ -17,7 +17,7 @@ use crate::error::{AbiCause, AbiError, AbiPosition, Error, Result, SchedulerCaus
 use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::internal::{ErrorInternal, ResourceAnyInternal, StoreIdInternal};
 use crate::resource::{HandleTables, ResourceAny, host_reason};
-use crate::runtime_layer::HostFrames;
+use crate::runtime_layer::{GeneratedModules, HostFrames, Shared};
 use crate::types::{ResourceType, ValueType};
 
 use super::resource_record::ResourceRecord;
@@ -83,6 +83,9 @@ pub struct StoreData<T: 'static> {
     /// The context module whose exports are the `context.get` and
     /// `context.set` built-ins, once a component needed them.
     context_slots: Option<ContextSlots>,
+    /// The modules the polyfill generates for the stores of the store's
+    /// engine, compiled once each, by their bytes.
+    generated_modules: GeneratedModules,
 }
 
 /// The copy budget a crossing starts with unless the host sets
@@ -111,6 +114,7 @@ impl<T: 'static> StoreData<T> {
             scheduler,
             provider: None,
             context_slots: None,
+            generated_modules: Shared::new(Arc::default()),
             dropped: false,
             poisoned: false,
             hostcall_fuel: DEFAULT_HOSTCALL_FUEL,
@@ -209,6 +213,18 @@ impl<T: 'static> StoreData<T> {
     /// Install the provider the engine selected. Workspace-internal.
     pub fn install_provider(&mut self, provider: StoreProvider) {
         self.provider = Some(provider);
+    }
+
+    /// Install the modules the store's engine generates for its stores.
+    /// Workspace-internal.
+    pub fn install_generated_modules(&mut self, modules: GeneratedModules) {
+        self.generated_modules = modules;
+    }
+
+    /// The modules the store's engine generates for its stores.
+    /// Workspace-internal.
+    pub fn generated_modules(&self) -> &GeneratedModules {
+        &self.generated_modules
     }
 
     /// Install the store's context module. Workspace-internal.

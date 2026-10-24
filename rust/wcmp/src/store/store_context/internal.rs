@@ -35,7 +35,7 @@ use crate::executor::ir::CanonOptions;
 use crate::executor::{ContextSlots, ResourceDestructor};
 use crate::resource::{HandleTables, ResourceAny, TableId};
 use crate::runtime_layer::{
-    Func as RuntimeFunc, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
+    Func as RuntimeFunc, GeneratedModules, StoreContextMut as RuntimeContextMut, Val as RuntimeVal,
 };
 use crate::types::ResourceType;
 use crate::value::Val;
@@ -360,6 +360,11 @@ impl<'b, 'a, T: 'static> StoreContextInternal<'b, 'a, T> {
     /// The store's context module, once a component needed it.
     pub fn context_slots(self) -> Option<ContextSlots> {
         self.context.context_slots()
+    }
+
+    /// The modules the store's engine generates for its stores.
+    pub fn generated_modules(self) -> GeneratedModules {
+        self.context.generated_modules()
     }
 
     /// Install the store's context module.
