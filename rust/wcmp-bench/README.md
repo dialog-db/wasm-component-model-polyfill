@@ -118,6 +118,10 @@ named guests. A body states the size of what it moves with `run.moves_bytes` or
 | `composition-call`              | a call through the adapter `wac plug` wrote between two guests                                                                                     |
 | `host-calls-in-flight/N`        | N host calls pending at once, completing one per turn                                                                                              |
 | `yields`                        | one callback call that yields 16 times through the driver                                                                                          |
+| `shadow-stack-calls/N`          | N frames inside one call, each moving a stack pointer in context slot 0, as a `wasm32-wasip3` Rust build does                                      |
+| `global-stack-calls/N`          | the same frames with the stack pointer in a core global: the control, as a `wasm32-wasip1` build keeps it                                          |
+| `shadow-stack-host-calls/N`     | the frames of `shadow-stack-calls` with one host call in each                                                                                      |
+| `global-stack-host-calls/N`     | the same with the pointer in a core global: the control for the host-call case                                                                     |
 | `component-new/<fixture>`       | parsing and translating a component binary                                                                                                         |
 
 Every benchmark names its guest and its payload in the report's second block and

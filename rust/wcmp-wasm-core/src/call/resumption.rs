@@ -12,8 +12,8 @@ use crate::call::ResumableCall;
 use crate::capability::Capability;
 use crate::contract::BackendResumption;
 use crate::error::{Error, Result};
-use crate::internal::StoreContextMutInternal;
-use crate::store::{AsContextMut, StoreId};
+use crate::internal::{StoreContextMutInternal, call_hook};
+use crate::store::{AsContextMut, CallHook, StoreId};
 use crate::values::Val;
 
 /// A resumable call that runs: started with
@@ -61,7 +61,10 @@ impl Resumption {
     /// synchronously has seen it stop before the first wait.
     ///
     /// Once a wait answered, with the stop or with an error, the call is
-    /// spent, and a later wait is [`Error::Backend`].
+    /// spent, and a later wait is [`Error::Backend`]. An error before the
+    /// wait starts, from a wrong store, a missing capability, or the
+    /// store's call hook, leaves the call with the handle, as a future that
+    /// drops does.
     ///
     /// The backend must declare
     /// [`host_suspension`](Capability::HostSuspension). Where it does not,
@@ -84,8 +87,12 @@ impl Resumption {
         let inner = self.inner.as_mut().ok_or_else(|| Error::Backend {
             message: "the resumable call already stopped".to_owned(),
         })?;
+        // A backend that runs the call on a microtask runs its guest code
+        // during the wait.
+        call_hook(&mut *backend, CallHook::CallingWasm)?;
         let outcome = backend.stop_resumption(inner.as_mut(), results).await;
         self.inner = None;
+        call_hook(&mut *backend, CallHook::ReturningFromWasm)?;
         outcome
     }
 }

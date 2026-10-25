@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::internal::{
     EngineInternal, StoreContextInternal, StoreContextMutInternal, StoreDataInternal,
 };
-use crate::store::{AsContext, AsContextMut, StoreContext, StoreContextMut, StoreData};
+use crate::store::{AsContext, AsContextMut, CallHook, StoreContext, StoreContextMut, StoreData};
 
 /// The owner of every instance and every object an instance makes, and of
 /// the host's data, a `T`.
@@ -95,6 +95,32 @@ impl<T: 'static> Store<T> {
     /// The engine of the store.
     pub fn engine(&self) -> &Engine {
         self.inner.engine()
+    }
+
+    /// Set the hook the engine calls with the store at each crossing
+    /// between the host and guest code, as Wasmtime's `Store::call_hook`
+    /// does. [`CallHook`] names each crossing and when the engine makes it.
+    /// A store holds one hook, and this replaces the one it held.
+    ///
+    /// An error from the hook takes the place of what follows it. Before
+    /// guest code runs, the guest does not run, and the call fails with the
+    /// error. Before a host function's body runs, the body does not run, and
+    /// the guest traps with [`TrapKind::Host`](crate::TrapKind::Host),
+    /// carrying the error. After guest code or a host function's body
+    /// stopped, the error takes the place of its outcome, as in Wasmtime.
+    /// A [`SuspendedCall`](crate::SuspendedCall) that the hook refuses to
+    /// resume drops, as a resumption does that the host forgets. A
+    /// [`Resumption`](crate::Resumption) whose wait the hook refuses keeps
+    /// the call, and a later wait takes it up.
+    ///
+    /// The hook is out of the store while it runs, so a crossing that the
+    /// hook itself makes does not call it. A hook set from inside the hook
+    /// takes the place of the one that runs.
+    pub fn call_hook(
+        &mut self,
+        hook: impl FnMut(StoreContextMut<'_, T>, CallHook) -> Result<()> + Send + Sync + 'static,
+    ) {
+        self.as_context_mut().call_hook(hook);
     }
 }
 
