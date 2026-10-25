@@ -26,15 +26,15 @@ publish = false
 [workspace]
 
 [dependencies]
-wcmp = { version = "0.1.1", path = "../wcmp" }
+wcmp = { version = "0.1.2", path = "../wcmp" }
 
 # One backend on each target: Wasmtime natively, and the browser's own engine
 # under `wasm32`, where Wasmtime does not run.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-wcmp-wasm-core-wasmtime = { version = "0.1.1", path = "../wcmp-wasm-core-wasmtime" }
+wcmp-wasm-core-wasmtime = { version = "0.1.2", path = "../wcmp-wasm-core-wasmtime" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wcmp-wasm-core-web = { version = "0.1.1", path = "../wcmp-wasm-core-web" }
+wcmp-wasm-core-web = { version = "0.1.2", path = "../wcmp-wasm-core-web" }
 
 # The native test, which runs a component through the engine: a runtime to
 # drive the polyfill's asynchronous calls, and the text format the component

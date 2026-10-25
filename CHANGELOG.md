@@ -7,6 +7,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-25
+
 ### Performance
 
 - `context.get` and `context.set` no longer call the host for a slot that is
@@ -35,5 +37,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the load of a 10 MB module in Chrome. By Irakli Gozalishvili in
   [#1](https://github.com/dialog-db/wasm-component-model-polyfill/pull/1).
 
-[Unreleased]: https://github.com/dialog-db/wasm-component-model-polyfill/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/dialog-db/wasm-component-model-polyfill/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/dialog-db/wasm-component-model-polyfill/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/dialog-db/wasm-component-model-polyfill/releases/tag/v0.1.1
