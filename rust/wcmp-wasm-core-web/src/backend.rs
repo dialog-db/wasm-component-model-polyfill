@@ -9,8 +9,7 @@
 use core::fmt;
 use std::rc::Rc;
 
-use js_sys::{Uint8Array, WebAssembly};
-use wasm_bindgen::JsCast;
+use js_sys::WebAssembly;
 use wcmp_wasm_core::backend::{Backend, BackendModule, BackendStore, BoxFuture, StoreData};
 use wcmp_wasm_core::{Capabilities, Capability, Result};
 
@@ -19,6 +18,7 @@ use crate::errors;
 use crate::jspi::Jspi;
 use crate::module::WebModule;
 use crate::owner::Owner;
+use crate::precompiled;
 use crate::probes;
 use crate::store::WebStore;
 use crate::type_registry::TypeRegistry;
@@ -88,11 +88,9 @@ impl Backend for Web {
         Box::pin(async move {
             // `WebAssembly.compile`, so a module above the browser's limit
             // for a synchronous compile loads too.
-            let module = WebAssembly::compile(&Uint8Array::from(bytes).into())
+            let module = precompiled::compile(bytes)
                 .await
-                .map_err(|error| errors::compile(&error, self.capabilities, bytes))?
-                .dyn_into::<WebAssembly::Module>()
-                .map_err(|_| errors::backend("the compile gave no module"))?;
+                .map_err(|error| errors::compile(&error, self.capabilities, bytes))?;
             self.module(module, bytes)
         })
     }
@@ -101,7 +99,7 @@ impl Backend for Web {
         // The browser refuses a synchronous compile of a module above its
         // limit on the main thread with a `RangeError`, which is a compile
         // error with the browser's message.
-        let module = WebAssembly::Module::new(&Uint8Array::from(bytes).into())
+        let module = precompiled::module(bytes)
             .map_err(|error| errors::compile(&error, self.capabilities, bytes))?;
         self.module(module, bytes)
     }

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use js_sys::{Array, Function, Object, Promise, Uint8Array, WebAssembly};
+use js_sys::{Array, Function, Object, Promise, WebAssembly};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_encoder::{
@@ -22,6 +22,7 @@ use wcmp_wasm_core::Result;
 use crate::errors;
 use crate::js;
 use crate::jspi::Jspi;
+use crate::precompiled;
 
 /// The function through which the store starts a resumable call of one
 /// guest function: `WebAssembly.promising` over a generated module that
@@ -98,7 +99,7 @@ impl Entrance {
         let module = match modules.get(&bytes) {
             Some(module) => module.clone(),
             None => {
-                let module = WebAssembly::Module::new(&Uint8Array::from(&bytes[..]).into())
+                let module = precompiled::module(&bytes)
                     .map_err(|error| errors::backend(errors::message(&error)))?;
                 modules.insert(bytes, module.clone());
                 module
@@ -346,7 +347,7 @@ mod tests {
     use super::*;
     use core::cell::Cell;
     use core::task::Poll;
-    use js_sys::Reflect;
+    use js_sys::{Reflect, Uint8Array};
     use wasm_bindgen_futures::JsFuture;
     use wcmp_wasm_core::{
         Engine, ExternRef, Func, FuncType, Instance, Module, ResumableCall, Store, Val,

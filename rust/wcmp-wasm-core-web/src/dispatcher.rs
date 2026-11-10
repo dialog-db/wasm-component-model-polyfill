@@ -10,13 +10,14 @@
 use core::cell::RefCell;
 use core::hint::black_box;
 
-use js_sys::{Function, Object, Uint8Array, WebAssembly};
+use js_sys::{Function, Object, WebAssembly};
 use wasm_bindgen::{JsCast, JsValue};
 use wcmp_macros::wasm;
 use wcmp_wasm_core::Result;
 
 use crate::errors;
 use crate::js;
+use crate::precompiled;
 
 /// The table of the functions of the generated modules, and the entries of
 /// the polyfill's own function table that reach it.
@@ -154,7 +155,7 @@ impl Dispatcher {
     /// Makes the dispatcher, and puts each trampoline in the slot of its
     /// entry function in the polyfill's own table.
     fn install() -> Result<Self> {
-        let module = WebAssembly::Module::new(&Uint8Array::from(DISPATCH).into())
+        let module = precompiled::module(DISPATCH)
             .map_err(|error| errors::backend(errors::message(&error)))?;
         let exports = WebAssembly::Instance::new(&module, &Object::new())
             .map_err(|error| errors::backend(errors::message(&error)))?
