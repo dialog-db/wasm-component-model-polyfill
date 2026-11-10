@@ -18,6 +18,7 @@ use crate::code::{self, Side};
 use crate::dispatcher::{self, Dispatcher};
 use crate::errors;
 use crate::js;
+use crate::precompiled;
 
 /// The functions of a generated accessor module over one guest memory.
 ///
@@ -329,8 +330,8 @@ fn host_memory() -> WebAssembly::Memory {
 /// A generated module is small, so it compiles and instantiates
 /// synchronously.
 pub fn instantiate(bytes: &[u8], imports: &Object) -> Result<Object> {
-    let module = WebAssembly::Module::new(&js_sys::Uint8Array::from(bytes).into())
-        .map_err(|error| errors::backend(errors::message(&error)))?;
+    let module =
+        precompiled::module(bytes).map_err(|error| errors::backend(errors::message(&error)))?;
     Ok(WebAssembly::Instance::new(&module, imports)
         .map_err(|error| errors::backend(errors::message(&error)))?
         .exports())

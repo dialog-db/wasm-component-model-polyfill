@@ -323,6 +323,7 @@ mod linking;
 mod module;
 mod objects;
 mod owner;
+mod precompiled;
 mod probes;
 mod resumption;
 mod returns;
@@ -334,6 +335,7 @@ mod values;
 mod wrapper;
 
 pub use crate::backend::Web;
+pub use crate::precompiled::Precompiled;
 
 // The crate's own unit tests run in a browser, as every other test binary
 // of the workspace does.
