@@ -375,11 +375,18 @@ where
     ) -> Result<()> {
         let size = size_of(ty);
         let count = count.min(self.waiting.len());
-        let mut cx = LowerContext::new(cx, POINTER_ARGUMENT);
-        for (i, item) in self.waiting.drain(..count).enumerate() {
-            item.lower_memory(&mut cx, ty, offset + i * size)?;
-        }
-        Ok(())
+        let items = self.waiting.drain(..count);
+        // The items go one after another into the guest's buffer, as a
+        // list's elements do: assembled on the host and written in one
+        // access. Written one at a time, a stream of bytes took an access
+        // of the guest for each byte.
+        cx.lowering_within(offset, count * size, POINTER_ARGUMENT, ty, |boundary| {
+            let mut cx = LowerContext::new(boundary, POINTER_ARGUMENT);
+            for (index, item) in items.enumerate() {
+                item.lower_memory(&mut cx, ty, offset + index * size)?;
+            }
+            Ok(())
+        })
     }
 
     fn take_items(&mut self) -> Box<dyn Any> {
