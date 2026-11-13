@@ -172,14 +172,20 @@ fn lift_items<D: 'static, T: Lift>(
         None,
     );
     let size = size_of(ty);
-    let mut cx = LiftContext::new(&mut cx, POINTER_ARGUMENT);
+    let start = write.pointer as usize + (write.progress + *taken) as usize * size;
     buffer.reserve(count);
-    for _ in 0..count {
-        let offset = write.pointer as usize + (write.progress + *taken) as usize * size;
-        buffer.push(T::lift_memory(&mut cx, ty, offset)?);
-        *taken += 1;
-    }
-    Ok(())
+    // The items lie one after another in the guest's memory, as a list's
+    // elements do, so they are read in one access, and each one lifts out
+    // of that copy. Read one at a time, a stream of bytes took an access
+    // of the guest for each byte.
+    cx.lifting_within(start, count * size, POINTER_ARGUMENT, ty, |boundary| {
+        let mut cx = LiftContext::new(boundary, POINTER_ARGUMENT);
+        for index in 0..count {
+            buffer.push(T::lift_memory(&mut cx, ty, start + index * size)?);
+            *taken += 1;
+        }
+        Ok(())
+    })
 }
 
 impl<'a, T> SourceInternal<'a, T> for Source<'a, T> {
