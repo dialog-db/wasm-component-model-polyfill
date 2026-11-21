@@ -868,6 +868,7 @@ pub fn wcmp::HostCall<'a, T>::into_store(self) -> wcmp::StoreContext<'a, T>
 pub fn wcmp::HostCall<'a, T>::store(&mut self) -> &mut wcmp::StoreContext<'a, T>
 pub struct wcmp::Instance
 impl wcmp::Instance
+pub fn wcmp::Instance::core_memories(&self) -> &[wcmp::Memory]
 pub fn wcmp::Instance::exports(&self) -> wcmp::InstanceExports<'_>
 pub fn wcmp::Instance::get_func(&self, &str) -> core::option::Option<wcmp::Func>
 pub fn wcmp::Instance::get_module(&self, &str) -> core::option::Option<wcmp::Module>
@@ -969,6 +970,15 @@ pub fn wcmp::MapType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Re
 impl core::hash::Hash for wcmp::MapType
 pub fn wcmp::MapType::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::StructuralPartialEq for wcmp::MapType
+pub struct wcmp::Memory
+impl wcmp::Memory
+pub fn wcmp::Memory::data_size<T: 'static>(&self, &wcmp::Store<T>) -> wcmp::Result<usize>
+pub fn wcmp::Memory::size<T: 'static>(&self, &wcmp::Store<T>) -> wcmp::Result<u64>
+impl core::clone::Clone for wcmp::Memory
+pub fn wcmp::Memory::clone(&self) -> wcmp::Memory
+impl core::fmt::Debug for wcmp::Memory
+pub fn wcmp::Memory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for wcmp::Memory
 pub struct wcmp::Module
 impl wcmp::Module
 pub fn wcmp::Module::exports(&self) -> &[wcmp::ModuleExport]

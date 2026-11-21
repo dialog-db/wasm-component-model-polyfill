@@ -48,6 +48,9 @@
 //!   [`CoreExternType`], and [`CoreValueType`], instantiated by the
 //!   host with imports it supplies, or registered through
 //!   [`LinkerInstance::module`] for a component that imports it.
+//! - [`Memory`] — a linear memory that a core instance of a
+//!   component defines, reached through [`Instance::core_memories`],
+//!   whose current size the host reads in pages or in bytes.
 //! - [`TypedFunc`] — the typed counterpart to [`Func`] obtained
 //!   through [`Func::typed`], whose Rust parameter tuple and return
 //!   type are checked against the export's component-level
@@ -309,7 +312,8 @@ pub use crate::instance::{
 };
 pub use crate::linker::{HostCall, Linker, LinkerInstance};
 pub use crate::module::{
-    CoreExtern, CoreExternType, CoreInstance, CoreValueType, Module, ModuleExport, ModuleImport,
+    CoreExtern, CoreExternType, CoreInstance, CoreValueType, Memory, Module, ModuleExport,
+    ModuleImport,
 };
 pub use crate::projection::{Access, HasData, HasSelf};
 pub use crate::resource::{Resource, ResourceAny, ResourceDynamic, ResourceTable};

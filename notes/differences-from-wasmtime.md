@@ -50,3 +50,24 @@ thread that a new call starts on, so the call traps. The polyfill counts that
 thread but does not refuse it, so the call starts. Every other new handle is
 refused at the cap, as in Wasmtime, and that includes a thread that
 `thread.new-indirect` makes.
+
+## The memories of an instance
+
+Wasmtime gives a host no read of the core memories inside a component instance.
+Its nearest API is for debuggers: `Store::debug_all_instances` and
+`Instance::debug_memory`, which need `Config::guest_debug`. The polyfill lists
+the memories with `Instance::core_memories`, and needs no setting of the engine.
+A host reads the size of each one as it reads a `wasmtime::Memory`: in pages
+with `Memory::size`, and in bytes with `Memory::data_size`. A host can notice
+three differences:
+
+- The list holds only the memories that a core module defines and exports. The
+  browser's engine reaches only the exports of an instance. A memory that the
+  Canonical ABI reads and writes is always exported, because the component names
+  it by an export.
+- `Memory` reads the size and nothing else. It has no `data`, `read`, `write`,
+  or `grow`, because the component model moves values across the boundary
+  through lifted functions.
+- `Memory::size` and `Memory::data_size` take the `Store` and return a `Result`.
+  A read through another store fails with `InstantiationError::WrongStore`.
+  Wasmtime's methods take any context of the store and panic on another store.

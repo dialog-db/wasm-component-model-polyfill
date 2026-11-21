@@ -155,6 +155,17 @@ impl<'a, T: 'static> StoreRefInternal<'a, T> {
     pub fn scheduler(self) -> &'a Scheduler<T> {
         self.store.scheduler()
     }
+
+    /// Refuse a use of a store that the runtime layer refuses, with
+    /// [`Error::StoreRefused`].
+    pub fn reachable(self) -> Result<()> {
+        self.store.reachable()
+    }
+
+    /// Borrow the wrapped runtime-layer store.
+    pub fn inner(self) -> &'a crate::runtime_layer::Store<StoreData<T>> {
+        self.store.inner()
+    }
 }
 
 /// The seam crate code reaches [`StoreInternal`] and

@@ -581,6 +581,13 @@ impl<T: 'static> Store<T> {
         context.internal().run_concurrent(body).await
     }
 
+    /// Borrow the wrapped runtime-layer store.
+    ///
+    /// Workspace-internal; not re-exported by `lib.rs`.
+    fn inner(&self) -> &crate::runtime_layer::Store<StoreData<T>> {
+        &self.inner
+    }
+
     /// Mutably borrow the wrapped runtime-layer store.
     ///
     /// Workspace-internal; not re-exported by `lib.rs`.

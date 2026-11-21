@@ -50,6 +50,9 @@ pub struct Module {
     exports: Arc<[ModuleExport]>,
     /// Whether the module declares a `start` function.
     start: bool,
+    /// One export name for each memory the module defines and
+    /// exports, in the order the module defines its memories.
+    defined_memory_exports: Arc<[String]>,
 }
 
 impl Module {
@@ -190,6 +193,7 @@ impl ModuleInternal for Module {
             undescribed_imports: shape.undescribed_imports,
             exports: shape.exports.into(),
             start: shape.start,
+            defined_memory_exports: shape.defined_memory_exports.into(),
         })
     }
 
@@ -199,6 +203,10 @@ impl ModuleInternal for Module {
 
     fn has_start(&self) -> bool {
         self.start
+    }
+
+    fn defined_memory_exports(&self) -> &[String] {
+        &self.defined_memory_exports
     }
 }
 

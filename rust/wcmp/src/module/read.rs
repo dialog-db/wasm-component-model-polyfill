@@ -47,6 +47,13 @@ pub struct ModuleShape {
     /// Whether the module declares a `start` function, which its
     /// instantiation runs.
     pub start: bool,
+    /// One export name for each memory the module defines and
+    /// exports, in the order the module defines its memories. A
+    /// memory exported under more than one name has its first name
+    /// here. A memory the module imports and exports again is left
+    /// out, because the module that defines it names it, and so is a
+    /// memory the module defines and does not export.
+    pub defined_memory_exports: Vec<String>,
 }
 
 /// The index spaces a module's export section refers into.
@@ -60,6 +67,10 @@ struct IndexSpaces {
     funcs: Vec<u32>,
     tables: Vec<TableType>,
     memories: Vec<MemoryType>,
+    /// How many entries of `memories` the module imports. They come
+    /// first, so a memory at this index or above is one the module
+    /// defines.
+    imported_memories: usize,
     globals: Vec<GlobalType>,
     tags: Vec<TagType>,
 }
@@ -73,6 +84,7 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
     let mut undescribed_imports = false;
     let mut raw_exports = Vec::new();
     let mut start = false;
+    let mut defined_memories = std::collections::BTreeMap::new();
     for payload in Parser::new(0).parse_all(bytes) {
         match payload.map_err(parse_error)? {
             Payload::TypeSection(reader) => {
@@ -95,6 +107,7 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                         }
                     }
                 }
+                spaces.imported_memories = spaces.memories.len();
             }
             Payload::FunctionSection(reader) => {
                 for index in reader {
@@ -139,9 +152,15 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
                 spaces.func_type(type_index)?
             }
             ExternalKind::Table => table_type(spaces.tables.get(index).ok_or_else(out_of_range)?),
-            ExternalKind::Memory => Some(memory_type(
-                spaces.memories.get(index).ok_or_else(out_of_range)?,
-            )),
+            ExternalKind::Memory => {
+                let memory = spaces.memories.get(index).ok_or_else(out_of_range)?;
+                if index >= spaces.imported_memories {
+                    defined_memories
+                        .entry(index)
+                        .or_insert_with(|| export.name.to_owned());
+                }
+                Some(memory_type(memory))
+            }
             ExternalKind::Global => {
                 global_type(spaces.globals.get(index).ok_or_else(out_of_range)?)
             }
@@ -170,6 +189,7 @@ pub fn read_shape(bytes: &[u8]) -> Result<ModuleShape> {
         undescribed_imports,
         exports,
         start,
+        defined_memory_exports: defined_memories.into_values().collect(),
     })
 }
 

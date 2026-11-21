@@ -43,10 +43,11 @@ use crate::executor::ir::{CanonOptions, ExecutorIr};
 use crate::identifier::InterfaceIdentifier;
 use crate::instance::{ExportedFunction, ExportedModule, Func, Instance, TypedFunc};
 use crate::linker::{InstanceRegistration, Resolution};
-use crate::module::{CoreExtern, CoreExternType, CoreValueType, Module};
+use crate::module::{CoreExtern, CoreExternType, CoreValueType, Memory, Module};
 use crate::resource::HostHandle;
 use crate::runtime_layer::{
-    Extern as RuntimeExtern, Instance as RuntimeInstance, Module as RuntimeModule,
+    Extern as RuntimeExtern, Instance as RuntimeInstance, Memory as RuntimeMemory,
+    Module as RuntimeModule,
 };
 use crate::store::{StoreContext, StoreId};
 use crate::typed::NamedTypes;
@@ -288,6 +289,10 @@ pub struct InstanceParts {
     pub module_exports: Box<[ExportedModule]>,
     /// The canonical-ABI runtime state instantiation populated.
     pub abi_state: Arc<Mutex<AbiRuntimeState>>,
+    /// Each memory that a core instance of the component defines and
+    /// exports, in the order the component instantiates its core
+    /// modules.
+    pub core_memories: Box<[Memory]>,
     /// The identity of the store the instance was created in.
     pub store_id: StoreId,
 }
@@ -358,6 +363,12 @@ pub trait ModuleInternal {
     /// Whether the module declares a `start` function, which is
     /// guest code its instantiation runs.
     fn has_start(&self) -> bool;
+
+    /// One export name for each memory the module defines and
+    /// exports, in the order the module defines its memories. An
+    /// instance of the module reaches each of those memories by that
+    /// name.
+    fn defined_memory_exports(&self) -> &[String];
 }
 
 /// The parts a [`CoreInstance`](crate::CoreInstance) is built from.
@@ -375,6 +386,14 @@ pub struct CoreExternParts {
     pub store_id: StoreId,
     /// The type the module that exports the item declares for it.
     pub ty: CoreExternType,
+}
+
+/// The parts a [`Memory`](crate::Memory) is built from.
+pub struct MemoryParts {
+    /// The runtime-layer memory.
+    pub inner: RuntimeMemory,
+    /// The identity of the store the memory lives in.
+    pub store_id: StoreId,
 }
 
 /// The crate-internal face of [`CoreExtern`](crate::CoreExtern).
