@@ -17,6 +17,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   memory of a guest can tell whether the guest grew its memory to the cap
   before it trapped.
 
+### Fixed
+
+- The published crates no longer require exactly `wasm-bindgen` 0.2.126. They
+  take 0.2.126 or any later 0.2 release, so a crate that also depends on a
+  newer `wasm-bindgen`, `js-sys`, or `web-sys`, wgpu 30 among them, can use the
+  polyfill. Reported by Mistale in
+  [#5](https://github.com/dialog-db/wasm-component-model-polyfill/issues/5).
+- The repository checks out on Windows, so it serves as a Cargo git dependency
+  there. A design document's file name held a colon, which Windows refuses.
+  Reported by Mistale in
+  [#5](https://github.com/dialog-db/wasm-component-model-polyfill/issues/5).
+
 ## [0.1.2] - 2026-10-25
 
 ### Performance

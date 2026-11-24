@@ -13,6 +13,13 @@
 # The lock file beside this manifest is the downstream's own, and the check
 # builds with `--locked`. When a published crate's dependencies change, the
 # lock goes stale and the check fails; `downstream lock` refreshes it.
+#
+# The lock holds a newer `wasm-bindgen` than the workspace's, on purpose. The
+# workspace's builds and tests run on the oldest release the published crates
+# allow, and this check builds them on a newer one, as a consumer who has moved
+# on would. `downstream lock` keeps the locked version; move it forward with
+# `cargo update` on `wasm-bindgen` and the crates locked to it (`js-sys` and
+# the `wasm-bindgen-*` crates), all in one command.
 [package]
 name = "wcmp-downstream"
 description = "A consumer of the Wasm Component Model Polyfill from outside its workspace"

@@ -909,7 +909,7 @@ not change.
 [PDD009]: ./PDD009%20Resources.md
 [PDD010]: ./PDD010%20Pre-wasip3%20Public%20API.md
 [PDD011]:
-  ./PDD011%20Host%20Registration:%20Root%20Namespace%20and%20Store%20Context.md
+  ./PDD011%20Host%20Registration%20-%20Root%20Namespace%20and%20Store%20Context.md
 [PDD012]: ./PDD012%20Locally-Defined%20Resources.md
 [PDD013]: ./PDD013%20Shared%20Resource%20Type%20Identity.md
 [PDD017]: ./PDD017%20Resource%20Disposal.md

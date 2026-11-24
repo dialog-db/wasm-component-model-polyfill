@@ -870,7 +870,7 @@ entry point that panics on a failure a user can cause, as Wasmtime's does.
 [PDD009]: ./PDD009%20Resources.md
 [PDD010]: ./PDD010%20Pre-wasip3%20Public%20API.md
 [PDD011]:
-  ./PDD011%20Host%20Registration:%20Root%20Namespace%20and%20Store%20Context.md
+  ./PDD011%20Host%20Registration%20-%20Root%20Namespace%20and%20Store%20Context.md
 [PDD018]: ./PDD018%20Concurrency%20Runtime%20Model.md
 [PDD020]: ./PDD020%20Subtasks%20and%20the%20Async%20Import.md
 [PDD021]: ./PDD021%20Streams%20and%20Futures.md

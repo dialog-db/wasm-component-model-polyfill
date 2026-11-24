@@ -60,7 +60,7 @@
     # dialog-db workspace and inherits that workspace's dependency table, so
     # the whole tree is fetched and one crate is built from it (see
     # `wbg-pool` below). Its codegen library must match the `wasm-bindgen`
-    # version Cargo.toml pins; the two move together.
+    # version Cargo.lock holds; the two move together.
     wbg-pool-src = {
       url = "github:dialog-db/dialog-db/7b84dcac9520f368b6c0714c6e2785e5740f28c7";
       flake = false;
@@ -1127,7 +1127,7 @@
           # wasm-bindgen-cli must match the `wasm-bindgen` crate version that
           # Cargo.lock resolves. The helper reads the version from the lock
           # file and knows the fixed-output hashes for the version it was
-          # validated against, which is the one Cargo.toml pins. When the
+          # validated against, which is the one Cargo.lock holds. When the
           # workspace bumps `wasm-bindgen` past that, add a
           # `wasmBindgenHashes."<version>"` entry here (bootstrap its `hash`
           # and `cargoHash` with `pkgs.lib.fakeHash` and let the failing
@@ -1310,6 +1310,26 @@
             test "$status" = 0
             touch "$out"
           '';
+
+        # Every tracked path checks out on Windows, so the repository clones
+        # there and serves as a Cargo git dependency. Windows refuses a name
+        # that holds `<>:"\|?*` or a control character, that ends in a space
+        # or a dot, or that is a device name (`CON`, `PRN`, `AUX`, `NUL`,
+        # `COM0`-`COM9`, `LPT0`-`LPT9`) with or without an extension. A design
+        # document named after a title with a colon in it is the usual way in.
+        windowsPathsCheck = pkgs.runCommand "wcmp-windows-paths-check" { } ''
+          cd ${self}
+          refused=$(find . -regextype posix-extended -mindepth 1 \( \
+            -name '*[<>:"\\|?*]*' -o -name $'*[\001-\037]*' -o -name '* ' -o -name '*.' \
+            -o -iregex '.*/(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.[^/]*)?' \
+            \) -printf '%P\n')
+          if [ -n "$refused" ]; then
+            echo "These tracked paths have a name Windows refuses:" >&2
+            printf '%s\n' "$refused" >&2
+            exit 1
+          fi
+          touch "$out"
+        '';
 
         # crane over this workspace's toolchain, which carries the `wasm32`
         # target, for the two checks below that drive cargo themselves.
@@ -3391,6 +3411,9 @@
             # The browser backend makes no function from a string of
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
+            # Every tracked path checks out on Windows: see
+            # `windowsPathsCheck`.
+            windows-paths = windowsPathsCheck;
             # No `tests` lane hands nextest a Zena variable inherited from
             # the caller's shell: see `testLaneEnvironmentCheck`.
             test-lane-environment = testLaneEnvironmentCheck;
