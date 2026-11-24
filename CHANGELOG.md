@@ -7,6 +7,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Performance
+
+- A host that reads a guest's stream of numbers, such as a `stream<u8>`, takes
+  each read in one access of the guest's memory, and decodes the numbers as
+  they are, as Wasmtime does. Any other item is read in one access too, and
+  then lifted item by item. Before, each item took an access of its own, which
+  in the browser is a call from Rust into JavaScript for each byte. In one
+  embedding, writing 5.4 MB through such a stream went from 443 ms to 159 ms.
+  By Irakli Gozalishvili in
+  [#6](https://github.com/dialog-db/wasm-component-model-polyfill/pull/6).
+
 ### Added
 
 - A host can read the current size of each memory of a component's core
@@ -28,6 +39,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   there. A design document's file name held a colon, which Windows refuses.
   Reported by Mistale in
   [#5](https://github.com/dialog-db/wasm-component-model-polyfill/issues/5).
+- A stream or future copy into a guest's buffer leaves the bytes no item
+  covers, the padding of a record and the unused tail of a variant, as the
+  guest left them, as the Canonical ABI stores items and as Wasmtime's host
+  does. Before, a copy of any item that is not a number wrote those bytes as
+  zeros.
+- A host's read of a guest's stream charges the hostcall fuel for the items it
+  builds, as Wasmtime charges a list it lifts. Before, a read charged nothing
+  for the items themselves.
 
 ## [0.1.2] - 2026-10-25
 
