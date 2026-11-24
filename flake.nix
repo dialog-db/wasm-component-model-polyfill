@@ -1311,6 +1311,26 @@
             touch "$out"
           '';
 
+        # Every tracked path checks out on Windows, so the repository clones
+        # there and serves as a Cargo git dependency. Windows refuses a name
+        # that holds `<>:"\|?*` or a control character, that ends in a space
+        # or a dot, or that is a device name (`CON`, `PRN`, `AUX`, `NUL`,
+        # `COM0`-`COM9`, `LPT0`-`LPT9`) with or without an extension. A design
+        # document named after a title with a colon in it is the usual way in.
+        windowsPathsCheck = pkgs.runCommand "wcmp-windows-paths-check" { } ''
+          cd ${self}
+          refused=$(find . -regextype posix-extended -mindepth 1 \( \
+            -name '*[<>:"\\|?*]*' -o -name $'*[\001-\037]*' -o -name '* ' -o -name '*.' \
+            -o -iregex '.*/(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.[^/]*)?' \
+            \) -printf '%P\n')
+          if [ -n "$refused" ]; then
+            echo "These tracked paths have a name Windows refuses:" >&2
+            printf '%s\n' "$refused" >&2
+            exit 1
+          fi
+          touch "$out"
+        '';
+
         # crane over this workspace's toolchain, which carries the `wasm32`
         # target, for the two checks below that drive cargo themselves.
         publishCrane = (katsuobushi.inputs.crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
@@ -3391,6 +3411,9 @@
             # The browser backend makes no function from a string of
             # source: see `webBackendNoEvalCheck`.
             web-backend-no-eval = webBackendNoEvalCheck;
+            # Every tracked path checks out on Windows: see
+            # `windowsPathsCheck`.
+            windows-paths = windowsPathsCheck;
             # No `tests` lane hands nextest a Zena variable inherited from
             # the caller's shell: see `testLaneEnvironmentCheck`.
             test-lane-environment = testLaneEnvironmentCheck;
