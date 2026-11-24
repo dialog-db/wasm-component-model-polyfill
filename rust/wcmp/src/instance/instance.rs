@@ -13,7 +13,7 @@ use crate::abi::signature::Signature;
 use crate::component::ExternalName;
 use crate::executor::ir::CanonOptions;
 use crate::internal::{FuncParts, InstanceExportsInternal, InstanceInternal, InstanceParts};
-use crate::module::Module;
+use crate::module::{Memory, Module};
 use crate::store::StoreId;
 
 use super::exports::InstanceExports;
@@ -108,6 +108,10 @@ pub struct Instance {
     /// runtime layer's `Func::new` requires `Send + Sync`
     /// closures.
     abi_state: Arc<Mutex<AbiRuntimeState>>,
+    /// Each memory that a core instance of the component defines and
+    /// exports, in the order the component instantiates its core
+    /// modules, and in the order each module defines its memories.
+    core_memories: Box<[Memory]>,
     /// The identity of the [`Store`] this instance was created in.
     /// Every [`Func`] handed out by this instance carries it, so a
     /// call through another store is rejected before it reaches
@@ -125,6 +129,7 @@ impl From<InstanceParts> for Instance {
             instance_exports: parts.instance_exports,
             module_exports: parts.module_exports,
             abi_state: parts.abi_state,
+            core_memories: parts.core_memories,
             store_id: parts.store_id,
         }
     }
@@ -190,5 +195,32 @@ impl Instance {
     /// the instance-typed traversal `get_func` cannot see.
     pub fn exports(&self) -> InstanceExports<'_> {
         InstanceExports::new(self)
+    }
+
+    /// The memories of the component's core instances, whose current
+    /// size the host reads through [`Memory::size`] and
+    /// [`Memory::data_size`].
+    ///
+    /// The list holds each memory that a core instance of the
+    /// component defines and exports, at any depth of nesting, in the
+    /// order the component instantiates its core modules, and within
+    /// one instance in the order its module defines its memories. A
+    /// memory that one core instance exports and another imports is
+    /// listed once, under the instance that defines it. A module
+    /// instantiated twice gives two memories.
+    ///
+    /// A memory that its module defines and does not export is not
+    /// listed. The browser's engine reaches only the exports of an
+    /// instance, and Wasmtime reaches any other memory only through
+    /// its API for debuggers. A memory that the Canonical ABI reads
+    /// and writes is always exported, because the component names it
+    /// by an export.
+    ///
+    /// Wasmtime's component instance has no such list. Its nearest
+    /// API is `Store::debug_all_instances` with
+    /// `Instance::debug_memory`, which needs guest debugging turned on
+    /// in the engine.
+    pub fn core_memories(&self) -> &[Memory] {
+        &self.core_memories
     }
 }

@@ -7,6 +7,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A host can read the current size of each memory of a component's core
+  instances. `Instance::core_memories` lists each memory that a core instance
+  of the component defines and exports. `Memory::size` gives its size in pages
+  and `Memory::data_size` in bytes, as `wasmtime::Memory` does. A read runs no
+  guest code, so it works after a trap. For example, a host that caps the
+  memory of a guest can tell whether the guest grew its memory to the cap
+  before it trapped.
+
 ## [0.1.2] - 2026-10-25
 
 ### Performance

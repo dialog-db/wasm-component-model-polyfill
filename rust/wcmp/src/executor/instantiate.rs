@@ -25,9 +25,9 @@ use crate::concurrency::{BlockingBuiltin, InstanceId};
 use crate::error::{Error, InstantiationError, LinkError, Result};
 use crate::instance::{ExportedFunction, ExportedModule, Instance};
 use crate::internal::{ComponentInternal, ErrorInternal, LinkerInternal};
-use crate::internal::{InstanceParts, ModuleInternal};
+use crate::internal::{InstanceParts, MemoryParts, ModuleInternal};
 use crate::linker::{HostFuncKind, ImportBinding, InstanceRegistration, Linker, Resolution};
-use crate::module::Module;
+use crate::module::{Memory, Module};
 use crate::resource::{HandleTables, ResourceTableRuntime, TableId};
 use crate::runtime_layer::{
     Extern as RuntimeExtern, ExternType as RuntimeExternType, Func as RuntimeFunc, FuncType,
@@ -79,11 +79,12 @@ use super::trampoline::{
 };
 
 /// The runtime items the executor has produced so far while walking
-/// the plan: core instances in instantiation order, every trampoline
-/// (built upfront), and the may-leave flag of every component
-/// instance.
+/// the plan: core instances in instantiation order, the memories they
+/// define and export, every trampoline (built upfront), and the
+/// may-leave flag of every component instance.
 struct RuntimeItems {
     core_instances: Vec<RuntimeInstance>,
+    core_memories: Vec<Memory>,
     trampolines: Vec<RuntimeFunc>,
     flags: Vec<InstanceFlags>,
 }
@@ -436,6 +437,7 @@ async fn run_plan<T: 'static>(
 
     let mut items = RuntimeItems {
         core_instances: Vec::new(),
+        core_memories: Vec::new(),
         trampolines,
         flags,
     };
@@ -480,6 +482,9 @@ async fn run_plan<T: 'static>(
                 };
                 let instance =
                     instantiate_core(store, &entry.module, &runtime_imports, owner).await?;
+                items
+                    .core_memories
+                    .extend(defined_memories(store, &entry.module, instance)?);
                 items.core_instances.push(instance);
             }
             Initializer::InstantiateImportedModule {
@@ -507,6 +512,9 @@ async fn run_plan<T: 'static>(
                     None => None,
                 };
                 let instance = instantiate_core(store, &module, &runtime_imports, owner).await?;
+                items
+                    .core_memories
+                    .extend(defined_memories(store, &module, instance)?);
                 items.core_instances.push(instance);
             }
             Initializer::ExtractMemory { slot, source } => {
@@ -648,6 +656,7 @@ async fn run_plan<T: 'static>(
         instance_exports: ir.instance_exports.clone(),
         module_exports,
         abi_state,
+        core_memories: items.core_memories.into_boxed_slice(),
         store_id: store.internal().id(),
     }
     .into())
@@ -678,6 +687,36 @@ async fn instantiate_core<T: 'static>(
         }
         substrate_failure(error)
     })
+}
+
+/// Each memory that `instance`, an instance of `module`, defines and
+/// exports, in the order the module defines its memories: the list
+/// [`Instance::core_memories`] gives the host.
+fn defined_memories<T: 'static>(
+    store: &mut StoreContext<'_, T>,
+    module: &Module,
+    instance: RuntimeInstance,
+) -> Result<Vec<Memory>> {
+    let store_id = store.internal().id();
+    module
+        .defined_memory_exports()
+        .iter()
+        .map(|name| {
+            match instance
+                .get_export(store.internal().runtime_mut(), name)
+                .map_err(substrate_failure)?
+            {
+                Some(RuntimeExtern::Memory(memory)) => Ok(MemoryParts {
+                    inner: memory,
+                    store_id,
+                }
+                .into()),
+                _ => Err(internal(
+                    "a core instance lacks a memory its module exports",
+                )),
+            }
+        })
+        .collect()
 }
 
 /// The store's context module, which `run_plan` installs before it

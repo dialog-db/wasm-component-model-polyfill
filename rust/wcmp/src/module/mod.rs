@@ -21,6 +21,7 @@ mod core_extern;
 mod core_extern_type;
 mod core_instance;
 mod core_value_type;
+mod memory;
 #[allow(clippy::module_inception)]
 mod module;
 mod module_export;
@@ -31,6 +32,7 @@ pub use core_extern::CoreExtern;
 pub use core_extern_type::CoreExternType;
 pub use core_instance::CoreInstance;
 pub use core_value_type::CoreValueType;
+pub use memory::Memory;
 pub use module::Module;
 pub use module_export::ModuleExport;
 pub use module_import::ModuleImport;
