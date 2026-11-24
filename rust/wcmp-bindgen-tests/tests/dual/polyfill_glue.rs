@@ -9,7 +9,7 @@
 
 use wcmp::{
     Access, Accessor, Component, Engine, Error, FutureReader, HasSelf, Linker, Resource,
-    ResourceTable, Store,
+    ResourceTable, Store, StreamReader,
 };
 
 use crate::host_core::{CheckFailed, Core, Counter, PendingOnce, ReadError, Shape};
@@ -21,6 +21,7 @@ mod bindings {
             "test:dual/host.checked": trappable,
             "test:dual/host.read": trappable,
             "test:dual/host.lost": store | trappable,
+            "test:dual/host.pairs": store | trappable,
         },
         with: { "test:dual/host.counter": crate::host_core::Counter },
         trappable_error_type: { "test:dual/host.fs-error" => crate::host_core::ReadError },
@@ -90,6 +91,15 @@ impl host::HostWithStore<HostData> for HasSelf<HostData> {
     fn lost(mut host: Access<'_, HostData, Self>) -> wcmp::Result<FutureReader<u32>> {
         let value = host.get().core.lost();
         FutureReader::new(host.store(), async move { Ok::<u32, Error>(value) })
+    }
+
+    fn pairs(mut host: Access<'_, HostData, Self>) -> wcmp::Result<StreamReader<types::Pair>> {
+        let pairs = host.get().core.pairs();
+        let pairs: Vec<_> = pairs
+            .into_iter()
+            .map(|(a, b)| types::Pair { a, b })
+            .collect();
+        StreamReader::new(host.store(), pairs)
     }
 }
 
@@ -178,16 +188,20 @@ pub async fn run(guest: &[u8]) -> Vec<String> {
             .expect("call-read");
         record.push(format!("call-read {code} -> {}", read_result(read)));
     }
-    let (answer, lost) = store
+    let (answer, lost, pairs) = store
         .run_concurrent(async |accessor| {
             let answer = calls.call_call_answer(accessor, 21).await;
             let lost = calls.call_call_lost(accessor).await;
-            (answer, lost)
+            let pairs = calls.call_call_pairs(accessor).await;
+            (answer, lost, pairs)
         })
         .await
         .expect("run the calls");
     record.push(format!("call-answer -> {}", answer.expect("call-answer")));
     record.push(format!("call-lost -> {}", lost.expect("call-lost")));
+    let words = pairs.expect("call-pairs");
+    let words: Vec<String> = words.iter().map(|word| format!("{word:#010x}")).collect();
+    record.push(format!("call-pairs -> [{}]", words.join(", ")));
     let checked = calls
         .call_call_checked(&mut store, 1)
         .await

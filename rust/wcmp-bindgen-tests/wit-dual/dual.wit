@@ -5,11 +5,13 @@ interface types {
   record point { x: u32, y: u32 }
   variant shape { circle(u32), square(point), none }
   flags perms { read, write }
+  /// A record with three bytes of padding between its fields.
+  record pair { a: u8, b: u32 }
 }
 
 /// What the host serves.
 interface host {
-  use types.{point, shape, perms};
+  use types.{point, shape, perms, pair};
 
   /// A resource `with` maps to a type of the host core.
   resource counter {
@@ -29,6 +31,8 @@ interface host {
   answer: async func(x: u32) -> u32;
   /// A plain import with the `store` flag that returns a future.
   lost: func() -> future<u32>;
+  /// A plain import with the `store` flag that returns a stream.
+  pairs: func() -> stream<pair>;
 }
 
 /// What the guest exports.
@@ -56,6 +60,9 @@ interface guest {
   call-answer: async func(x: u32) -> u32;
   /// Calls `lost`, and reads the future it returns.
   call-lost: async func() -> u32;
+  /// Calls `pairs`, reads its stream into a buffer of four records'
+  /// room with every byte marked, and returns the buffer's words.
+  call-pairs: async func() -> list<u32>;
 }
 
 world dual {

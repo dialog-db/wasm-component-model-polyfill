@@ -63,6 +63,8 @@ const RECORD: &[&str] = &[
     "call-read 1 -> Err(not-found)",
     "call-answer -> 42",
     "call-lost -> 99",
+    "call-pairs -> [0x555555a1, 0x000003e8, 0x555555b2, 0x000007d0, 0x555555c3, 0x00000bb8, \
+     0x55555555, 0x55555555]",
     "call-checked 1 -> 2",
     "call-checked 0 -> error CheckFailed { value: 0 }",
     "core: describe Circle(3) read=true write=true -> (9, 2)",
@@ -72,6 +74,7 @@ const RECORD: &[&str] = &[
     "core: read 1",
     "core: answer 21",
     "core: lost",
+    "core: pairs",
     "core: checked 1",
     "core: checked 0",
     "call-read 2 -> error Broken",
@@ -109,7 +112,7 @@ fn it_states_the_line_count_of_each_glue_module() {
     println!("polyfill glue: {polyfill} lines; Wasmtime glue: {wasmtime} lines");
     assert_eq!(
         (polyfill, wasmtime),
-        (218, 219),
+        (232, 234),
         "the glue modules have the line counts this test states"
     );
 }

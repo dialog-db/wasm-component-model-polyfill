@@ -105,6 +105,13 @@ impl Core {
         99
     }
 
+    /// The records of the stream `pairs` returns: three, for a read
+    /// with room for four.
+    pub fn pairs(&mut self) -> Vec<(u8, u32)> {
+        self.log.push("pairs".to_owned());
+        vec![(0xa1, 1000), (0xb2, 2000), (0xc3, 3000)]
+    }
+
     /// A new counter.
     pub fn counter(&mut self, start: u32) -> Counter {
         self.log.push(format!("counter {start}"));
