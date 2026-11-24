@@ -60,7 +60,7 @@
     # dialog-db workspace and inherits that workspace's dependency table, so
     # the whole tree is fetched and one crate is built from it (see
     # `wbg-pool` below). Its codegen library must match the `wasm-bindgen`
-    # version Cargo.toml pins; the two move together.
+    # version Cargo.lock holds; the two move together.
     wbg-pool-src = {
       url = "github:dialog-db/dialog-db/7b84dcac9520f368b6c0714c6e2785e5740f28c7";
       flake = false;
@@ -1127,7 +1127,7 @@
           # wasm-bindgen-cli must match the `wasm-bindgen` crate version that
           # Cargo.lock resolves. The helper reads the version from the lock
           # file and knows the fixed-output hashes for the version it was
-          # validated against, which is the one Cargo.toml pins. When the
+          # validated against, which is the one Cargo.lock holds. When the
           # workspace bumps `wasm-bindgen` past that, add a
           # `wasmBindgenHashes."<version>"` entry here (bootstrap its `hash`
           # and `cargoHash` with `pkgs.lib.fakeHash` and let the failing

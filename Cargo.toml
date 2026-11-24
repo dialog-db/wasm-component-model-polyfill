@@ -58,11 +58,15 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # The demo's browser layers: spans as performance marks and measures, which
 # the browser's performance panel draws, and events in the console.
 tracing-web = "0.1.3"
-# Pinned so that the crate version everything links against matches the
-# `wasm-bindgen-cli` the flake provides and the codegen library inside
-# `wbg-pool`, the browser test runner the flake pins by commit. The two move
-# together: the runner refuses a test binary built by another version.
-wasm-bindgen = "=0.2.126"
+# A caret requirement, because a graph holds one `wasm-bindgen` and an exact
+# one would hold every consumer to this version. `Cargo.lock` keeps the
+# workspace's own builds at the version the flake's `wasm-bindgen-cli` and the
+# codegen library inside `wbg-pool`, the browser test runner the flake pins by
+# commit, are built for. The three move together: the runner refuses a test
+# binary built by another version. The lock of `rust/wcmp-downstream` holds a
+# newer release on purpose, so the published crates build against the oldest
+# release this allows and a newer one.
+wasm-bindgen = "0.2.126"
 wasm-bindgen-futures = "0.4"
 wasm-bindgen-test = "0.3"
 # The browser API the demo drives: the DOM, custom elements, the service
