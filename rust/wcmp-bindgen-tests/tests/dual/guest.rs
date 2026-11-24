@@ -13,9 +13,12 @@ use wcmp_macros::component;
 /// Its `test:dual/guest` exports `accumulator`, whose rep is the address
 /// of its total; `shape-of`, which returns `circle(x + y)`; and a
 /// `call-*` function for each import, which calls it and returns what
-/// it returned. `call-answer` and `call-lost` are lifted `async` with a
-/// callback, and wait for a call or a read that does not finish where
-/// it starts. The interface is a component of its own that imports the
+/// it returned. `call-answer`, `call-lost`, and `call-pairs` are lifted
+/// `async` with a callback, and wait for a call or a read that does not
+/// finish where it starts. `call-pairs` marks every byte of a buffer of
+/// four records' room with `0x55`, reads the stream `pairs` returns
+/// into it, and returns the buffer's eight words, so a run records what
+/// the read wrote and what it left alone. The interface is a component of its own that imports the
 /// functions and the types and exports them again, so that each
 /// function's type names the types the interface exports.
 pub const GUEST: &[u8] = component!(
@@ -27,10 +30,13 @@ pub const GUEST: &[u8] = component!(
         (type $shape' (variant (case "circle" u32) (case "square" $point) (case "none")))
         (export "shape" (type $shape (eq $shape')))
         (type $perms' (flags "read" "write"))
-        (export "perms" (type $perms (eq $perms')))))
+        (export "perms" (type $perms (eq $perms')))
+        (type $pair' (record (field "a" u8) (field "b" u32)))
+        (export "pair" (type $pair (eq $pair')))))
       (alias export $types "point" (type $point))
       (alias export $types "shape" (type $shape))
       (alias export $types "perms" (type $perms))
+      (alias export $types "pair" (type $pair))
       (import "test:dual/host" (instance $host
         (alias outer 1 $point (type $point'))
         (export "point" (type $hpoint (eq $point')))
@@ -38,6 +44,8 @@ pub const GUEST: &[u8] = component!(
         (export "shape" (type $hshape (eq $shape')))
         (alias outer 1 $perms (type $perms'))
         (export "perms" (type $hperms (eq $perms')))
+        (alias outer 1 $pair (type $pair'))
+        (export "pair" (type $hpair (eq $pair')))
         (export "counter" (type $counter (sub resource)))
         (export "[constructor]counter" (func (param "start" u32) (result (own $counter))))
         (export "[method]counter.get" (func (param "self" (borrow $counter)) (result u32)))
@@ -49,7 +57,9 @@ pub const GUEST: &[u8] = component!(
         (export "read" (func (param "code" u32) (result (result u32 (error $fs-error)))))
         (export "answer" (func async (param "x" u32) (result u32)))
         (type $future (future u32))
-        (export "lost" (func (result $future)))))
+        (export "lost" (func (result $future)))
+        (type $stream (stream $hpair))
+        (export "pairs" (func (result $stream)))))
       (alias export $host "counter" (type $counter))
       (alias export $host "fs-error" (type $fs-error))
       (alias export $host "[constructor]counter" (func $counter-new))
@@ -59,10 +69,12 @@ pub const GUEST: &[u8] = component!(
       (alias export $host "read" (func $read))
       (alias export $host "answer" (func $answer))
       (alias export $host "lost" (func $lost))
+      (alias export $host "pairs" (func $pairs))
 
       (core module $libc (memory (export "memory") 1))
       (core instance $libc (instantiate $libc))
       (type $future (future u32))
+      (type $pair-stream (stream $pair))
       (type $accumulator (resource (rep i32)))
       (core func $counter-new-lower (canon lower (func $counter-new)))
       (core func $counter-get-lower (canon lower (func $counter-get)))
@@ -77,6 +89,12 @@ pub const GUEST: &[u8] = component!(
       (core func $future-read
         (canon future.read $future async (memory (core memory $libc "memory"))))
       (core func $future-drop (canon future.drop-readable $future))
+      (core func $pairs-lower (canon lower (func $pairs)))
+      (core func $stream-read
+        (canon stream.read $pair-stream async (memory (core memory $libc "memory"))))
+      (core func $stream-drop (canon stream.drop-readable $pair-stream))
+      (core func $task-return-words
+        (canon task.return (result (list u32)) (memory (core memory $libc "memory"))))
       (core func $accumulator-new (canon resource.new $accumulator))
       (core func $task-return (canon task.return (result u32)))
       (core func $set-new (canon waitable-set.new))
@@ -94,12 +112,17 @@ pub const GUEST: &[u8] = component!(
         (import "" "lost" (func $lost (result i32)))
         (import "" "future-read" (func $future-read (param i32 i32) (result i32)))
         (import "" "future-drop" (func $future-drop (param i32)))
+        (import "" "pairs" (func $pairs (result i32)))
+        (import "" "stream-read" (func $stream-read (param i32 i32 i32) (result i32)))
+        (import "" "stream-drop" (func $stream-drop (param i32)))
+        (import "" "task.return-words" (func $task-return-words (param i32 i32)))
         (import "" "accumulator-new" (func $accumulator-new (param i32) (result i32)))
         (import "" "task.return" (func $task-return (param i32)))
         (import "" "waitable-set.new" (func $set-new (result i32)))
         (import "" "waitable.join" (func $join (param i32 i32)))
         (global $bump (mut i32) (i32.const 1024))
         (global $end (mut i32) (i32.const 0))
+        (global $pairs (mut i32) (i32.const 0))
 
         ;; Wait on the waitable `w` in a set of its own: the callback's
         ;; code to return.
@@ -160,7 +183,23 @@ pub const GUEST: &[u8] = component!(
         (func (export "lost-callback") (param i32 i32 i32) (result i32)
           (call $future-drop (global.get $end))
           (call $task-return (i32.load (i32.const 112)))
-          (i32.const 0)))
+          (i32.const 0))
+
+        ;; The buffer of `call-pairs`: four records of eight bytes at 256.
+        (func (export "call-pairs") (result i32)
+          (memory.fill (i32.const 256) (i32.const 0x55) (i32.const 32))
+          (global.set $pairs (call $pairs))
+          (if (i32.ne
+                (call $stream-read (global.get $pairs) (i32.const 256) (i32.const 4))
+                (i32.const -1))
+            (then (call $return-pairs) (return (i32.const 0))))
+          (call $wait (global.get $pairs)))
+        (func (export "pairs-callback") (param i32 i32 i32) (result i32)
+          (call $return-pairs)
+          (i32.const 0))
+        (func $return-pairs
+          (call $stream-drop (global.get $pairs))
+          (call $task-return-words (i32.const 256) (i32.const 8))))
       (core instance $i (instantiate $m
         (with "libc" (instance $libc))
         (with "" (instance
@@ -174,6 +213,10 @@ pub const GUEST: &[u8] = component!(
           (export "lost" (func $lost-lower))
           (export "future-read" (func $future-read))
           (export "future-drop" (func $future-drop))
+          (export "pairs" (func $pairs-lower))
+          (export "stream-read" (func $stream-read))
+          (export "stream-drop" (func $stream-drop))
+          (export "task.return-words" (func $task-return-words))
           (export "accumulator-new" (func $accumulator-new))
           (export "task.return" (func $task-return))
           (export "waitable-set.new" (func $set-new))
@@ -199,6 +242,9 @@ pub const GUEST: &[u8] = component!(
       (func $call-lost async (result u32)
         (canon lift (core func $i "call-lost") async
           (callback (core func $i "lost-callback"))))
+      (func $call-pairs async (result (list u32))
+        (canon lift (core func $i "call-pairs") async (memory (core memory $libc "memory"))
+          (callback (core func $i "pairs-callback"))))
 
       (component $interface
         (type $point0 (record (field "x" u32) (field "y" u32)))
@@ -217,6 +263,7 @@ pub const GUEST: &[u8] = component!(
         (import "call-counter" (func $call-counter (param "start" u32) (result u32)))
         (import "call-answer" (func $call-answer async (param "x" u32) (result u32)))
         (import "call-lost" (func $call-lost async (result u32)))
+        (import "call-pairs" (func $call-pairs async (result (list u32))))
         (export $pe "point" (type $p))
         (export $se "shape" (type $s))
         (export $fe "fs-error" (type $f))
@@ -232,7 +279,8 @@ pub const GUEST: &[u8] = component!(
           (func (param "code" u32) (result (result u32 (error $fe)))))
         (export "call-counter" (func $call-counter))
         (export "call-answer" (func $call-answer))
-        (export "call-lost" (func $call-lost)))
+        (export "call-lost" (func $call-lost))
+        (export "call-pairs" (func $call-pairs)))
       (instance $guest (instantiate $interface
         (with "point" (type $point))
         (with "shape" (type $shape))
@@ -246,7 +294,8 @@ pub const GUEST: &[u8] = component!(
         (with "call-read" (func $call-read))
         (with "call-counter" (func $call-counter))
         (with "call-answer" (func $call-answer))
-        (with "call-lost" (func $call-lost))))
+        (with "call-lost" (func $call-lost))
+        (with "call-pairs" (func $call-pairs))))
       (export "test:dual/guest" (instance $guest)))
     "#
 );

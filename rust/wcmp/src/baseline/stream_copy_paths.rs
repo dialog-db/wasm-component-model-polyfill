@@ -52,8 +52,9 @@ const BUFFER: u32 = 1 << 16;
 /// which answers the index it arrived under. `read-<kind>` and
 /// `write-<kind>` are the asynchronous copy built-ins, for `bytes`,
 /// `pairs`, `words`, and `nan`, `wait` delivers the event of the end
-/// it is given and answers its packed result, and `poke` and `peek`
-/// reach the writer's and the reader's memory.
+/// it is given and answers its packed result, `poke` and `peek` reach
+/// the writer's and the reader's memory, and `poke-reader` writes the
+/// reader's.
 const PATHS: &[u8] = component!(
     r#"
     (component
@@ -118,6 +119,7 @@ const PATHS: &[u8] = component!(
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (br $next)))
             (local.get $wrong))
+          (func (export "poke") (param i32 i32) (i32.store (local.get 0) (local.get 1)))
           (func (export "peek") (param i32) (result i32) (i32.load (local.get 0))))
         (core instance $i (instantiate $m
           (with "libc" (instance $libc))
@@ -148,6 +150,7 @@ const PATHS: &[u8] = component!(
         (func (export "wait") (param "e" u32) (result u32) (canon lift (core func $i "wait")))
         (func (export "verify") (param "p" u32) (param "n" u32) (result u32)
           (canon lift (core func $i "verify")))
+        (func (export "poke") (param "p" u32) (param "v" u32) (canon lift (core func $i "poke")))
         (func (export "peek") (param "p" u32) (result u32) (canon lift (core func $i "peek"))))
 
       (component $writer
@@ -274,6 +277,7 @@ const PATHS: &[u8] = component!(
       (export "wait" (func $r "wait"))
       (export "verify" (func $r "verify"))
       (export "peek" (func $r "peek"))
+      (export "poke-reader" (func $r "poke"))
       (export "give-bytes" (func $w "give-bytes"))
       (export "give-pairs" (func $w "give-pairs"))
       (export "give-words" (func $w "give-words"))
@@ -439,7 +443,7 @@ async fn it_copies_a_record_payload_through_values() {
     // Three records of a `u8` and a `u32`, eight bytes apiece. The
     // bytes between the two fields are padding, which a copy through
     // values does not carry: the writer's are set, and the reader's
-    // arrive as zeros.
+    // stay as they were, zeros here.
     for (i, (a, b)) in [(0xa1, 1000), (0xb2, 2000), (0xc3, 3000)]
         .into_iter()
         .enumerate()
@@ -473,6 +477,60 @@ async fn it_copies_a_record_payload_through_values() {
         arrived,
         [(0xa1, 1000), (0xb2, 2000), (0xc3, 3000)],
         "each field arrived, and the padding did not"
+    );
+}
+
+#[wcmp_macros::test]
+async fn it_leaves_the_readers_padding_as_it_was_when_records_move_between_guests() {
+    let (mut store, instance) = instantiate(PATHS).await;
+    // The writer's padding holds `0xee` and the reader's `0x55`. The
+    // reference stores each field and nothing else, so the reader's
+    // mark survives. Wasmtime moves a record of numbers as bytes and
+    // would carry the writer's `0xee`; the polyfill follows the
+    // reference.
+    for (i, (a, b)) in [(0xa1, 1000), (0xb2, 2000)].into_iter().enumerate() {
+        let at = BUFFER + 8 * i as u32;
+        call(&mut store, &instance, "poke", &[at, 0xeeee_ee00 | a]).await;
+        call(&mut store, &instance, "poke", &[at + 4, b]).await;
+    }
+    for at in (0..24).step_by(4) {
+        call(
+            &mut store,
+            &instance,
+            "poke-reader",
+            &[BUFFER + at, 0x5555_5555],
+        )
+        .await;
+    }
+    let (writable, readable) = stream(&mut store, &instance, "pairs").await;
+    assert_eq!(
+        call_u32(&mut store, &instance, "read-pairs", &[readable, BUFFER, 3]).await,
+        BLOCKED
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "write-pairs", &[writable, BUFFER, 2]).await,
+        packed(0, 2)
+    );
+    assert_eq!(
+        call_u32(&mut store, &instance, "wait", &[readable]).await,
+        packed(0, 2)
+    );
+    let mut words = Vec::new();
+    for at in (0..24).step_by(4) {
+        words.push(call_u32(&mut store, &instance, "peek", &[BUFFER + at]).await);
+    }
+    assert_eq!(
+        words,
+        [
+            0x5555_55a1,
+            1000,
+            0x5555_55b2,
+            2000,
+            0x5555_5555,
+            0x5555_5555
+        ],
+        "each field arrived, the reader's padding kept its mark, and the slot \
+         no record reached is untouched"
     );
 }
 

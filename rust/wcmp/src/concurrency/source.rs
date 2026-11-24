@@ -7,14 +7,15 @@
 //! The buffer of a write a host consumer serves.
 
 use crate::abi::context::BoundaryContext;
+use crate::abi::gate_list;
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::size_of;
+use crate::abi::layout::{copies_bytes, size_of};
 use crate::error::{AbiPosition, Error, Result};
 use crate::internal::{ErrorInternal, LiftContextInternal, SourceInternal};
 use crate::runtime_layer::AsContextMut;
 use crate::store::{StoreContext, StoreContextInternalExt};
 use crate::typed::{Lift, LiftContext};
-use crate::types::{TupleType, ValueType};
+use crate::types::{ListType, TupleType, ValueType};
 
 use super::copy_buffer::CopyBuffer;
 
@@ -172,14 +173,43 @@ fn lift_items<D: 'static, T: Lift>(
         None,
     );
     let size = size_of(ty);
-    let mut cx = LiftContext::new(&mut cx, POINTER_ARGUMENT);
-    buffer.reserve(count);
-    for _ in 0..count {
-        let offset = write.pointer as usize + (write.progress + *taken) as usize * size;
-        buffer.push(T::lift_memory(&mut cx, ty, offset)?);
-        *taken += 1;
+    let start = write.pointer as usize + (write.progress + *taken) as usize * size;
+    // The items lie one after another in the guest's memory, as a
+    // list's elements do, and the reference reads them as one
+    // (`load_list_from_valid_range`). Wasmtime takes them as a list too:
+    // it measures the range, charges the copy budget for the host values
+    // it builds, and lifts them into the buffer.
+    let list = ValueType::List(ListType::new(ty.clone()));
+    if copies_bytes(Some(ty)) {
+        // Every bit pattern of a number is a value, so the range decodes
+        // as it is, in the one read a list of numbers makes, and no item
+        // can fail partway.
+        let items = T::lift_list(
+            &mut LiftContext::new(&mut cx, POINTER_ARGUMENT),
+            &list,
+            start,
+            count,
+        )?;
+        buffer.extend(items);
+        *taken += count as u32;
+        return Ok(());
     }
-    Ok(())
+    gate_list(&mut cx, start, count, ty, &list, POINTER_ARGUMENT)?;
+    cx.charge_copy_budget(count, core::mem::size_of::<T>(), POINTER_ARGUMENT, &list)?;
+    buffer.reserve(count);
+    // Any other item lifts on its own, out of one read of the range, so
+    // the items lifted before one that fails stay in `buffer`, as they
+    // do in Wasmtime. Nothing runs guest code during a lift, so the
+    // copy cannot go stale; a read outside it, the bytes of a string an
+    // item points to, goes to the guest.
+    cx.lifting_within(start, count * size, POINTER_ARGUMENT, ty, |boundary| {
+        let mut cx = LiftContext::new(boundary, POINTER_ARGUMENT);
+        for index in 0..count {
+            buffer.push(T::lift_memory(&mut cx, ty, start + index * size)?);
+            *taken += 1;
+        }
+        Ok(())
+    })
 }
 
 impl<'a, T> SourceInternal<'a, T> for Source<'a, T> {

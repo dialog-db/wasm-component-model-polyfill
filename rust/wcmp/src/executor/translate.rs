@@ -35,7 +35,7 @@ use wasmtime_environ::{
     EntityIndex as EnvironEntityIndex, ScopeVec, Tunables, WasmError, WasmHeapType, WasmValType,
 };
 
-use crate::abi::layout::FlatType;
+use crate::abi::layout::{FlatType, copies_bytes};
 use crate::abi::signature::Signature;
 use crate::internal::{EngineConfigInternal, EngineInternal, ErrorInternal, ModuleInternal};
 
@@ -48,7 +48,7 @@ use crate::error::{Error, Result};
 
 use crate::module::Module;
 use crate::runtime_layer::{Capabilities, Capability};
-use crate::types::{PrimitiveType, ValueType};
+use crate::types::ValueType;
 
 use super::ir::{
     CanonOptions, CoreInstanceExport, CoreParameter, CoreSignature, CoreSourceItem, DataModel,
@@ -1112,31 +1112,6 @@ fn copy_spec(
     }
 }
 
-/// Whether a copy of `payload` moves bytes rather than values: the
-/// payload is absent, or a number type, every bit pattern of which is
-/// a valid value, so a byte copy and a value copy give the same bytes.
-/// `bool` and `char` are left out because not every bit pattern is
-/// valid for them. That is the set Wasmtime's compiler copies in one
-/// step, and the set the reference lets one instance both read and
-/// write.
-fn copies_bytes(payload: Option<&ValueType>) -> bool {
-    matches!(
-        payload,
-        None | Some(ValueType::Primitive(
-            PrimitiveType::S8
-                | PrimitiveType::U8
-                | PrimitiveType::S16
-                | PrimitiveType::U16
-                | PrimitiveType::S32
-                | PrimitiveType::U32
-                | PrimitiveType::S64
-                | PrimitiveType::U64
-                | PrimitiveType::F32
-                | PrimitiveType::F64
-        ))
-    )
-}
-
 /// Resolve a runtime import to the polyfill import index and the
 /// item path inside it: one name per nesting level from the imported
 /// instance down to the item, or empty when the import is the item.
@@ -1394,41 +1369,5 @@ fn translation_error(err: TranslatorError) -> Error {
         Some((_, Some(feature))) => Error::unsupported(*feature),
         Some((_, None)) => Error::unsupported(message.clone()),
         None => error,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{ListType, RecordField, RecordType};
-
-    #[wcmp_macros::test]
-    fn it_selects_the_byte_path_for_the_number_types_and_no_payload_alone() {
-        use PrimitiveType::*;
-        for number in [S8, U8, S16, U16, S32, U32, S64, U64, F32, F64] {
-            assert!(
-                copies_bytes(Some(&ValueType::Primitive(number))),
-                "every bit pattern of {number:?} is a valid value"
-            );
-        }
-        assert!(
-            copies_bytes(None),
-            "a payload that is absent moves no bytes at all"
-        );
-        for other in [
-            ValueType::Primitive(Bool),
-            ValueType::Primitive(Char),
-            ValueType::Primitive(String),
-            ValueType::List(ListType::new(ValueType::Primitive(U8))),
-            ValueType::Record(RecordType::new([RecordField::new(
-                "a",
-                ValueType::Primitive(U32),
-            )])),
-        ] {
-            assert!(
-                !copies_bytes(Some(&other)),
-                "{other:?} keeps the path through values"
-            );
-        }
     }
 }

@@ -388,13 +388,19 @@ impl<'a, T: 'static> BoundaryContext<'a, T> {
     /// costs one access of the guest however many elements and fields
     /// it has. Bytes `lower` leaves unwritten — padding, and the tail
     /// of a variant's payload area its case does not use — reach the
-    /// guest as zeros; the canonical ABI gives them no value.
+    /// guest as zeros, where the reference would leave them as they
+    /// were.
     ///
     /// A write outside the range goes to the guest as `lower` makes
-    /// it. The range is the allocation `cabi_realloc` returned for
-    /// the list, and a `cabi_realloc` the elements call for strings
-    /// and nested lists hands out memory outside it, so the order in
-    /// which the list's own bytes reach the guest is not observable.
+    /// it. So the range must be one whose old bytes and whose order of
+    /// writes the guest cannot see: the allocation `cabi_realloc`
+    /// returned for a list, which the guest knows nothing of until the
+    /// list's pointer reaches it, and whose elements' strings and
+    /// nested lists a `cabi_realloc` places outside it; or a range of
+    /// numbers, which fill every byte and call no guest code. A buffer
+    /// the guest already holds, such as the one a `stream.read` names,
+    /// takes values of any other type one at a time, written where
+    /// they go.
     pub fn lowering_within(
         &mut self,
         offset: usize,

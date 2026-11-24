@@ -136,6 +136,37 @@ pub fn size_of(ty: &ValueType) -> usize {
     canonical_abi(ty).size32 as usize
 }
 
+/// Whether a copy of `payload` moves bytes rather than values: the
+/// payload is absent, or a number type, every bit pattern of which is
+/// a valid value, so a byte copy and a value copy give the same bytes.
+/// `bool` and `char` are left out because not every bit pattern is
+/// valid for them. That is the set Wasmtime's compiler copies in one
+/// step, the set whose typed list lift and lower Wasmtime specializes
+/// to a copy of the bytes, and the set the reference lets one instance
+/// both read and write.
+///
+/// A value of such a type lowers to every byte of its size and calls
+/// no guest code, so its bytes can be assembled on the host and
+/// written in one access with the same result as a write of each
+/// value.
+pub fn copies_bytes(payload: Option<&ValueType>) -> bool {
+    matches!(
+        payload,
+        None | Some(ValueType::Primitive(
+            PrimitiveType::S8
+                | PrimitiveType::U8
+                | PrimitiveType::S16
+                | PrimitiveType::U16
+                | PrimitiveType::S32
+                | PrimitiveType::U32
+                | PrimitiveType::S64
+                | PrimitiveType::U64
+                | PrimitiveType::F32
+                | PrimitiveType::F64
+        ))
+    )
+}
+
 /// The number of flat core-Wasm slots a value type flattens to.
 /// `None` indicates the type is too large to flatten and must be
 /// passed via memory.
@@ -329,7 +360,37 @@ pub fn join_flat(a: FlatType, b: FlatType) -> FlatType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{FutureType, RecordField, RecordType, StreamType};
+    use crate::types::{FutureType, ListType, RecordField, RecordType, StreamType};
+
+    #[wcmp_macros::test]
+    fn it_selects_the_byte_path_for_the_number_types_and_no_payload_alone() {
+        use PrimitiveType::*;
+        for number in [S8, U8, S16, U16, S32, U32, S64, U64, F32, F64] {
+            assert!(
+                copies_bytes(Some(&ValueType::Primitive(number))),
+                "every bit pattern of {number:?} is a valid value"
+            );
+        }
+        assert!(
+            copies_bytes(None),
+            "a payload that is absent moves no bytes at all"
+        );
+        for other in [
+            ValueType::Primitive(Bool),
+            ValueType::Primitive(Char),
+            ValueType::Primitive(String),
+            ValueType::List(ListType::new(ValueType::Primitive(U8))),
+            ValueType::Record(RecordType::new([RecordField::new(
+                "a",
+                ValueType::Primitive(U32),
+            )])),
+        ] {
+            assert!(
+                !copies_bytes(Some(&other)),
+                "{other:?} keeps the path through values"
+            );
+        }
+    }
 
     #[wcmp_macros::test]
     fn it_lays_out_a_stream_and_a_future_as_a_handle() {

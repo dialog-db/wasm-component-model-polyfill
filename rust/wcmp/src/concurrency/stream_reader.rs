@@ -375,9 +375,13 @@ where
     ) -> Result<()> {
         let size = size_of(ty);
         let count = count.min(self.waiting.len());
+        // The items go one after another into the reader's buffer. The
+        // caller decides whether they reach the guest in one write: it
+        // assembles a delivery of numbers on the host, and lets any
+        // other item be written where it goes, padding untouched.
         let mut cx = LowerContext::new(cx, POINTER_ARGUMENT);
-        for (i, item) in self.waiting.drain(..count).enumerate() {
-            item.lower_memory(&mut cx, ty, offset + i * size)?;
+        for (index, item) in self.waiting.drain(..count).enumerate() {
+            item.lower_memory(&mut cx, ty, offset + index * size)?;
         }
         Ok(())
     }
