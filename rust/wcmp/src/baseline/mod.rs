@@ -45,6 +45,7 @@ mod stream_copy_handles;
 mod stream_copy_paths;
 mod stream_future_ends;
 mod stream_future_transfer;
+mod stream_host_copies;
 mod subtask_drop;
 mod suspend;
 mod switch_module;
