@@ -29,10 +29,16 @@
 //! reader's later reads first. The delivery moves as many as the
 //! read can take through a boundary context over the reader's
 //! memory, and the producer lowers each one as its type's `Lower`
-//! lowers it. An end whose producer is finished and which has no
-//! item left is let go of: its writable end drops, which tells the
-//! reader the stream ended, and a future's end drops once its value
-//! is delivered.
+//! lowers it. Items of a number type, which fill every byte they
+//! cover and call no guest code, are assembled on the host and reach
+//! the guest in one write, as Wasmtime writes a list of them. Any
+//! other item is written into the reader's buffer as it is lowered,
+//! as the reference's `store_list_into_valid_range` stores it: its
+//! padding stays as the reader left it, and a `cabi_realloc` it calls
+//! runs after the items before it are in place. An end whose
+//! producer is finished and which has no item left is let go of: its
+//! writable end drops, which tells the reader the stream ended, and a
+//! future's end drops once its value is delivered.
 //!
 //! A guest that cancels a read the producer has not answered wakes
 //! the waker of the producer's last pending poll, as Wasmtime wakes
@@ -45,7 +51,7 @@ use core::task::{Context, Poll};
 
 use crate::abi::context::BoundaryContext;
 use crate::abi::instance::BoundaryInstance;
-use crate::abi::layout::size_of;
+use crate::abi::layout::{copies_bytes, size_of};
 use crate::concurrency::{Accessor, CopyState, EndId, HostTask, HostTaskBody};
 use crate::error::{AbiPosition, Error, Result};
 use crate::internal::ErrorInternal;
@@ -203,9 +209,18 @@ fn deliver<T: 'static>(store: &mut StoreContext<'_, T>, writer: EndId) -> Result
                     );
                     let size = size_of(ty);
                     let offset = pointer as usize + progress as usize * size;
-                    cx.lowering_within(offset, count * size, POINTER_ARGUMENT, ty, |cx| {
-                        end.deliver(cx, offset, ty, count)
-                    })
+                    // Numbers are assembled on the host and reach the
+                    // guest in one write. Any other item is written
+                    // where it goes as it is lowered, so its padding
+                    // stays as the reader left it, as the reference
+                    // and Wasmtime leave it.
+                    if copies_bytes(Some(ty)) {
+                        cx.lowering_within(offset, count * size, POINTER_ARGUMENT, ty, |cx| {
+                            end.deliver(cx, offset, ty, count)
+                        })
+                    } else {
+                        end.deliver(&mut cx, offset, ty, count)
+                    }
                 },
             )
         }

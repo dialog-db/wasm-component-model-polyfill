@@ -66,7 +66,12 @@
 //!   no copy budget, as Wasmtime's charges none.
 //! - Any other payload moves one value at a time: the writer's context
 //!   lifts them out of the writer's memory and the reader's context
-//!   lowers them into the reader's, and an owned handle in a value
+//!   lowers them into the reader's, one value after another and
+//!   straight into the reader's buffer, which leaves the bytes no
+//!   value covers as they were. Wasmtime copies a payload with no
+//!   pointer and no handle in it, a record of numbers among them, as
+//!   bytes, padding and all; the polyfill follows the reference,
+//!   which never writes the reader's padding. An owned handle in a value
 //!   moves from the writer's table to the reader's as a call moves
 //!   one. An error context in a value is copied instead: the writer
 //!   keeps its handle, and the reader gains one of its own over the
@@ -598,7 +603,13 @@ impl MoveSide {
 /// charging its copy budget as a list of the same values would, and
 /// the reader's context lowers them one at a time, which moves an
 /// owned handle from the writer's table to the reader's as a call
-/// moves one.
+/// moves one. Each value is written straight into the reader's
+/// buffer, as the reference's `store_list_into_valid_range` stores
+/// it: the bytes a value does not cover, its padding and the unused
+/// tail of a variant's payload, stay as the reader left them, and a
+/// `cabi_realloc` a value calls runs after the values before it are
+/// in place. The buffer is the reader's own, so the reader can see
+/// both.
 #[tracing::instrument(level = "trace", name = "move values", skip_all, fields(count = count))]
 fn move_values<T: 'static>(
     store_ctx: &mut RuntimeContextMut<'_, StoreData<T>>,
@@ -644,25 +655,17 @@ fn move_values<T: 'static>(
     };
     let mut ctx = destination.context(store_ctx.as_context_mut(), tables)?;
     let size = size_of(destination_ty);
-    ctx.lowering_within(
-        destination.offset,
-        count * size,
-        POINTER_ARGUMENT,
-        destination_ty,
-        |ctx| {
-            for (i, value) in values.iter().enumerate() {
-                lower(
-                    ctx,
-                    destination.offset + i * size,
-                    value,
-                    destination_ty,
-                    POINTER_ARGUMENT,
-                )?;
-            }
-            Ok(())
-        },
-    )
-    .map_err(trap)
+    for (i, value) in values.iter().enumerate() {
+        lower(
+            &mut ctx,
+            destination.offset + i * size,
+            value,
+            destination_ty,
+            POINTER_ARGUMENT,
+        )
+        .map_err(trap)?;
+    }
+    Ok(())
 }
 
 /// Move the `length` bytes at `source`'s offset to `destination`'s,
