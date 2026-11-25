@@ -25,6 +25,7 @@ use crate::errors;
 use crate::js;
 use crate::jspi::Jspi;
 use crate::objects::Objects;
+use crate::precompiled;
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
 
@@ -213,7 +214,7 @@ impl Wrappers {
             Some(module) => module.clone(),
             None => {
                 let bytes = generate(ty, uses_exns, suspending)?;
-                let module = WebAssembly::Module::new(&js_sys::Uint8Array::from(&bytes[..]).into())
+                let module = precompiled::module(&bytes)
                     .map_err(|error| errors::backend(errors::message(&error)))?;
                 self.modules.insert(key, module.clone());
                 module

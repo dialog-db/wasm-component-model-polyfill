@@ -34,6 +34,8 @@ wasm-encoder = { workspace = true }
 wasmparser = { workspace = true }
 # Assembles the probe modules and the table of exceptions at compile time.
 wcmp-macros = { workspace = true }
+# The key of a module compiled ahead of time: the SHA-256 of its bytes.
+sha2 = { workspace = true }
 # Spans on the critical paths, which nothing records until an application
 # installs a subscriber.
 tracing = { workspace = true }

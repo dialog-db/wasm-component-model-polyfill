@@ -22,6 +22,7 @@ use wcmp_wasm_core::{Error, ExnRef, FuncType, HeapType, Result, Val, ValType};
 use crate::errors;
 use crate::js;
 use crate::objects::Objects;
+use crate::precompiled;
 use crate::type_registry::TypeRegistry;
 use crate::values::{self, Kind};
 
@@ -335,7 +336,7 @@ impl Carrier {
             Some(module) => module.clone(),
             None => {
                 let bytes = generate(ty, uses_exns)?;
-                let module = WebAssembly::Module::new(&js_sys::Uint8Array::from(&bytes[..]).into())
+                let module = precompiled::module(&bytes)
                     .map_err(|error| errors::backend(errors::message(&error)))?;
                 self.modules.insert(ty.clone(), module.clone());
                 module
@@ -416,8 +417,8 @@ fn goes_without(error: &JsValue, ty: &FuncType) -> bool {
 /// A generated module is small, so it compiles and instantiates
 /// synchronously.
 fn instantiate(bytes: &[u8], imports: &Object) -> Result<Object> {
-    let module = WebAssembly::Module::new(&js_sys::Uint8Array::from(bytes).into())
-        .map_err(|error| errors::backend(errors::message(&error)))?;
+    let module =
+        precompiled::module(bytes).map_err(|error| errors::backend(errors::message(&error)))?;
     Ok(WebAssembly::Instance::new(&module, imports)
         .map_err(|error| errors::backend(errors::message(&error)))?
         .exports())
